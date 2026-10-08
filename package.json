@@ -1,10 +1,14 @@
 {
   "name": "openanimator",
   "productName": "OpenAnimator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenAnimator is an open-source vector-based animation tool.",
   "main": "./out/main/index.js",
-  "author": "Didier Hoarau",
+  "author": {
+    "name": "Didier Hoarau",
+    "email": "4222718+DidierHoarau@users.noreply.github.com"
+  },
+  "desktopName": "openanimator.desktop",
   "homepage": "https://github.com/DidierHoarau/OpenAnimator#readme",
   "repository": {
     "type": "git",
@@ -19,7 +23,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "test": "vitest run",
-    "dist:linux": "electron-builder --linux",
+    "dist:linux": "electron-builder --linux --publish never",
     "check-version": "node scripts/check-version.mjs"
   },
   "devDependencies": {

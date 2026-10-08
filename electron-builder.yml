@@ -9,6 +9,7 @@ files:
 linux:
   icon: build/icon.png
   category: Graphics
+  syncDesktopName: true
   target:
     - target: AppImage
       arch:
