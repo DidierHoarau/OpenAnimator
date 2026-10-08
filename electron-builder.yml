@@ -17,6 +17,17 @@ linux:
     - target: deb
       arch:
         - x64
+    - target: rpm
+      arch:
+        - x64
+    - target: flatpak
+      arch:
+        - x64
     - target: tar.gz
       arch:
         - x64
+flatpak:
+  # Defaults are 20.08, too old for current Electron; the runtime must match
+  # the base app version published on Flathub.
+  runtimeVersion: "24.08"
+  baseVersion: "24.08"

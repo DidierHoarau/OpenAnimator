@@ -49,6 +49,13 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Prepare Flatpak packaging
+        if: steps.tag.outputs.exists == 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak-builder
+          flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
       - name: Build Linux packages
         if: steps.tag.outputs.exists == 'false'
         run: npm run dist:linux
@@ -62,5 +69,7 @@ jobs:
           files: |
             dist/*.AppImage
             dist/*.deb
+            dist/*.rpm
+            dist/*.flatpak
             dist/*.tar.gz
           generate_release_notes: true
