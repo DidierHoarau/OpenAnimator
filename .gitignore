@@ -9,7 +9,7 @@ dist/
 coverage/
 
 # Test scratch (sandboxed TMPDIR)
-# .tmp/
+.tmp/
 
 # Logs
 *.log
