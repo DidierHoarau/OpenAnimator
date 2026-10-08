@@ -12,7 +12,7 @@ The application now provides a working authoring core: layers with keyframes, a 
 - TypeScript with strict mode, split into node-side and web-side type checking
 - Vanilla TypeScript renderer rendering vector shapes as SVG — no UI framework
 - [Vitest](https://vitest.dev/) for unit tests (the document model lives in `src/shared/` and is fully testable without Electron)
-- [electron-builder](https://www.electron.build/) for Linux packaging (AppImage, deb, tar.gz)
+- [electron-builder](https://www.electron.build/) for Linux packaging (AppImage, deb, rpm, Flatpak, tar.gz)
 
 ## Authoring features
 
@@ -75,7 +75,7 @@ npm run dev        # start the app with hot reload
 | `npm run build`         | Build main, preload and renderer bundles into `out/`     |
 | `npm run typecheck`     | Typecheck node-side and web-side TypeScript              |
 | `npm test`              | Run unit tests with Vitest                               |
-| `npm run dist:linux`    | Package Linux installers (AppImage, deb, tar.gz)         |
+| `npm run dist:linux`    | Package Linux installers (AppImage, deb, rpm, Flatpak, tar.gz) |
 | `npm run check-version` | Check that the version is greater than the base branch   |
 
 ## Keyboard shortcuts
@@ -94,7 +94,7 @@ npm run dev        # start the app with hot reload
 The application follows [semantic versioning](https://semver.org/) with the version tracked in `package.json`.
 
 - **Pull requests** (`pr-check.yml`): install, verify that `package.json` version is strictly greater than the version on the base branch, typecheck, build and test. Every PR must bump the version.
-- **Merges to main** (`main-build.yml`): typecheck, test, build, then package Linux artifacts (AppImage, deb, tar.gz) and publish a GitHub release tagged `v<version>` with generated release notes. If the tag already exists, the release step is skipped.
+- **Merges to main** (`main-build.yml`): typecheck, test, build, then package Linux artifacts (AppImage, deb, rpm, Flatpak, tar.gz) and publish a GitHub release tagged `v<version>` with generated release notes. If the tag already exists, the release step is skipped.
 
 ## License
 
