@@ -1,0 +1,21 @@
+appId: io.github.didierhoarau.openanimator
+productName: OpenAnimator
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**
+  - package.json
+linux:
+  icon: build/icon.png
+  category: Graphics
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+    - target: tar.gz
+      arch:
+        - x64
