@@ -123,10 +123,11 @@ export function setKeyframeTween(
   return true
 }
 
-/** Shifts every keyframe at or after `frame` one frame later (insert frame). */
+/** Shifts every keyframe strictly after `frame` one frame later (insert frame
+ * extends the hold of the keyframe active at the playhead). */
 export function insertFrame(layer: Layer, frame: number): void {
   for (const keyframe of layer.keyframes) {
-    if (keyframe.frame >= frame) keyframe.frame += 1
+    if (keyframe.frame > frame) keyframe.frame += 1
   }
 }
 

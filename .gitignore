@@ -8,6 +8,9 @@ dist/
 # Test coverage
 coverage/
 
+# Test scratch (sandboxed TMPDIR)
+# .tmp/
+
 # Logs
 *.log
 npm-debug.log*

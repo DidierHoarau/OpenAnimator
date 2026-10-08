@@ -1,5 +1,6 @@
 import { findKeyframeIndexForFrame } from '@shared/document'
 import type { EasingName } from '@shared/easing'
+import type { Layer } from '@shared/model'
 import type { Editor } from './editor'
 import { el } from './dom'
 
@@ -159,7 +160,7 @@ export class TimelineView {
     this.updatePlayhead()
   }
 
-  private buildRow(layer: import('@shared/model').Layer, frames: number): HTMLDivElement {
+  private buildRow(layer: Layer, frames: number): HTMLDivElement {
     const editor = this.editor
     const row = el('div', 'tl-row')
     row.dataset.layerId = layer.id
