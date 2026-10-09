@@ -1,7 +1,7 @@
 {
   "name": "openanimator",
   "productName": "OpenAnimator",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "OpenAnimator is an open-source vector-based animation tool.",
   "main": "./out/main/index.js",
   "author": {
@@ -23,16 +23,23 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint .",
     "dist:linux": "electron-builder --linux --publish never",
     "check-version": "node scripts/check-version.mjs"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^24.10.1",
+    "@vitest/coverage-v8": "^5.0.3",
     "electron": "^44.7.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "eslint": "^10.12.0",
+    "happy-dom": "^20.14.6",
     "semver": "^7.8.5",
     "typescript": "~5.9.3",
+    "typescript-eslint": "^8.71.1",
     "vite": "^7.1.0",
     "vitest": "^5.0.3"
   }

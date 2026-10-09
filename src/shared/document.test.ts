@@ -101,8 +101,90 @@ describe('document operations', () => {
     const doc = createDocument('test', 960, 540, 24)
     const layer = doc.layers[0]
     insertKeyframe(layer, 10)
-    insertFrame(layer, 5)
+    insertFrame(doc, layer.id, 5)
     expect(layer.keyframes.map((k) => k.frame).sort((a, b) => a - b)).toEqual([0, 11])
+  })
+
+  it('inserts a keyframe with an independent deep copy of the content', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = doc.layers[0]
+    addShapeToLayer(layer, 0, rect('a', 10, 10))
+    insertKeyframe(layer, 10)
+    // Moving the shape in the new keyframe must not affect the previous one.
+    updateShapeInLayer(layer, 10, 'a', (shape) => {
+      shape.center.x = 500
+    })
+    expect(findKeyframeAtFrame(layer, 0)?.shapes[0].center.x).toBe(10)
+    expect(findKeyframeAtFrame(layer, 10)?.shapes[0].center.x).toBe(500)
+  })
+
+  it('clones shapes including nested objects', async () => {
+    const { cloneShape } = await import('./model')
+    const shape = rect('a', 10, 20)
+    const copy = cloneShape(shape)
+    expect(copy).toEqual(shape)
+    expect(copy).not.toBe(shape)
+    expect(copy.center).not.toBe(shape.center)
+    copy.center.x = 99
+    expect(shape.center.x).toBe(10)
+  })
+
+  it('insertFrame extends the timeline on a fresh document', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = doc.layers[0]
+    // Regression: on a fresh document F5 used to be a no-op and the playhead
+    // was locked at frame 0 because the duration was keyframe-derived.
+    insertFrame(doc, layer.id, 0)
+    expect(documentDuration(doc)).toBe(2)
+    expect(layer.keyframes.map((k) => k.frame)).toEqual([0])
+  })
+
+  it('insertFrame extends the timeline at and after the last keyframe', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = doc.layers[0]
+    insertKeyframe(layer, 4)
+    insertFrame(doc, layer.id, 4)
+    // The authored length wins over the keyframe-derived duration.
+    expect(documentDuration(doc)).toBe(6)
+    expect(layer.keyframes.map((k) => k.frame).sort((a, b) => a - b)).toEqual([0, 4])
+  })
+
+  it('insertFrame ignores unknown layers', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    expect(() => insertFrame(doc, 'missing', 0)).not.toThrow()
+    expect(documentDuration(doc)).toBe(1)
+  })
+
+  it('computes the duration from the authored frame count when larger', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    doc.frames = 25
+    expect(documentDuration(doc)).toBe(25)
+    insertKeyframe(doc.layers[0], 40)
+    expect(documentDuration(doc)).toBe(41)
+  })
+
+  it('isAnimatorDocument accepts the legacy format without frames', () => {
+    const legacy: Record<string, unknown> = {
+      name: 'legacy',
+      width: 100,
+      height: 100,
+      fps: 24,
+      background: '#000000',
+      layers: []
+    }
+    expect(isAnimatorDocument(legacy)).toBe(true)
+    expect(isAnimatorDocument({ ...legacy, frames: 12 })).toBe(true)
+    expect(isAnimatorDocument({ ...legacy, frames: 0 })).toBe(false)
+    expect(isAnimatorDocument({ ...legacy, frames: -3 })).toBe(false)
+    expect(isAnimatorDocument({ ...legacy, frames: 2.5 })).toBe(false)
+    expect(isAnimatorDocument({ ...legacy, frames: '12' })).toBe(false)
+  })
+
+  it('round-trips the authored frame count through JSON', () => {
+    const doc = createStarterDocument()
+    const restored: unknown = JSON.parse(JSON.stringify(doc))
+    expect(isAnimatorDocument(restored)).toBe(true)
+    expect((restored as { frames?: number }).frames).toBe(25)
   })
 
   it('adds shapes to the active keyframe and can remove/update them', () => {

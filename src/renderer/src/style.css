@@ -356,14 +356,61 @@ input:disabled {
   gap: 8px;
 }
 
-.panel-section-title {
+.panel-section-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 0 0 4px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 650;
-  text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--muted);
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 4px;
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.panel-chevron {
+  flex: 0 0 auto;
+  font-size: 10px;
+}
+
+.panel-section.collapsed .panel-section-body {
+  display: none;
+}
+
+.panel-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.panel-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-buttons .tl-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.panel-buttons input[type='number'] {
+  width: 56px;
+}
+
+.panel-section-title {
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
 }
 
 .panel-rows {
@@ -400,6 +447,71 @@ input:disabled {
 .panel-empty {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* Layer explorer tree */
+.explorer-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.explorer-layer.current > .explorer-row {
+  background: var(--panel-deep);
+  box-shadow: inset 2px 0 0 var(--accent-blue);
+}
+
+.explorer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.explorer-row:hover {
+  background: var(--panel-deep);
+}
+
+.explorer-child {
+  padding-left: 24px;
+}
+
+.explorer-child.selected {
+  background: var(--panel-deep);
+  color: var(--accent-blue);
+}
+
+.explorer-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorer-meta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.explorer-swatch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 2px;
+}
+
+.explorer-empty {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+  cursor: default;
 }
 
 .hidden {

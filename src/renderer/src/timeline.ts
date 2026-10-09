@@ -1,85 +1,30 @@
-import { findKeyframeIndexForFrame } from '@shared/document'
-import type { EasingName } from '@shared/easing'
 import type { Layer } from '@shared/model'
+
 import type { Editor } from './editor'
 import { el } from './dom'
 
 const FRAME_WIDTH = 14
 const HEAD_WIDTH = 150
 const MIN_FRAMES = 40
-const EASINGS: EasingName[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out']
 
-/** Timeline panel: layer rows, keyframe markers, tween spans and playback controls. */
+/**
+ * Timeline panel: frame ruler, layer rows with keyframe markers and tween
+ * spans, and the playhead. Layer/keyframe operations and playback controls
+ * live in the right properties panel.
+ */
 export class TimelineView {
   private readonly content: HTMLDivElement
   private readonly rowsHost: HTMLDivElement
   private readonly playhead: HTMLDivElement
   private readonly frameLabel: HTMLSpanElement
-  private readonly playButton: HTMLButtonElement
-  private readonly loopButton: HTMLButtonElement
-  private readonly tweenButton: HTMLButtonElement
-  private readonly easingSelect: HTMLSelectElement
-  private readonly fpsInput: HTMLInputElement
 
   constructor(
     private readonly editor: Editor,
     container: HTMLElement
   ) {
     const controls = el('div', 'tl-controls')
-
-    const keyframeGroup = el('div', 'tl-group')
-    keyframeGroup.append(
-      this.button('+ Keyframe', 'Insert keyframe at the current frame (F6)', () => editor.insertKeyframeHere()),
-      this.button('+ Blank', 'Insert blank keyframe at the current frame (F7)', () => editor.insertBlankKeyframeHere()),
-      this.button('+ Frame', 'Insert frame to extend the hold (F5)', () => editor.insertFrameHere()),
-      this.button('− Keyframe', 'Remove the keyframe at the current frame', () => editor.removeKeyframeHere())
-    )
-
-    this.tweenButton = this.button('Tween', 'Toggle a classic tween from the current keyframe', () =>
-      editor.toggleTweenHere()
-    )
-    this.tweenButton.classList.add('tl-toggle')
-    this.easingSelect = el('select', 'tl-select') as HTMLSelectElement
-    for (const easing of EASINGS) {
-      const option = el('option', undefined, easing)
-      option.value = easing
-      this.easingSelect.appendChild(option)
-    }
-    this.easingSelect.title = 'Easing of the tween starting at the current keyframe'
-    this.easingSelect.addEventListener('change', () => {
-      editor.setTweenEasingHere(this.easingSelect.value as EasingName)
-    })
-
-    const tweenGroup = el('div', 'tl-group')
-    tweenGroup.append(this.tweenButton, this.easingSelect)
-
-    this.playButton = this.button('Play', 'Play or pause playback (Space)', () => editor.togglePlay())
-    this.loopButton = this.button('Loop', 'Toggle looped playback', () => editor.toggleLoop())
-    this.loopButton.classList.add('tl-toggle')
-    const stopButton = this.button('Stop', 'Stop playback and return to frame 1 (Escape)', () =>
-      editor.stopPlayback()
-    )
-    const playbackGroup = el('div', 'tl-group')
-    playbackGroup.append(this.playButton, stopButton, this.loopButton)
-
-    const fpsGroup = el('div', 'tl-group')
-    const fpsLabel = el('span', 'tl-label', 'fps')
-    this.fpsInput = el('input', 'tl-number') as HTMLInputElement
-    this.fpsInput.type = 'number'
-    this.fpsInput.min = '1'
-    this.fpsInput.max = '120'
-    this.fpsInput.title = 'Frames per second'
-    this.fpsInput.addEventListener('change', () => editor.setFps(Number(this.fpsInput.value)))
-    fpsGroup.append(fpsLabel, this.fpsInput)
-
-    const layerGroup = el('div', 'tl-group')
-    layerGroup.append(
-      this.button('+ Layer', 'Add a layer on top', () => editor.addLayerOnTop()),
-      this.button('− Layer', 'Remove the current layer', () => editor.removeCurrentLayer())
-    )
-
     this.frameLabel = el('span', 'tl-frame-label')
-    controls.append(keyframeGroup, tweenGroup, playbackGroup, fpsGroup, layerGroup, this.frameLabel)
+    controls.appendChild(this.frameLabel)
 
     const ruler = el('div', 'tl-ruler')
     this.rowsHost = el('div', 'tl-rows')
@@ -99,13 +44,6 @@ export class TimelineView {
     this.render()
   }
 
-  private button(title: string, tooltip: string, onClick: () => void): HTMLButtonElement {
-    const button = el('button', undefined, title)
-    button.title = tooltip
-    button.addEventListener('click', onClick)
-    return button
-  }
-
   private onTrackPointerDown(event: PointerEvent): void {
     const target = event.target as HTMLElement
     const frameAttr = target.dataset?.frame
@@ -117,14 +55,6 @@ export class TimelineView {
     if (row?.dataset.layerId) {
       this.editor.setCurrentLayer(row.dataset.layerId)
     }
-  }
-
-  private activeKeyframeEasing(): EasingName | null {
-    const layer = this.editor.currentLayer
-    if (!layer) return null
-    const index = findKeyframeIndexForFrame(layer, this.editor.currentFrame)
-    if (index === -1) return null
-    return layer.keyframes[index].tween?.easing ?? null
   }
 
   render(): void {
@@ -149,14 +79,6 @@ export class TimelineView {
     for (const layer of doc.layers) {
       this.rowsHost.appendChild(this.buildRow(layer, frames))
     }
-
-    // Control states.
-    this.playButton.textContent = editor.playing ? 'Pause' : 'Play'
-    this.loopButton.classList.toggle('active', editor.loop)
-    this.fpsInput.value = String(doc.fps)
-    const easing = this.activeKeyframeEasing()
-    this.tweenButton.classList.toggle('active', easing !== null)
-    if (easing !== null) this.easingSelect.value = easing
     this.updatePlayhead()
   }
 

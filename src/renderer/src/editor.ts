@@ -222,7 +222,7 @@ export class Editor {
   insertFrameHere(): void {
     const layer = this.currentLayer
     if (!layer || layer.locked) return
-    insertFrame(layer, this.currentFrame)
+    insertFrame(this.document, this.currentLayerId, this.currentFrame)
     this.docChanged()
   }
 
