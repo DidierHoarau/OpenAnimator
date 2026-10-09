@@ -4,6 +4,7 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 
 import { APP_API_CHANNEL } from '../shared/api'
 import type { AppVersions } from '../shared/api'
+import { registerProjectHandlers } from './projects'
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -37,6 +38,8 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  registerProjectHandlers()
+
   ipcMain.handle(APP_API_CHANNEL, (): AppVersions => ({
     app: app.getVersion(),
     electron: process.versions.electron ?? 'unknown',
