@@ -11,7 +11,8 @@ The application now provides a working authoring core: layers with keyframes, a 
 - [Electron](https://www.electronjs.org/) with [electron-vite](https://electron-vite.org/) (main / preload / renderer)
 - TypeScript with strict mode, split into node-side and web-side type checking
 - Vanilla TypeScript renderer rendering vector shapes as SVG — no UI framework
-- [Vitest](https://vitest.dev/) for unit tests (the document model lives in `src/shared/` and is fully testable without Electron)
+- [ESLint](https://eslint.org/) with typescript-eslint for linting
+- [Vitest](https://vitest.dev/) for unit tests with v8 coverage (the document model lives in `src/shared/` and is fully testable without Electron)
 - [electron-builder](https://www.electron.build/) for Linux packaging (AppImage, deb, rpm, Flatpak, tar.gz)
 
 ## Authoring features
@@ -21,8 +22,12 @@ The application now provides a working authoring core: layers with keyframes, a 
 - **Keyframes**: content keyframes and blank keyframes, insert/remove at the playhead, insert frame to extend holds.
 - **Classic tweening**: a tween on a keyframe interpolates matching shapes (matched by id) toward the next keyframe — position, size, rotation, opacity and fill color — with named easing curves (linear, ease-in, ease-out, ease-in-out) plus a cubic-bezier easing solver.
 - **Drawing tools**: rectangle and ellipse creation by drag (click for a default-size shape), selection with rotation-aware hit testing, move, nudge (arrow keys) and delete.
-- **Properties panel**: a right-side panel with sections; the Shape section edits the selected shape of the active keyframe — position, size, rotation, opacity, fill color (swatch or hex) and outline (color + width).
-- **Timeline panel**: frame ruler, layer rows, keyframe markers, tween spans, playhead, playback controls, fps input.
+- **Properties panel**: a right-side panel of collapsible sections whose expanded/collapsed state is remembered across restarts. Sections adapt to the editor state — the Shape section only appears while a shape is selected:
+  - **Layer Explorer**: a tree of layers (visibility/lock toggles, current-layer highlight, keyframe count) with the shapes contained in each layer's content at the current frame; clicking a shape selects it.
+  - **Layer**: all layer operations — insert keyframe / blank keyframe / frame, remove keyframe, classic tween toggle with easing, add/remove layers. Controls enable and disable according to the current layer, playhead and tween state.
+  - **Playback**: play/pause, stop, loop toggle and fps input.
+  - **Shape**: edits the selected shape of the active keyframe — position, size, rotation, opacity, fill color (swatch or hex) and outline (color + width).
+- **Timeline panel**: frame ruler, layer rows with per-row visibility/lock toggles, keyframe markers, tween spans and the playhead.
 - **Playback**: play/pause/stop, optional looping, frame-stepping at the document fps.
 - **Onion skinning**: ghosted neighboring frames while paused.
 - **Projects**: save and open `.oanim` project files (plain JSON documents, also reads `.json`), with an explicit Save/Save As/Open, Ctrl+S / Ctrl+Shift+S / Ctrl+O shortcuts and debounced autosave to the current file.
@@ -53,9 +58,10 @@ The application now provides a working authoring core: layers with keyframes, a 
 │       └── src/
 │           ├── editor.ts  # Editor state (frame, selection, tools, playback)
 │           ├── stage.ts   # SVG stage: rendering, drawing, selection
-│           ├── properties.ts # Right properties panel
+│           ├── properties.ts # Right panel: explorer / layer / playback / shape sections
+│           ├── sectionState.ts # Panel-section collapse state persistence
 │           ├── projects.ts   # Save / open / startup dialog orchestration
-│           ├── timeline.ts# Timeline panel and playback controls
+│           ├── timeline.ts # Timeline panel (ruler, rows, playhead)
 │           ├── main.ts    # Bootstrap, toolbar, shortcuts, autosave
 │           └── style.css
 ├── electron.vite.config.ts
@@ -79,7 +85,9 @@ npm run dev        # start the app with hot reload
 | `npm run dev`           | Start the application in development with hot reload     |
 | `npm run build`         | Build main, preload and renderer bundles into `out/`     |
 | `npm run typecheck`     | Typecheck node-side and web-side TypeScript              |
+| `npm run lint`          | Lint the source with ESLint                              |
 | `npm test`              | Run unit tests with Vitest                               |
+| `npm run test:coverage` | Run unit tests with v8 coverage thresholds               |
 | `npm run dist:linux`    | Package Linux installers (AppImage, deb, rpm, Flatpak, tar.gz) |
 | `npm run check-version` | Check that the version is greater than the base branch   |
 
@@ -101,8 +109,8 @@ npm run dev        # start the app with hot reload
 
 The application follows [semantic versioning](https://semver.org/) with the version tracked in `package.json`.
 
-- **Pull requests** (`pr-check.yml`): install, verify that `package.json` version is strictly greater than the version on the base branch, typecheck, build and test. Every PR must bump the version.
-- **Merges to main** (`main-build.yml`): typecheck, test, build, then package Linux artifacts (AppImage, deb, rpm, Flatpak, tar.gz) and publish a GitHub release tagged `v<version>` with generated release notes. If the tag already exists, the release step is skipped.
+- **Pull requests** (`pr-check.yml`): install, verify that `package.json` version is strictly greater than the version on the base branch, typecheck, lint, build and test with coverage thresholds. Every PR must bump the version.
+- **Merges to main** (`main-build.yml`): typecheck, lint, test with coverage, build, then package Linux artifacts (AppImage, deb, rpm, Flatpak, tar.gz) and publish a GitHub release tagged `v<version>` with generated release notes. If the tag already exists, the release step is skipped.
 
 ## License
 

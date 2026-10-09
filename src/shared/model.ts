@@ -47,4 +47,14 @@ export interface AnimatorDocument {
   fps: number
   background: string
   layers: Layer[]
+  /**
+   * Authored timeline length in frames. Optional for documents saved before
+   * this field existed; when absent the duration is derived from keyframes.
+   */
+  frames?: number
+}
+
+/** Independent copy of a shape, including nested objects like `center`. */
+export function cloneShape(shape: Shape): Shape {
+  return { ...shape, center: { ...shape.center } }
 }

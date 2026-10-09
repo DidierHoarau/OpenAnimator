@@ -1,5 +1,6 @@
 import { evaluateEasing } from './easing'
 import type { AnimatorDocument, Keyframe, Layer, Shape } from './model'
+import { cloneShape } from './model'
 import { tweenShapes } from './tween'
 
 let idCounter = 0
@@ -29,7 +30,8 @@ export function createDocument(name: string, width: number, height: number, fps:
     height,
     fps,
     background: '#10151b',
-    layers: [layer]
+    layers: [layer],
+    frames: 1
   }
 }
 
@@ -37,7 +39,8 @@ export function getLayer(document: AnimatorDocument, layerId: string): Layer | u
   return document.layers.find((layer) => layer.id === layerId)
 }
 
-/** Total number of frames: the furthest keyframe + 1 (at least 1). */
+/** Total number of frames: the furthest keyframe + 1 and the authored length
+ * (`frames`), whichever is larger; at least 1. */
 export function documentDuration(document: AnimatorDocument): number {
   let max = 0
   for (const layer of document.layers) {
@@ -45,7 +48,7 @@ export function documentDuration(document: AnimatorDocument): number {
       max = Math.max(max, keyframe.frame)
     }
   }
-  return max + 1
+  return Math.max(1, max + 1, document.frames ?? 0)
 }
 
 /** Index of the last keyframe at or before `frame`, or -1 when none exists. */
@@ -86,7 +89,7 @@ export function evaluateLayerAtFrame(layer: Layer, frame: number): Shape[] {
 export function insertKeyframe(layer: Layer, frame: number): Keyframe | null {
   if (findKeyframeAtFrame(layer, frame)) return null
   const previous = findKeyframeIndexForFrame(layer, frame)
-  const shapes = previous === -1 ? [] : layer.keyframes[previous].shapes.map((shape) => ({ ...shape }))
+  const shapes = previous === -1 ? [] : layer.keyframes[previous].shapes.map(cloneShape)
   const keyframe: Keyframe = { frame, shapes }
   layer.keyframes.push(keyframe)
   layer.keyframes.sort((a, b) => a.frame - b.frame)
@@ -123,12 +126,17 @@ export function setKeyframeTween(
   return true
 }
 
-/** Shifts every keyframe strictly after `frame` one frame later (insert frame
- * extends the hold of the keyframe active at the playhead). */
-export function insertFrame(layer: Layer, frame: number): void {
+/** Inserts a frame on the given layer: shifts the layer's keyframes strictly
+ * after `frame` one frame later (extending the hold of the keyframe active at
+ * the playhead) and grows the document's authored timeline so the playhead can
+ * move past the last keyframe. */
+export function insertFrame(document: AnimatorDocument, layerId: string, frame: number): void {
+  const layer = getLayer(document, layerId)
+  if (!layer) return
   for (const keyframe of layer.keyframes) {
     if (keyframe.frame > frame) keyframe.frame += 1
   }
+  document.frames = Math.max(document.frames ?? 0, frame + 2)
 }
 
 /** Adds a shape to the keyframe content active at `frame`, creating a blank
@@ -193,10 +201,14 @@ export function cloneDocument(document: AnimatorDocument): AnimatorDocument {
   return JSON.parse(JSON.stringify(document)) as AnimatorDocument
 }
 
-/** Structural validation for documents restored from persistence. */
+/** Structural validation for documents restored from persistence. Accepts
+ * documents without `frames` (older save format) but rejects invalid values. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Partial<AnimatorDocument>
+  const framesValid =
+    candidate.frames === undefined ||
+    (typeof candidate.frames === 'number' && Number.isInteger(candidate.frames) && candidate.frames >= 1)
   return (
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
@@ -204,6 +216,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     typeof candidate.fps === 'number' &&
     candidate.fps > 0 &&
     typeof candidate.background === 'string' &&
+    framesValid &&
     Array.isArray(candidate.layers) &&
     candidate.layers.every(
       (layer) =>

@@ -1,6 +1,7 @@
 import { lerpHexColor } from './color'
 import { lerp } from './geometry'
 import type { Shape } from './model'
+import { cloneShape } from './model'
 
 /**
  * Interpolates a shape between two keyframe contents matched by id. Shapes
@@ -8,7 +9,7 @@ import type { Shape } from './model'
  */
 export function tweenShape(from: Shape, to: Shape, t: number): Shape {
   if (from.kind !== to.kind) {
-    return t < 1 ? { ...from } : { ...to }
+    return t < 1 ? cloneShape(from) : cloneShape(to)
   }
   return {
     id: from.id,
@@ -39,6 +40,6 @@ export function tweenShapes(from: Shape[], to: Shape[], t: number): Shape[] {
   const targets = new Map(to.map((shape) => [shape.id, shape]))
   return from.map((shape) => {
     const target = targets.get(shape.id)
-    return target ? tweenShape(shape, target, t) : { ...shape }
+    return target ? tweenShape(shape, target, t) : cloneShape(shape)
   })
 }
