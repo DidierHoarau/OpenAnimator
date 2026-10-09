@@ -21,10 +21,12 @@ The application now provides a working authoring core: layers with keyframes, a 
 - **Keyframes**: content keyframes and blank keyframes, insert/remove at the playhead, insert frame to extend holds.
 - **Classic tweening**: a tween on a keyframe interpolates matching shapes (matched by id) toward the next keyframe — position, size, rotation, opacity and fill color — with named easing curves (linear, ease-in, ease-out, ease-in-out) plus a cubic-bezier easing solver.
 - **Drawing tools**: rectangle and ellipse creation by drag (click for a default-size shape), selection with rotation-aware hit testing, move, nudge (arrow keys) and delete.
+- **Properties panel**: a right-side panel with sections; the Shape section edits the selected shape of the active keyframe — position, size, rotation, opacity, fill color (swatch or hex) and outline (color + width).
 - **Timeline panel**: frame ruler, layer rows, keyframe markers, tween spans, playhead, playback controls, fps input.
 - **Playback**: play/pause/stop, optional looping, frame-stepping at the document fps.
 - **Onion skinning**: ghosted neighboring frames while paused.
-- **Persistence**: automatic saving to the browser storage (plus an explicit Save action), restored on launch.
+- **Projects**: save and open `.oanim` project files (plain JSON documents, also reads `.json`), with an explicit Save/Save As/Open, Ctrl+S / Ctrl+Shift+S / Ctrl+O shortcuts and debounced autosave to the current file.
+- **Startup dialog**: shown on launch to start a new project, open a file, or reopen one of the recent projects (stored in the Electron `userData` folder).
 
 ## Project layout
 
@@ -33,7 +35,7 @@ The application now provides a working authoring core: layers with keyframes, a 
 ├── build/                 # Packaging resources (application icon)
 ├── scripts/               # CI helper scripts (semantic version check)
 ├── src/
-│   ├── main/              # Electron main process
+│   ├── main/              # Electron main process (window, IPC, project files)
 │   ├── preload/           # Preload scripts (contextBridge API)
 │   ├── shared/            # Pure TypeScript document model + unit tests
 │   │   ├── api.ts         # IPC contract between main and renderer
@@ -44,14 +46,17 @@ The application now provides a working authoring core: layers with keyframes, a 
 │   │   ├── color.ts       # Hex color parsing and interpolation
 │   │   ├── geometry.ts    # Vector math helpers
 │   │   ├── hitTesting.ts  # Rotation-aware shape hit testing
+│   │   ├── recentProjects.ts # Recent-projects list logic
 │   │   └── starterDocument.ts
 │   └── renderer/          # Editor UI
 │       ├── index.html
 │       └── src/
 │           ├── editor.ts  # Editor state (frame, selection, tools, playback)
 │           ├── stage.ts   # SVG stage: rendering, drawing, selection
+│           ├── properties.ts # Right properties panel
+│           ├── projects.ts   # Save / open / startup dialog orchestration
 │           ├── timeline.ts# Timeline panel and playback controls
-│           ├── main.ts    # Bootstrap, toolbar, shortcuts, persistence
+│           ├── main.ts    # Bootstrap, toolbar, shortcuts, autosave
 │           └── style.css
 ├── electron.vite.config.ts
 ├── electron-builder.yml
@@ -83,6 +88,9 @@ npm run dev        # start the app with hot reload
 | Keys                | Action                                  |
 | ------------------- | --------------------------------------- |
 | `V` / `R` / `O`     | Select / Rectangle / Ellipse tool       |
+| `Ctrl+S`            | Save the current project                |
+| `Ctrl+Shift+S`      | Save the project to a new file          |
+| `Ctrl+O`            | Open a project file                     |
 | `Space`             | Play / pause                            |
 | `Escape`            | Stop and return to frame 1              |
 | `F5` / `F6` / `F7`  | Insert frame / keyframe / blank keyframe|

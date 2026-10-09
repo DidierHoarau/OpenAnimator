@@ -10,12 +10,14 @@ import {
   insertBlankKeyframe,
   insertFrame,
   insertKeyframe,
+  isAnimatorDocument,
   removeKeyframe,
   removeLayer,
   removeShapeFromLayer,
   setKeyframeTween,
   updateShapeInLayer
 } from './document'
+import { createStarterDocument } from './starterDocument'
 import { hitTestShape, hitTestShapes } from './hitTesting'
 import type { Shape } from './model'
 
@@ -132,6 +134,12 @@ describe('document operations', () => {
     expect(removeLayer(doc, added.id)).toBe(true)
     expect(doc.layers).toHaveLength(1)
     expect(removeLayer(doc, doc.layers[0].id)).toBe(false)
+  })
+
+  it('survives a JSON serialization round-trip (the save format)', () => {
+    const doc = createStarterDocument()
+    const restored: unknown = JSON.parse(JSON.stringify(doc))
+    expect(isAnimatorDocument(restored)).toBe(true)
   })
 })
 

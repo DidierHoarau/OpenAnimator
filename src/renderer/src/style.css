@@ -34,12 +34,32 @@ body {
 .layout {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-areas:
+    'toolbar toolbar'
+    'workspace properties'
+    'timeline timeline'
+    'statusbar statusbar';
   height: 100%;
+}
+
+.layout.properties-hidden {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'toolbar'
+    'workspace'
+    'timeline'
+    'statusbar';
+}
+
+.layout.properties-hidden .properties-panel {
+  display: none;
 }
 
 /* Toolbar */
 
 .toolbar {
+  grid-area: toolbar;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -101,9 +121,33 @@ input[type='number'] {
   width: 58px;
 }
 
+input[type='text'] {
+  background: var(--panel-deep);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+input[type='color'] {
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-deep);
+  cursor: pointer;
+}
+
+input:disabled {
+  opacity: 0.45;
+}
+
 /* Stage */
 
 .workspace {
+  grid-area: workspace;
   min-height: 0;
   display: flex;
   align-items: center;
@@ -130,6 +174,7 @@ input[type='number'] {
 /* Timeline */
 
 .timeline {
+  grid-area: timeline;
   display: flex;
   flex-direction: column;
   height: 196px;
@@ -288,9 +333,198 @@ input[type='number'] {
   pointer-events: none;
 }
 
+/* Properties panel */
+
+.properties-panel {
+  grid-area: properties;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+
+.props-scroll {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.panel-section-title {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+
+.panel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.panel-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-row label {
+  flex: 0 0 58px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.panel-row input[type='number'] {
+  width: 62px;
+}
+
+.panel-row input[type='text'] {
+  width: 74px;
+}
+
+.panel-suffix {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.panel-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hidden {
+  display: none;
+}
+
+/* Modal dialogs */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(4, 8, 12, 0.66);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal {
+  width: min(520px, 92vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 18px 20px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.modal-title {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.modal-close {
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+.modal-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.modal-section-title {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.recent-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--panel-deep);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  text-align: left;
+}
+
+.recent-item:last-child {
+  border-bottom: none;
+}
+
+.recent-item:hover {
+  background: #1b2531;
+}
+
+.recent-item .name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.recent-item .path {
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-item .when {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.modal-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 2px;
+}
+
 /* Status bar */
 
 .statusbar {
+  grid-area: statusbar;
   display: flex;
   gap: 18px;
   padding: 4px 10px;

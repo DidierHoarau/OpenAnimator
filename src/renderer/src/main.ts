@@ -1,39 +1,16 @@
 import './style.css'
 
-import { isAnimatorDocument } from '@shared/document'
 import { createStarterDocument } from '@shared/starterDocument'
-import type { AnimatorDocument } from '@shared/model'
 
 import { el } from './dom'
 import { Editor } from './editor'
 import type { Tool } from './editor'
+import { PropertiesView } from './properties'
+import { fileLabel, newDocument, openDocument, saveDocument, showStartupDialog } from './projects'
 import { StageView } from './stage'
 import { TimelineView } from './timeline'
 
-const STORAGE_KEY = 'openanimator:document'
-
-function loadDocument(): AnimatorDocument {
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const parsed: unknown = JSON.parse(raw)
-      if (isAnimatorDocument(parsed)) return parsed
-    }
-  } catch (error) {
-    console.warn('OpenAnimator: failed to restore the previous document', error)
-  }
-  return createStarterDocument()
-}
-
-function persistDocument(editor: Editor): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(editor.document))
-  } catch (error) {
-    console.warn('OpenAnimator: failed to save the document', error)
-  }
-}
-
-function buildToolbar(editor: Editor): HTMLElement {
+function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
   const toolbar = el('header', 'toolbar')
   toolbar.appendChild(el('span', 'title', 'OpenAnimator'))
 
@@ -59,21 +36,33 @@ function buildToolbar(editor: Editor): HTMLElement {
   onion.title = 'Toggle onion skinning of neighbouring frames'
   onion.classList.add('toggle')
   onion.addEventListener('click', () => editor.toggleOnionSkin())
-  view.appendChild(onion)
+  const properties = el('button', undefined, 'Properties')
+  properties.title = 'Toggle the properties panel'
+  properties.classList.add('toggle')
+  properties.classList.add('active')
+  properties.addEventListener('click', () => {
+    layout.classList.toggle('properties-hidden')
+    properties.classList.toggle('active', !layout.classList.contains('properties-hidden'))
+  })
+  view.append(onion, properties)
   toolbar.appendChild(view)
 
   toolbar.appendChild(el('span', 'sep'))
 
   const docs = el('div', 'group')
   const newButton = el('button', undefined, 'New')
-  newButton.title = 'Start a new empty document'
-  newButton.addEventListener('click', () => {
-    if (window.confirm('Discard the current document and start a new one?')) editor.newDocument()
-  })
+  newButton.title = 'Start a new project'
+  newButton.addEventListener('click', () => void newDocument(editor))
+  const openButton = el('button', undefined, 'Open…')
+  openButton.title = 'Open a project file (Ctrl+O)'
+  openButton.addEventListener('click', () => void openDocument(editor))
   const saveButton = el('button', undefined, 'Save')
-  saveButton.title = 'Save the document in the browser storage'
-  saveButton.addEventListener('click', () => persistDocument(editor))
-  docs.append(newButton, saveButton)
+  saveButton.title = 'Save the current project (Ctrl+S)'
+  saveButton.addEventListener('click', () => void saveDocument(editor, { as: false }))
+  const saveAsButton = el('button', undefined, 'Save As…')
+  saveAsButton.title = 'Save the project to a new file (Ctrl+Shift+S)'
+  saveAsButton.addEventListener('click', () => void saveDocument(editor, { as: true }))
+  docs.append(newButton, openButton, saveButton, saveAsButton)
   toolbar.appendChild(docs)
 
   editor.onUiChange(() => {
@@ -90,13 +79,15 @@ function buildStatusbar(editor: Editor): HTMLElement {
   const frameInfo = el('span')
   const layerInfo = el('span')
   const toolInfo = el('span')
+  const fileInfo = el('span')
   const versionInfo = el('span')
-  statusbar.append(frameInfo, layerInfo, toolInfo, versionInfo)
+  statusbar.append(frameInfo, layerInfo, toolInfo, fileInfo, versionInfo)
 
   const update = (): void => {
     frameInfo.textContent = `frame ${editor.currentFrame + 1} / ${editor.duration}`
     layerInfo.textContent = `layer: ${editor.currentLayer?.name ?? '-'}`
     toolInfo.textContent = `tool: ${editor.tool}${editor.selectedShapeId ? ' · selected' : ''}`
+    fileInfo.textContent = `file: ${fileLabel(editor)}`
   }
   editor.onFrameChange(update)
   editor.onDocChange(update)
@@ -116,6 +107,17 @@ function buildStatusbar(editor: Editor): HTMLElement {
 
 function registerKeyboard(editor: Editor): void {
   window.addEventListener('keydown', (event) => {
+    if (event.ctrlKey || event.metaKey) {
+      const key = event.key.toLowerCase()
+      if (key === 's') {
+        event.preventDefault()
+        void saveDocument(editor, { as: event.shiftKey })
+      } else if (key === 'o') {
+        event.preventDefault()
+        void openDocument(editor)
+      }
+      return
+    }
     const target = event.target as HTMLElement | null
     if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return
     switch (event.key) {
@@ -181,23 +183,34 @@ async function bootstrap(): Promise<void> {
   const root = document.querySelector<HTMLDivElement>('#app')
   if (!root) throw new Error('Missing #app root element')
 
-  const editor = new Editor(loadDocument())
+  const editor = new Editor(createStarterDocument())
 
   const layout = el('div', 'layout')
   const workspace = el('main', 'workspace')
   const timelineHost = el('section', 'timeline')
-  layout.append(buildToolbar(editor), workspace, timelineHost, buildStatusbar(editor))
+  const propertiesHost = el('aside', 'properties-panel')
+  layout.append(
+    buildToolbar(editor, layout),
+    workspace,
+    propertiesHost,
+    timelineHost,
+    buildStatusbar(editor)
+  )
   root.appendChild(layout)
 
   new StageView(editor, workspace)
   new TimelineView(editor, timelineHost)
+  new PropertiesView(editor, propertiesHost)
   registerKeyboard(editor)
+  showStartupDialog(editor)
 
-  // Debounced autosave on every document change.
+  // Debounced autosave to the project file on every document change.
   let saveTimer: number | undefined
   editor.onDocChange(() => {
     window.clearTimeout(saveTimer)
-    saveTimer = window.setTimeout(() => persistDocument(editor), 400)
+    saveTimer = window.setTimeout(() => {
+      if (editor.filePath && editor.dirty) void saveDocument(editor, { as: false })
+    }, 400)
   })
 }
 

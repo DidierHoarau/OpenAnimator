@@ -34,6 +34,9 @@ export class Editor {
   playing = false
   loop = true
   onionSkin = false
+  /** Path of the project file the document was loaded from / saved to. */
+  filePath: string | null = null
+  dirty = false
 
   private readonly docListeners = new Set<() => void>()
   private readonly frameListeners = new Set<() => void>()
@@ -68,6 +71,7 @@ export class Editor {
   }
 
   private docChanged(): void {
+    this.dirty = true
     for (const listener of this.docListeners) listener()
   }
 
@@ -91,6 +95,13 @@ export class Editor {
 
   newDocument(): void {
     this.setDocument(createDocument('Untitled', 960, 540, 24))
+  }
+
+  /** Records a successful save to the given file path and clears the dirty flag. */
+  markSaved(filePath: string | null): void {
+    this.filePath = filePath
+    this.dirty = false
+    this.uiChanged()
   }
 
   setFrame(frame: number): void {
