@@ -34,7 +34,26 @@ body {
 .layout {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-areas:
+    'toolbar toolbar'
+    'workspace properties'
+    'timeline timeline'
+    'statusbar statusbar';
   height: 100%;
+}
+
+.layout.properties-hidden {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas:
+    'toolbar'
+    'workspace'
+    'timeline'
+    'statusbar';
+}
+
+.layout.properties-hidden .properties-panel {
+  display: none;
 }
 
 /* Toolbar */
@@ -100,6 +119,29 @@ input[type='number'] {
 
 input[type='number'] {
   width: 58px;
+}
+
+input[type='text'] {
+  background: var(--panel-deep);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+input[type='color'] {
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-deep);
+  cursor: pointer;
+}
+
+input:disabled {
+  opacity: 0.45;
 }
 
 /* Stage */
@@ -289,6 +331,79 @@ input[type='number'] {
   background: var(--accent);
   z-index: 4;
   pointer-events: none;
+}
+
+/* Properties panel */
+
+.properties-panel {
+  grid-area: properties;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+
+.props-scroll {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.panel-section-title {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+
+.panel-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.panel-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panel-row label {
+  flex: 0 0 58px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.panel-row input[type='number'] {
+  width: 62px;
+}
+
+.panel-row input[type='text'] {
+  width: 74px;
+}
+
+.panel-suffix {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.panel-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.hidden {
+  display: none;
 }
 
 /* Modal dialogs */

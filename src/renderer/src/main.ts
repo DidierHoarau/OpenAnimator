@@ -5,6 +5,7 @@ import { createStarterDocument } from '@shared/starterDocument'
 import { el } from './dom'
 import { Editor } from './editor'
 import type { Tool } from './editor'
+import { PropertiesView } from './properties'
 import { fileLabel, newDocument, openDocument, saveDocument, showStartupDialog } from './projects'
 import { StageView } from './stage'
 import { TimelineView } from './timeline'
@@ -35,7 +36,15 @@ function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
   onion.title = 'Toggle onion skinning of neighbouring frames'
   onion.classList.add('toggle')
   onion.addEventListener('click', () => editor.toggleOnionSkin())
-  view.append(onion)
+  const properties = el('button', undefined, 'Properties')
+  properties.title = 'Toggle the properties panel'
+  properties.classList.add('toggle')
+  properties.classList.add('active')
+  properties.addEventListener('click', () => {
+    layout.classList.toggle('properties-hidden')
+    properties.classList.toggle('active', !layout.classList.contains('properties-hidden'))
+  })
+  view.append(onion, properties)
   toolbar.appendChild(view)
 
   toolbar.appendChild(el('span', 'sep'))
@@ -179,11 +188,19 @@ async function bootstrap(): Promise<void> {
   const layout = el('div', 'layout')
   const workspace = el('main', 'workspace')
   const timelineHost = el('section', 'timeline')
-  layout.append(buildToolbar(editor, layout), workspace, timelineHost, buildStatusbar(editor))
+  const propertiesHost = el('aside', 'properties-panel')
+  layout.append(
+    buildToolbar(editor, layout),
+    workspace,
+    propertiesHost,
+    timelineHost,
+    buildStatusbar(editor)
+  )
   root.appendChild(layout)
 
   new StageView(editor, workspace)
   new TimelineView(editor, timelineHost)
+  new PropertiesView(editor, propertiesHost)
   registerKeyboard(editor)
   showStartupDialog(editor)
 
