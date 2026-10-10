@@ -1,5 +1,5 @@
 /** Identifiers of the right-panel sections. */
-export type SectionId = 'explorer' | 'layer' | 'playback' | 'shape'
+export type SectionId = 'layer' | 'shape'
 
 /** Expanded/collapsed state of every panel section. */
 export type SectionState = Record<SectionId, boolean>
@@ -12,16 +12,15 @@ export interface StorageLike {
 export const SECTION_STORAGE_KEY = 'openanimator.panelSections'
 
 export const DEFAULT_SECTION_STATE: SectionState = {
-  explorer: true,
   layer: true,
-  playback: true,
   shape: true
 }
 
 const SECTION_IDS = Object.keys(DEFAULT_SECTION_STATE) as SectionId[]
 
 /** Reads the persisted section state, falling back to all-expanded for
- * missing, corrupted or partially invalid data. */
+ * missing, corrupted or partially invalid data. Unknown keys (e.g. sections
+ * that no longer exist, like the removed playback panel) are ignored. */
 export function loadSectionState(storage: StorageLike): SectionState {
   const state: SectionState = { ...DEFAULT_SECTION_STATE }
   try {

@@ -88,8 +88,41 @@ describe('evaluateLayerAtFrame', () => {
     expect(evaluateLayerAtFrame(layer, 10)[0].center.x).toBe(100)
   })
 
-  it('holds static after the last keyframe', () => {
-    expect(evaluateLayerAtFrame(layer, 15)[0].center.x).toBe(100)
+  it('stops rendering after the last keyframe', () => {
+    // The object stays on stage through its final keyframe, but not beyond it.
+    expect(evaluateLayerAtFrame(layer, 10)[0].center.x).toBe(100)
+    expect(evaluateLayerAtFrame(layer, 15)).toEqual([])
+  })
+
+  it('tweens each shape toward its own next keyframe and hides it after its last one', () => {
+    const partial: Layer = {
+      ...layer,
+      keyframes: [
+        {
+          frame: 0,
+          tween: { easing: 'linear' },
+          shapes: [
+            shape('a', { center: { x: 0, y: 0 } }),
+            shape('b', { center: { x: 5, y: 0 } })
+          ]
+        },
+        { frame: 10, shapes: [shape('a', { center: { x: 100, y: 0 } })] },
+        { frame: 20, shapes: [shape('b', { center: { x: 5, y: 0 } })] }
+      ]
+    }
+    // `a` tweens toward its own next keyframe (10); `b` is keyed only at 0
+    // and 20 with the same pose, so it holds its position.
+    const atFive = evaluateLayerAtFrame(partial, 5)
+    expect(atFive.map((s) => s.id).sort()).toEqual(['a', 'b'])
+    expect(atFive.find((s) => s.id === 'a')?.center.x).toBe(50)
+    expect(atFive.find((s) => s.id === 'b')?.center.x).toBe(5)
+
+    // After `a`'s last keyframe (10) it leaves the stage; `b` stays until 20.
+    const atFifteen = evaluateLayerAtFrame(partial, 15)
+    expect(atFifteen.map((s) => s.id)).toEqual(['b'])
+    expect(atFifteen[0].center.x).toBe(5)
+    expect(evaluateLayerAtFrame(partial, 20).map((s) => s.id)).toEqual(['b'])
+    expect(evaluateLayerAtFrame(partial, 21)).toEqual([])
   })
 
   it('ignores a tween on the final keyframe', () => {
@@ -100,7 +133,9 @@ describe('evaluateLayerAtFrame', () => {
         { frame: 20, shapes: [shape('a', { center: { x: 999, y: 0 } })], tween: { easing: 'linear' } }
       ]
     }
-    expect(evaluateLayerAtFrame(trailing, 25)[0].center.x).toBe(999)
+    // The final tween never interpolates and the object ends at frame 20.
+    expect(evaluateLayerAtFrame(trailing, 20)[0].center.x).toBe(999)
+    expect(evaluateLayerAtFrame(trailing, 25)).toEqual([])
   })
 })
 

@@ -1,11 +1,11 @@
 import { formatHexColor, parseHexColor } from '@shared/color'
 import {
-  evaluateLayerAtFrame,
   findKeyframeAtFrame,
-  findKeyframeIndexForFrame
+  findKeyframeIndexForFrame,
+  findNearestShapeKeyframeIndex
 } from '@shared/document'
 import type { EasingName } from '@shared/easing'
-import type { Layer, Shape } from '@shared/model'
+import type { Shape } from '@shared/model'
 
 import type { Editor } from './editor'
 import { el } from './dom'
@@ -20,10 +20,6 @@ const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#e6edf3'
 const DEFAULT_STROKE_WIDTH = 2
 const EASINGS: EasingName[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out']
-const SHAPE_KIND_LABELS: Record<Shape['kind'], string> = {
-  rect: 'Rectangle',
-  ellipse: 'Ellipse'
-}
 
 function normalizeHex(value: string, fallback: string): string {
   const parsed = parseHexColor(value)
@@ -68,29 +64,22 @@ class PanelSection {
 }
 
 /**
- * Right panel with collapsible sections: the "Layer Explorer" tree (layers and
- * their shapes at the current frame), the "Layer" operations (keyframes,
- * frames, tweening, layer add/remove), the "Playback" controls and the "Shape"
- * properties of the selected shape. Sections react to the editor state: the
- * "Shape" section only appears while a shape is selected.
+ * Right panel with collapsible sections: "Layer" operations on the selected
+ * object (keyframe add/remove and tweening at the current frame) and the
+ * "Shape" properties of the selected shape. Playback and frame controls live
+ * at the top of the timeline; layers and per-object keyframes are managed in
+ * the timeline tree (add line, context menu, drag and drop). The "Shape"
+ * section only appears while a shape is selected.
  */
 export class PropertiesView {
   private readonly editor: Editor
   private readonly sections = new Map<SectionId, PanelSection>()
   private sectionState: SectionState
 
-  private readonly explorerBody: HTMLDivElement
   private readonly keyframeButton: HTMLButtonElement
-  private readonly blankKeyframeButton: HTMLButtonElement
-  private readonly frameButton: HTMLButtonElement
   private readonly removeKeyframeButton: HTMLButtonElement
   private readonly tweenButton: HTMLButtonElement
   private readonly easingSelect: HTMLSelectElement
-  private readonly addLayerButton: HTMLButtonElement
-  private readonly removeLayerButton: HTMLButtonElement
-  private readonly playButton: HTMLButtonElement
-  private readonly loopButton: HTMLButtonElement
-  private readonly fpsInput: HTMLInputElement
 
   private readonly posX: HTMLInputElement
   private readonly posY: HTMLInputElement
@@ -111,36 +100,24 @@ export class PropertiesView {
 
     const scroll = el('div', 'props-scroll')
 
-    // Layer Explorer: layers with their shapes at the current frame.
-    const explorer = this.createSection('explorer', 'Layer Explorer')
-    this.explorerBody = el('div', 'explorer-tree')
-    explorer.content.appendChild(this.explorerBody)
-
-    // Layer operations (keyframes, frames, tween, layers).
+    // Layer operations on the selected object (keyframe and tween at the current frame).
     const layer = this.createSection('layer', 'Layer')
     const layerButtons = el('div', 'panel-buttons')
-    this.keyframeButton = this.button('+ Keyframe', 'Insert keyframe at the current frame (F6)', () =>
-      editor.insertKeyframeHere()
-    )
-    this.blankKeyframeButton = this.button(
-      '+ Blank Keyframe',
-      'Insert blank keyframe at the current frame (F7)',
-      () => editor.insertBlankKeyframeHere()
-    )
-    this.frameButton = this.button('+ Frame', 'Insert frame to extend the hold (F5)', () =>
-      editor.insertFrameHere()
+    this.keyframeButton = this.button(
+      '+ Keyframe',
+      'Insert keyframe for the selected object at the current frame (F6)',
+      () => editor.insertKeyframeHere()
     )
     this.removeKeyframeButton = this.button(
       '− Keyframe',
-      'Remove the keyframe at the current frame',
+      'Remove the keyframe of the selected object at the current frame',
       () => editor.removeKeyframeHere()
     )
     this.tweenButton = this.button(
       'Tween',
-      'Toggle a classic tween from the current keyframe',
+      "Toggle a classic tween from the selected object's keyframe at the current frame",
       () => editor.toggleTweenHere()
     )
-    this.tweenButton.classList.add('tl-toggle')
     this.easingSelect = el('select', 'tl-select') as HTMLSelectElement
     for (const easing of EASINGS) {
       const option = el('option', undefined, easing)
@@ -151,42 +128,10 @@ export class PropertiesView {
     this.easingSelect.addEventListener('change', () => {
       editor.setTweenEasingHere(this.easingSelect.value as EasingName)
     })
-    this.addLayerButton = this.button('+ Layer', 'Add a layer on top', () => editor.addLayerOnTop())
-    this.removeLayerButton = this.button('− Layer', 'Remove the current layer', () =>
-      editor.removeCurrentLayer()
-    )
-    layerButtons.append(
-      this.keyframeButton,
-      this.blankKeyframeButton,
-      this.frameButton,
-      this.removeKeyframeButton
-    )
+    layerButtons.append(this.keyframeButton, this.removeKeyframeButton)
     const tweenRow = el('div', 'panel-buttons')
     tweenRow.append(this.tweenButton, this.easingSelect)
-    const layerRow = el('div', 'panel-buttons')
-    layerRow.append(this.addLayerButton, this.removeLayerButton)
-    layer.content.append(layerButtons, tweenRow, layerRow)
-
-    // Playback controls.
-    const playback = this.createSection('playback', 'Playback')
-    const playbackButtons = el('div', 'panel-buttons')
-    this.playButton = this.button('Play', 'Play or pause playback (Space)', () => editor.togglePlay())
-    const stopButton = this.button('Stop', 'Stop playback and return to frame 1 (Escape)', () =>
-      editor.stopPlayback()
-    )
-    this.loopButton = this.button('Loop', 'Toggle looped playback', () => editor.toggleLoop())
-    this.loopButton.classList.add('tl-toggle')
-    playbackButtons.append(this.playButton, stopButton, this.loopButton)
-    const fpsRow = el('div', 'panel-buttons')
-    const fpsLabel = el('span', 'panel-suffix', 'fps')
-    this.fpsInput = el('input', 'tl-number') as HTMLInputElement
-    this.fpsInput.type = 'number'
-    this.fpsInput.min = '1'
-    this.fpsInput.max = '120'
-    this.fpsInput.title = 'Frames per second'
-    this.fpsInput.addEventListener('change', () => editor.setFps(Number(this.fpsInput.value)))
-    fpsRow.append(fpsLabel, this.fpsInput)
-    playback.content.append(playbackButtons, fpsRow)
+    layer.content.append(layerButtons, tweenRow)
 
     // Shape properties, visible only while a shape is selected.
     const shape = this.createSection('shape', 'Shape')
@@ -210,12 +155,14 @@ export class PropertiesView {
     this.fillHex.title = 'Fill color as hex'
     this.fillHex.placeholder = '#rrggbb'
     this.fillColor.addEventListener('input', () => {
+      editor.ensureSelectedShapeKeyframe()
       editor.updateSelectedShape((current) => {
         current.fill = this.fillColor.value
       })
     })
     this.fillHex.addEventListener('change', () => {
       if (parseHexColor(this.fillHex.value)) {
+        editor.ensureSelectedShapeKeyframe()
         editor.updateSelectedShape((current) => {
           current.fill = normalizeHex(this.fillHex.value, DEFAULT_FILL)
         })
@@ -231,6 +178,7 @@ export class PropertiesView {
     this.strokeToggle.title = 'Enable the outline'
     this.strokeToggle.addEventListener('change', () => {
       const enabled = this.strokeToggle.checked
+      editor.ensureSelectedShapeKeyframe()
       editor.updateSelectedShape((current) => {
         if (enabled) {
           current.stroke = current.stroke ?? DEFAULT_STROKE
@@ -246,6 +194,7 @@ export class PropertiesView {
     this.strokeColor.type = 'color'
     this.strokeColor.title = 'Outline color'
     this.strokeColor.addEventListener('input', () => {
+      editor.ensureSelectedShapeKeyframe()
       editor.updateSelectedShape((current) => {
         current.stroke = this.strokeColor.value
       })
@@ -261,6 +210,7 @@ export class PropertiesView {
         this.render()
         return
       }
+      editor.ensureSelectedShapeKeyframe()
       editor.updateSelectedShape((current) => {
         current.strokeWidth = Math.max(0, value)
       })
@@ -268,7 +218,7 @@ export class PropertiesView {
     outlineRow.append(this.strokeToggle, this.strokeColor, this.strokeWidth)
     shape.content.appendChild(rows)
 
-    scroll.append(explorer.root, layer.root, playback.root, shape.root)
+    scroll.append(layer.root, shape.root)
     container.appendChild(scroll)
 
     editor.onDocChange(() => this.render())
@@ -328,6 +278,7 @@ export class PropertiesView {
   }
 
   private applyPosition(axis: 'x' | 'y'): void {
+    this.editor.ensureSelectedShapeKeyframe()
     this.applyNumber(axis === 'x' ? this.posX : this.posY, (shape, value) => {
       if (axis === 'x') shape.center.x = value
       else shape.center.y = value
@@ -335,119 +286,53 @@ export class PropertiesView {
   }
 
   private applySize(field: 'width' | 'height'): void {
+    this.editor.ensureSelectedShapeKeyframe()
     this.applyNumber(field === 'width' ? this.width : this.height, (shape, value) => {
       shape[field] = Math.max(2, value)
     })
   }
 
   private applyRotation(): void {
+    this.editor.ensureSelectedShapeKeyframe()
     this.applyNumber(this.rotation, (shape, value) => {
       shape.rotation = value
     })
   }
 
   private applyOpacity(): void {
+    this.editor.ensureSelectedShapeKeyframe()
     this.applyNumber(this.opacity, (shape, value) => {
       shape.opacity = Math.min(1, Math.max(0, value))
     })
   }
 
   render(): void {
-    this.renderExplorer()
     this.renderLayerSection()
-    this.renderPlaybackSection()
     this.renderShapeSection()
-  }
-
-  private renderExplorer(): void {
-    const editor = this.editor
-    this.explorerBody.textContent = ''
-    for (const layer of editor.document.layers) {
-      this.explorerBody.appendChild(this.buildLayerNode(layer))
-    }
-  }
-
-  private buildLayerNode(layer: Layer): HTMLElement {
-    const editor = this.editor
-    const node = el('div', 'explorer-layer')
-    if (layer.id === editor.currentLayerId) node.classList.add('current')
-
-    const row = el('div', 'explorer-row')
-    row.dataset.layerId = layer.id
-    row.title = layer.locked ? `${layer.name} (locked)` : layer.name
-    const visibilityButton = el('button', 'tl-icon', layer.visible ? '◉' : '○')
-    visibilityButton.title = layer.visible ? 'Hide layer' : 'Show layer'
-    visibilityButton.addEventListener('click', (event) => {
-      event.stopPropagation()
-      editor.toggleLayerVisibility(layer.id)
-    })
-    const lockButton = el('button', 'tl-icon', layer.locked ? 'L' : '·')
-    lockButton.title = layer.locked ? 'Unlock layer' : 'Lock layer'
-    lockButton.classList.toggle('active', layer.locked)
-    lockButton.addEventListener('click', (event) => {
-      event.stopPropagation()
-      editor.toggleLayerLock(layer.id)
-    })
-    const name = el('span', 'explorer-name', layer.name)
-    const count = el(
-      'span',
-      'explorer-meta',
-      `${layer.keyframes.length} key${layer.keyframes.length === 1 ? '' : 's'}`
-    )
-    row.append(visibilityButton, lockButton, name, count)
-    row.addEventListener('click', () => editor.setCurrentLayer(layer.id))
-    node.appendChild(row)
-
-    const shapes = evaluateLayerAtFrame(layer, editor.currentFrame)
-    if (shapes.length === 0) {
-      const hint = el('div', 'explorer-row explorer-child explorer-empty', 'no shapes')
-      node.appendChild(hint)
-      return node
-    }
-    for (const shape of shapes) {
-      const child = el('div', 'explorer-row explorer-child')
-      child.dataset.layerId = layer.id
-      child.dataset.shapeId = shape.id
-      if (editor.selectedShapeId === shape.id) child.classList.add('selected')
-      const swatch = el('span', 'explorer-swatch')
-      swatch.style.background = shape.fill
-      const label = el('span', 'explorer-name', SHAPE_KIND_LABELS[shape.kind])
-      child.append(swatch, label)
-      child.addEventListener('click', () => {
-        editor.setCurrentLayer(layer.id)
-        editor.selectShape(shape.id)
-      })
-      node.appendChild(child)
-    }
-    return node
   }
 
   private renderLayerSection(): void {
     const editor = this.editor
     const layer = editor.currentLayer
     const editable = layer !== undefined && !layer.locked
+    const selected = editor.selectedShapeId
+    // Object-level: the buttons act on the selected object's own keyframe.
+    const ownsKeyframe =
+      layer !== undefined &&
+      selected !== null &&
+      editor.hasShapeKeyframeAt(layer.id, selected, editor.currentFrame)
+    this.keyframeButton.disabled = !editable || selected === null || ownsKeyframe
+    this.removeKeyframeButton.disabled = !editable || !ownsKeyframe
+    this.tweenButton.disabled = !editable || !ownsKeyframe
     const keyframe = layer ? findKeyframeAtFrame(layer, editor.currentFrame) : undefined
-    this.keyframeButton.disabled = !editable || keyframe !== undefined
-    this.blankKeyframeButton.disabled = !editable || keyframe !== undefined
-    this.frameButton.disabled = !editable
-    this.removeKeyframeButton.disabled = !editable || keyframe === undefined
-    this.tweenButton.disabled = !editable || keyframe === undefined
-    this.tweenButton.classList.toggle('active', keyframe?.tween !== undefined)
-    this.easingSelect.disabled = keyframe?.tween === undefined
+    this.tweenButton.classList.toggle('active', ownsKeyframe && keyframe?.tween !== undefined)
+    this.easingSelect.disabled = !ownsKeyframe || keyframe?.tween === undefined
     if (keyframe?.tween) this.easingSelect.value = keyframe.tween.easing
-    this.removeLayerButton.disabled = editor.document.layers.length <= 1
-  }
-
-  private renderPlaybackSection(): void {
-    const editor = this.editor
-    this.playButton.textContent = editor.playing ? 'Pause' : 'Play'
-    this.loopButton.classList.toggle('active', editor.loop)
-    if (document.activeElement !== this.fpsInput) this.fpsInput.value = String(editor.document.fps)
   }
 
   private renderShapeSection(): void {
     const editor = this.editor
-    const shape = this.selectedKeyframeShape()
+    const shape = this.selectedShapePose()
     const layer = editor.currentLayer
     const editable = shape !== null && layer !== undefined && !layer.locked && layer.visible
     this.sections.get('shape')?.setVisible(shape !== null)
@@ -496,13 +381,34 @@ export class PropertiesView {
     this.lastShapeId = shape.id
   }
 
-  private selectedKeyframeShape(): Shape | null {
+  /**
+   * Pose shown for the selected shape: the one in the keyframe active at the
+   * current frame when present, otherwise its nearest existing pose (e.g. a
+   * shape picked from the timeline tree that only exists in another keyframe).
+   * The first edit materialises the pose at the current frame via auto-key.
+   */
+  private selectedShapePose(): Shape | null {
     const editor = this.editor
     if (!editor.selectedShapeId) return null
     const layer = editor.currentLayer
     if (!layer) return null
-    const index = findKeyframeIndexForFrame(layer, editor.currentFrame)
-    if (index === -1) return null
-    return layer.keyframes[index].shapes.find((shape) => shape.id === editor.selectedShapeId) ?? null
+    const activeIndex = findKeyframeIndexForFrame(layer, editor.currentFrame)
+    if (activeIndex !== -1) {
+      const shape = layer.keyframes[activeIndex].shapes.find(
+        (shape) => shape.id === editor.selectedShapeId
+      )
+      if (shape) return shape
+    }
+    const nearestIndex = findNearestShapeKeyframeIndex(
+      layer,
+      editor.selectedShapeId,
+      editor.currentFrame
+    )
+    if (nearestIndex === -1) return null
+    return (
+      layer.keyframes[nearestIndex].shapes.find(
+        (shape) => shape.id === editor.selectedShapeId
+      ) ?? null
+    )
   }
 }

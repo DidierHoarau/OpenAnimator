@@ -62,6 +62,7 @@ export class StageView {
       const hit = layer && layer.visible ? hitTestShapes(content, point) : undefined
       editor.selectShape(hit?.id ?? null)
       if (hit && layer && !layer.locked) {
+        editor.ensureSelectedShapeKeyframe()
         this.drag = { mode: 'move', kind: 'rect', start: point, last: point, origin: { ...hit.center }, preview: null }
         this.svg.setPointerCapture(event.pointerId)
       }

@@ -14,6 +14,7 @@ export function tweenShape(from: Shape, to: Shape, t: number): Shape {
   return {
     id: from.id,
     kind: from.kind,
+    ...(from.name !== undefined ? { name: from.name } : {}),
     center: {
       x: lerp(from.center.x, to.center.x, t),
       y: lerp(from.center.y, to.center.y, t)
