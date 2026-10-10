@@ -1,7 +1,7 @@
 import { evaluateEasing } from './easing'
 import type { AnimatorDocument, Keyframe, Layer, Shape } from './model'
 import { cloneShape } from './model'
-import { tweenShapes } from './tween'
+import { tweenShape } from './tween'
 
 let idCounter = 0
 
@@ -66,20 +66,79 @@ export function findKeyframeAtFrame(layer: Layer, frame: number): Keyframe | und
 }
 
 /**
- * Content of a layer at a given frame: the active keyframe's shapes, tweened
- * toward the next keyframe when the active keyframe carries a tween.
+ * Index of the keyframe holding the most recent pose of `shapeId` at or
+ * before `frame`. When the shape only appears later on the layer, the
+ * earliest keyframe containing it is returned instead, so callers can always
+ * copy an existing pose forward. Returns -1 when the shape never appears.
+ */
+export function findNearestShapeKeyframeIndex(layer: Layer, shapeId: string, frame: number): number {
+  let latest = -1
+  let earliest = -1
+  for (let i = 0; i < layer.keyframes.length; i++) {
+    if (!layer.keyframes[i].shapes.some((shape) => shape.id === shapeId)) continue
+    if (earliest === -1) earliest = i
+    if (layer.keyframes[i].frame <= frame) latest = i
+  }
+  return latest !== -1 ? latest : earliest
+}
+
+/**
+ * Object-level content of a layer at a given frame: every shape exists only
+ * within its own span — from its first keyframe to its last keyframe — and
+ * keeps the pose from its latest keyframe at or before `frame`, interpolated
+ * toward that shape's own next keyframe when the owning keyframe carries a
+ * tween.
  */
 export function evaluateLayerAtFrame(layer: Layer, frame: number): Shape[] {
-  const index = findKeyframeIndexForFrame(layer, frame)
-  if (index === -1) return []
-  const active = layer.keyframes[index]
-  const next = layer.keyframes[index + 1]
-  if (active.tween && next && next.frame > active.frame && frame < next.frame) {
-    const progress = (frame - active.frame) / (next.frame - active.frame)
-    const eased = evaluateEasing(active.tween.easing, progress)
-    return tweenShapes(active.shapes, next.shapes, eased)
+  const last = new Map<string, number>()
+  for (let i = 0; i < layer.keyframes.length; i++) {
+    for (const shape of layer.keyframes[i].shapes) {
+      last.set(shape.id, i)
+    }
   }
-  return active.shapes
+
+  const order: string[] = []
+  const latest = new Map<string, { index: number; shape: Shape }>()
+  for (let i = 0; i < layer.keyframes.length; i++) {
+    const keyframe = layer.keyframes[i]
+    if (keyframe.frame > frame) break
+    for (const shape of keyframe.shapes) {
+      if (!latest.has(shape.id)) order.push(shape.id)
+      latest.set(shape.id, { index: i, shape })
+    }
+  }
+
+  const result: Shape[] = []
+  for (const id of order) {
+    const entry = latest.get(id)
+    if (!entry) continue
+    // Hidden after its last keyframe: an object is only on stage inside its
+    // own span.
+    const lastIndex = last.get(id)
+    if (lastIndex !== undefined && layer.keyframes[lastIndex].frame < frame) continue
+    const source = layer.keyframes[entry.index]
+    if (source.tween) {
+      let nextIndex = -1
+      for (let i = entry.index + 1; i < layer.keyframes.length; i++) {
+        if (layer.keyframes[i].shapes.some((shape) => shape.id === id)) {
+          nextIndex = i
+          break
+        }
+      }
+      if (nextIndex !== -1) {
+        const next = layer.keyframes[nextIndex]
+        const target = next.shapes.find((shape) => shape.id === id)
+        if (target) {
+          const progress = (frame - source.frame) / (next.frame - source.frame)
+          const eased = evaluateEasing(source.tween.easing, progress)
+          result.push(tweenShape(entry.shape, target, eased))
+          continue
+        }
+      }
+    }
+    result.push(entry.shape)
+  }
+  return result
 }
 
 /**
@@ -133,8 +192,10 @@ export function setKeyframeTween(
 export function insertFrame(document: AnimatorDocument, layerId: string, frame: number): void {
   const layer = getLayer(document, layerId)
   if (!layer) return
-  for (const keyframe of layer.keyframes) {
-    if (keyframe.frame > frame) keyframe.frame += 1
+  for (const target of document.layers) {
+    for (const keyframe of target.keyframes) {
+      if (keyframe.frame > frame) keyframe.frame += 1
+    }
   }
   document.frames = Math.max(document.frames ?? 0, frame + 2)
 }
@@ -156,7 +217,11 @@ export function addShapeToLayer(layer: Layer, frame: number, shape: Shape): void
   keyframe.shapes.push(shape)
 }
 
-/** Removes a shape from the keyframe content active at `frame`. */
+/**
+ * Removes a shape from the keyframe content active at `frame`. When the
+ * keyframe becomes empty it is removed as well: the timeline has no blank
+ * keyframes, so content before the frame holds through it.
+ */
 export function removeShapeFromLayer(layer: Layer, frame: number, shapeId: string): boolean {
   const index = findKeyframeIndexForFrame(layer, frame)
   if (index === -1) return false
@@ -164,6 +229,7 @@ export function removeShapeFromLayer(layer: Layer, frame: number, shapeId: strin
   const shapeIndex = keyframe.shapes.findIndex((shape) => shape.id === shapeId)
   if (shapeIndex === -1) return false
   keyframe.shapes.splice(shapeIndex, 1)
+  if (keyframe.shapes.length === 0) removeKeyframe(layer, keyframe.frame)
   return true
 }
 
@@ -182,11 +248,84 @@ export function updateShapeInLayer(
   return true
 }
 
-export function addLayer(document: AnimatorDocument, name: string): Layer {
+/**
+ * Removes every occurrence of a shape across all keyframes of a layer.
+ * Keyframes emptied by the removal are dropped. Returns how many keyframes
+ * contained the shape.
+ */
+export function removeShapeFromAllKeyframes(layer: Layer, shapeId: string): number {
+  let removed = 0
+  for (let i = layer.keyframes.length - 1; i >= 0; i--) {
+    const keyframe = layer.keyframes[i]
+    const shapeIndex = keyframe.shapes.findIndex((shape) => shape.id === shapeId)
+    if (shapeIndex === -1) continue
+    keyframe.shapes.splice(shapeIndex, 1)
+    removed += 1
+    if (keyframe.shapes.length === 0) layer.keyframes.splice(i, 1)
+  }
+  return removed
+}
+
+/** Sets the display name of a shape in every keyframe that contains it. */
+export function renameShapeInLayer(layer: Layer, shapeId: string, name: string): boolean {
+  let renamed = false
+  for (const keyframe of layer.keyframes) {
+    const shape = keyframe.shapes.find((candidate) => candidate.id === shapeId)
+    if (shape) {
+      shape.name = name
+      renamed = true
+    }
+  }
+  return renamed
+}
+
+/**
+ * Removes a frame from the timeline: keyframes after `frame` shift one frame
+ * earlier on every layer and the keyframe exactly at `frame` is deleted, so
+ * the content of frame `frame + 1` collapses into `frame`. A layer's last
+ * remaining keyframe is never removed.
+ */
+export function removeFrame(document: AnimatorDocument, frame: number): void {
+  for (const layer of document.layers) {
+    for (const keyframe of layer.keyframes) {
+      if (keyframe.frame > frame) keyframe.frame -= 1
+    }
+    if (layer.keyframes.length > 1) removeKeyframe(layer, frame)
+  }
+  if (document.frames !== undefined) {
+    document.frames = Math.max(1, document.frames - 1)
+  }
+}
+
+/** Moves a layer to `toIndex` (0 = topmost). Returns true when it moved. */
+export function moveLayer(document: AnimatorDocument, layerId: string, toIndex: number): boolean {
+  const fromIndex = document.layers.findIndex((layer) => layer.id === layerId)
+  if (fromIndex === -1) return false
+  const clamped = Math.min(Math.max(0, toIndex), document.layers.length - 1)
+  if (clamped === fromIndex) return false
+  const [layer] = document.layers.splice(fromIndex, 1)
+  document.layers.splice(clamped, 0, layer)
+  return true
+}
+
+/** Renames a layer. Returns false when the layer does not exist. */
+export function renameLayer(document: AnimatorDocument, layerId: string, name: string): boolean {
+  const layer = getLayer(document, layerId)
+  if (!layer) return false
+  layer.name = name
+  return true
+}
+
+export function addLayer(
+  document: AnimatorDocument,
+  name: string,
+  position: 'top' | 'bottom' = 'top'
+): Layer {
   const layer = createLayer(name)
   layer.keyframes.push({ frame: 0, shapes: [] })
-  // New layers go on top.
-  document.layers.unshift(layer)
+  // New layers go on top unless explicitly appended at the bottom.
+  if (position === 'bottom') document.layers.push(layer)
+  else document.layers.unshift(layer)
   return layer
 }
 

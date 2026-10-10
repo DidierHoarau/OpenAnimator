@@ -68,13 +68,16 @@ describe('document operations', () => {
     expect(insertBlankKeyframe(layer, 0)).toBeNull()
   })
 
-  it('inserts a blank keyframe, creating a gap in content', () => {
+  it('inserts a blank keyframe that contributes no poses', () => {
     const doc = createDocument('test', 960, 540, 24)
     const layer = doc.layers[0]
     addShapeToLayer(layer, 0, rect('a', 10, 10))
     insertBlankKeyframe(layer, 10)
-    expect(evaluateLayerAtFrame(layer, 15)).toEqual([])
-    expect(evaluateLayerAtFrame(layer, 5)[0].id).toBe('a')
+    // The blank keyframe neither clears nor extends the shape: it stays on
+    // stage only at its own keyframe.
+    expect(findKeyframeAtFrame(layer, 10)?.shapes).toEqual([])
+    expect(evaluateLayerAtFrame(layer, 0)[0].id).toBe('a')
+    expect(evaluateLayerAtFrame(layer, 5)).toEqual([])
   })
 
   it('removes keyframes', () => {
@@ -155,6 +158,17 @@ describe('document operations', () => {
     expect(documentDuration(doc)).toBe(1)
   })
 
+  it('insertFrame shifts keyframes on all layers', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer1 = doc.layers[0]
+    insertKeyframe(layer1, 5)
+    const layer2 = addLayer(doc, 'Layer 2')
+    insertKeyframe(layer2, 5)
+    insertFrame(doc, layer1.id, 3)
+    expect(layer1.keyframes.map((k) => k.frame).sort((a, b) => a - b)).toEqual([0, 6])
+    expect(layer2.keyframes.map((k) => k.frame).sort((a, b) => a - b)).toEqual([0, 6])
+  })
+
   it('computes the duration from the authored frame count when larger', () => {
     const doc = createDocument('test', 960, 540, 24)
     doc.frames = 25
@@ -194,10 +208,11 @@ describe('document operations', () => {
     expect(updateShapeInLayer(layer, 4, 'a', (shape) => {
       shape.center.x = 42
     })).toBe(true)
-    expect(evaluateLayerAtFrame(layer, 4)[0].center.x).toBe(42)
+    // The update lands on the shape's own keyframe (frame 0).
+    expect(evaluateLayerAtFrame(layer, 0)[0].center.x).toBe(42)
     expect(updateShapeInLayer(layer, 4, 'missing', () => undefined)).toBe(false)
     expect(removeShapeFromLayer(layer, 4, 'a')).toBe(true)
-    expect(evaluateLayerAtFrame(layer, 4)).toEqual([])
+    expect(evaluateLayerAtFrame(layer, 0)).toEqual([])
   })
 
   it('creates a keyframe when drawing before the first keyframe', () => {

@@ -7,6 +7,8 @@ export type ShapeKind = 'rect' | 'ellipse'
 export interface Shape {
   id: string
   kind: ShapeKind
+  /** Display name shown in the timeline tree; falls back to the kind label. */
+  name?: string
   center: Vec2
   width: number
   height: number

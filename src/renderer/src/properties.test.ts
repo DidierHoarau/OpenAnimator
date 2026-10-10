@@ -34,42 +34,15 @@ describe('PropertiesView sections', () => {
     new PropertiesView(editor, container)
   })
 
-  it('renders the explorer, layer, playback and shape sections', () => {
+  it('renders the layer and shape sections', () => {
     const titles = [...container.querySelectorAll('.panel-section-title')].map((node) =>
       node.textContent?.trim()
     )
-    expect(titles).toEqual(['Layer Explorer', 'Layer', 'Playback', 'Shape'])
-  })
-
-  it('lists layers and their shapes in the explorer and selects on click', () => {
-    editor.addShape(rect('a', 10, 10))
-    const tree = container.querySelector('.explorer-tree') as HTMLElement
-    const layerRows = [...tree.querySelectorAll('.explorer-row:not(.explorer-child)')]
-    expect(layerRows).toHaveLength(1)
-    expect(layerRows[0].textContent).toContain('Layer 1')
-
-    const children = [...tree.querySelectorAll('.explorer-child')]
-    expect(children).toHaveLength(1)
-    expect(children[0].textContent).toContain('Rectangle')
-    expect(children[0].classList.contains('selected')).toBe(true)
-
-    // Clicking a shape child keeps the layer current and selects the shape.
-    editor.selectShape(null)
-    children[0].dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(editor.selectedShapeId).toBe('a')
-    expect(editor.currentLayerId).toBe(editor.document.layers[0].id)
-  })
-
-  it('shows a hint row for layers without content at the current frame', () => {
-    editor.addLayerOnTop()
-    const tree = container.querySelector('.explorer-tree') as HTMLElement
-    const hints = [...tree.querySelectorAll('.explorer-empty')]
-    expect(hints).toHaveLength(2)
-    expect(hints[0].textContent).toContain('no shapes')
+    expect(titles).toEqual(['Layer', 'Shape'])
   })
 
   it('shows the shape section only while a shape is selected', () => {
-    const shapeSection = container.querySelectorAll('.panel-section')[3]
+    const shapeSection = container.querySelectorAll('.panel-section')[1]
     expect(shapeSection.classList.contains('hidden')).toBe(true)
 
     editor.addShape(rect('a', 10, 10))
@@ -79,19 +52,18 @@ describe('PropertiesView sections', () => {
     expect(shapeSection.classList.contains('hidden')).toBe(true)
   })
 
-  it('enables keyframe operations according to the current state', () => {
-    const buttons = [...container.querySelectorAll('.panel-buttons button')]
+  it('enables keyframe operations for the selected object only', () => {
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('.panel-buttons button')]
     const byTitle = (title: string): HTMLButtonElement => {
       const button = buttons.find((candidate) => candidate.title.startsWith(title))
       if (!button) throw new Error(`missing button ${title}`)
       return button
     }
-    // Fresh document: a keyframe already exists at frame 0.
+    // Nothing selected: the object-level operations are unavailable.
     expect(byTitle('Insert keyframe').disabled).toBe(true)
-    expect(byTitle('Insert blank keyframe').disabled).toBe(true)
-    expect(byTitle('Insert frame').disabled).toBe(false)
-    expect(byTitle('Remove the keyframe').disabled).toBe(false)
+    expect(byTitle('Remove the keyframe').disabled).toBe(true)
 
+    editor.addShape(rect('a', 10, 10))
     editor.insertFrameHere()
     editor.setFrame(1)
     expect(byTitle('Insert keyframe').disabled).toBe(false)
@@ -99,21 +71,10 @@ describe('PropertiesView sections', () => {
     editor.insertKeyframeHere()
     expect(byTitle('Insert keyframe').disabled).toBe(true)
     expect(byTitle('Remove the keyframe').disabled).toBe(false)
-  })
 
-  it('reflects playback state', () => {
-    const playButton = [...container.querySelectorAll('button')].find((button) =>
-      button.title.includes('Play or pause')
-    ) as HTMLButtonElement
-    const loopButton = [...container.querySelectorAll('button')].find((button) =>
-      button.title.includes('looped playback')
-    ) as HTMLButtonElement
-    const fpsInput = container.querySelector('input[type="number"][title="Frames per second"]') as HTMLInputElement
-    expect(fpsInput.value).toBe('24')
-    expect(loopButton.classList.contains('active')).toBe(true)
-    editor.toggleLoop()
-    expect(loopButton.classList.contains('active')).toBe(false)
-    expect(playButton.textContent).toBe('Play')
+    editor.removeKeyframeHere()
+    expect(byTitle('Remove the keyframe').disabled).toBe(true)
+    expect(byTitle('Insert keyframe').disabled).toBe(false)
   })
 
   it('collapses sections on header click and persists the state', () => {
@@ -124,8 +85,7 @@ describe('PropertiesView sections', () => {
     header.click()
     expect(section.classList.contains('collapsed')).toBe(true)
     const stored = loadSectionState(window.localStorage)
-    expect(stored.explorer).toBe(false)
-    expect(stored.layer).toBe(true)
+    expect(stored.layer).toBe(false)
 
     // A fresh view restores the persisted state.
     container.textContent = ''

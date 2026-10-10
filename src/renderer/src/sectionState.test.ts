@@ -23,12 +23,12 @@ class MemoryStorage {
 describe('section state', () => {
   it('defaults to all sections expanded when nothing is stored', () => {
     const state = loadSectionState(new MemoryStorage())
-    expect(state).toEqual({ explorer: true, layer: true, playback: true, shape: true })
+    expect(state).toEqual({ layer: true, shape: true })
   })
 
   it('round-trips collapsed sections through storage', () => {
     const storage = new MemoryStorage()
-    const state: SectionState = { explorer: false, layer: true, playback: false, shape: true }
+    const state: SectionState = { layer: false, shape: true }
     saveSectionState(storage, state)
     expect(storage.getItem(SECTION_STORAGE_KEY)).toBe(JSON.stringify(state))
     expect(loadSectionState(storage)).toEqual(state)
@@ -44,12 +44,11 @@ describe('section state', () => {
     const storage = new MemoryStorage()
     storage.setItem(
       SECTION_STORAGE_KEY,
-      JSON.stringify({ explorer: false, layer: 'yes', playback: 1, shape: true, unknown: false })
+      JSON.stringify({ layer: 'yes', playback: 1, shape: true, unknown: false })
     )
+    // The stored `playback` key belongs to a removed section and is ignored.
     expect(loadSectionState(storage)).toEqual({
-      explorer: false,
       layer: true,
-      playback: true,
       shape: true
     })
   })

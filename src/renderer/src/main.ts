@@ -80,13 +80,15 @@ function buildStatusbar(editor: Editor): HTMLElement {
   const layerInfo = el('span')
   const toolInfo = el('span')
   const fileInfo = el('span')
+  const messageInfo = el('span')
+  messageInfo.classList.add('statusbar-message')
   const versionInfo = el('span')
-  statusbar.append(frameInfo, layerInfo, toolInfo, fileInfo, versionInfo)
+  statusbar.append(frameInfo, layerInfo, toolInfo, fileInfo, messageInfo, versionInfo)
 
   const update = (): void => {
     frameInfo.textContent = `frame ${editor.currentFrame + 1} / ${editor.duration}`
     layerInfo.textContent = `layer: ${editor.currentLayer?.name ?? '-'}`
-    toolInfo.textContent = `tool: ${editor.tool}${editor.selectedShapeId ? ' · selected' : ''}`
+    toolInfo.textContent = `tool: ${editor.tool}${editor.selectedShapeId ? ' \u00b7 selected' : ''}`
     fileInfo.textContent = `file: ${fileLabel(editor)}`
   }
   editor.onFrameChange(update)
@@ -94,10 +96,21 @@ function buildStatusbar(editor: Editor): HTMLElement {
   editor.onUiChange(update)
   update()
 
+  // Transient status-bar messages (e.g. auto-keyframe notification).
+  let messageTimer: number | undefined
+  editor.onMessage((message) => {
+    messageInfo.textContent = message
+    messageInfo.classList.add('visible')
+    window.clearTimeout(messageTimer)
+    messageTimer = window.setTimeout(() => {
+      messageInfo.classList.remove('visible')
+    }, 2000)
+  })
+
   void window.api
     .versions()
     .then((versions) => {
-      versionInfo.textContent = `OpenAnimator v${versions.app} · Electron ${versions.electron}`
+      versionInfo.textContent = `OpenAnimator v${versions.app} \u00b7 Electron ${versions.electron}`
     })
     .catch((error: unknown) => {
       console.warn('OpenAnimator: failed to load application information', error)
@@ -147,10 +160,6 @@ function registerKeyboard(editor: Editor): void {
       case 'F6':
         event.preventDefault()
         editor.insertKeyframeHere()
-        break
-      case 'F7':
-        event.preventDefault()
-        editor.insertBlankKeyframeHere()
         break
       case 'Delete':
       case 'Backspace':
