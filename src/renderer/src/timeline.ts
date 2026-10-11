@@ -156,7 +156,7 @@ export class TimelineView {
     const shapeRow = target.closest<HTMLElement>('.tl-shape-row')
     if (shapeRow?.dataset.shapeId) {
       this.editor.setCurrentLayer(shapeRow.dataset.layerId!)
-      this.editor.selectShape(shapeRow.dataset.shapeId)
+      this.editor.selectShapes([shapeRow.dataset.shapeId], event.shiftKey ? 'toggle' : 'replace')
       return
     }
     const row = target.closest<HTMLElement>('.tl-row')
@@ -329,7 +329,7 @@ export class TimelineView {
     const row = el('div', 'tl-row tl-shape-row')
     row.dataset.layerId = layer.id
     row.dataset.shapeId = shape.id
-    if (editor.selectedShapeId === shape.id) row.classList.add('selected')
+    if (editor.selectedShapeIds.includes(shape.id)) row.classList.add('selected')
 
     const head = el('div', 'tl-head')
     const swatch = el('span', 'tl-swatch')
@@ -359,7 +359,7 @@ export class TimelineView {
     kfButton.addEventListener('click', (event) => {
       event.stopPropagation()
       editor.setCurrentLayer(layer.id)
-      editor.selectShape(shape.id)
+      editor.selectShapes([shape.id], 'replace')
       if (editor.hasShapeKeyframeAt(layer.id, shape.id, editor.currentFrame)) {
         editor.removeShapeKeyframe(shape.id)
       } else {
@@ -371,7 +371,7 @@ export class TimelineView {
     head.addEventListener('click', (event) => {
       if (event.target instanceof HTMLInputElement) return
       editor.setCurrentLayer(layer.id)
-      editor.selectShape(shape.id)
+      editor.selectShapes([shape.id], event.shiftKey ? 'toggle' : 'replace')
     })
     row.appendChild(head)
 

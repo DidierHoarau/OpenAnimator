@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addLayer,
   addShapeToLayer,
+  cloneDocument,
   createDocument,
   documentDuration,
   evaluateLayerAtFrame,
@@ -18,7 +19,7 @@ import {
   updateShapeInLayer
 } from './document'
 import { createStarterDocument } from './starterDocument'
-import { hitTestShape, hitTestShapes } from './hitTesting'
+import { hitTestShape, hitTestShapes, rectIntersectsRect, shapeBounds } from './hitTesting'
 import type { Shape } from './model'
 
 function rect(id: string, x: number, y: number, overrides: Partial<Shape> = {}): Shape {
@@ -238,6 +239,21 @@ describe('document operations', () => {
     const restored: unknown = JSON.parse(JSON.stringify(doc))
     expect(isAnimatorDocument(restored)).toBe(true)
   })
+
+  it('cloneDocument returns a fully independent copy', () => {
+    const doc = createStarterDocument()
+    const clone = cloneDocument(doc)
+    expect(clone).toEqual(doc)
+    expect(clone).not.toBe(doc)
+    clone.name = 'changed'
+    clone.layers[0].name = 'changed layer'
+    clone.layers[0].keyframes[0].shapes[0].center.x = -999
+    clone.layers[0].keyframes[0].shapes[0].center.y = -999
+    expect(doc.name).toBe('Untitled')
+    expect(doc.layers[0].name).not.toBe('changed layer')
+    expect(doc.layers[0].keyframes[0].shapes[0].center.x).not.toBe(-999)
+    expect(doc.layers[0].keyframes[0].shapes[0].center.y).not.toBe(-999)
+  })
 })
 
 describe('hit testing', () => {
@@ -267,5 +283,32 @@ describe('hit testing', () => {
     const b = rect('b', 0, 0)
     expect(hitTestShapes([a, b], { x: 0, y: 0 })?.id).toBe('b')
     expect(hitTestShapes([a, b], { x: 0, y: 1000 })).toBeUndefined()
+  })
+
+  it('computes the axis-aligned bounds of an unrotated shape', () => {
+    const bounds = shapeBounds(rect('a', 100, 100))
+    expect(bounds).toEqual({ x: 50, y: 75, width: 100, height: 50 })
+  })
+
+  it('computes the rotation-aware bounding box of a rotated shape', () => {
+    const bounds = shapeBounds(rect('a', 100, 100, { rotation: 90 }))
+    // A 90° rotation swaps the footprint: 50 wide, 100 tall.
+    expect(bounds.x).toBeCloseTo(75)
+    expect(bounds.y).toBeCloseTo(50)
+    expect(bounds.width).toBeCloseTo(50)
+    expect(bounds.height).toBeCloseTo(100)
+    const diagonal = shapeBounds(rect('b', 0, 0, { rotation: 45 }))
+    expect(diagonal.width).toBeCloseTo((100 + 50) * Math.SQRT1_2)
+    expect(diagonal.height).toBeCloseTo((100 + 50) * Math.SQRT1_2)
+  })
+
+  it('detects rectangle intersections for the rubber-band marquee', () => {
+    const a = { x: 0, y: 0, width: 10, height: 10 }
+    expect(rectIntersectsRect(a, { x: 5, y: 5, width: 10, height: 10 })).toBe(true)
+    expect(rectIntersectsRect(a, { x: 10, y: 0, width: 5, height: 5 })).toBe(true)
+    expect(rectIntersectsRect(a, { x: 11, y: 11, width: 5, height: 5 })).toBe(false)
+    expect(rectIntersectsRect(a, { x: -5, y: -5, width: 5, height: 20 })).toBe(true)
+    // A contained rect intersects.
+    expect(rectIntersectsRect(a, { x: 2, y: 2, width: 2, height: 2 })).toBe(true)
   })
 })

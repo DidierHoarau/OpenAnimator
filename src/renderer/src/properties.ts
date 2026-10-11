@@ -154,15 +154,18 @@ export class PropertiesView {
     this.fillHex.type = 'text'
     this.fillHex.title = 'Fill color as hex'
     this.fillHex.placeholder = '#rrggbb'
+    // A color-swatch drag fires many input events: coalesce them into one
+    // undo entry, committed on change/cancel of the picker.
     this.fillColor.addEventListener('input', () => {
-      editor.ensureSelectedShapeKeyframe()
+      editor.beginInteraction()
       editor.updateSelectedShape((current) => {
         current.fill = this.fillColor.value
       })
     })
+    this.fillColor.addEventListener('change', () => editor.endInteraction())
+    this.fillColor.addEventListener('cancel', () => editor.endInteraction())
     this.fillHex.addEventListener('change', () => {
       if (parseHexColor(this.fillHex.value)) {
-        editor.ensureSelectedShapeKeyframe()
         editor.updateSelectedShape((current) => {
           current.fill = normalizeHex(this.fillHex.value, DEFAULT_FILL)
         })
@@ -178,7 +181,6 @@ export class PropertiesView {
     this.strokeToggle.title = 'Enable the outline'
     this.strokeToggle.addEventListener('change', () => {
       const enabled = this.strokeToggle.checked
-      editor.ensureSelectedShapeKeyframe()
       editor.updateSelectedShape((current) => {
         if (enabled) {
           current.stroke = current.stroke ?? DEFAULT_STROKE
@@ -194,11 +196,13 @@ export class PropertiesView {
     this.strokeColor.type = 'color'
     this.strokeColor.title = 'Outline color'
     this.strokeColor.addEventListener('input', () => {
-      editor.ensureSelectedShapeKeyframe()
+      editor.beginInteraction()
       editor.updateSelectedShape((current) => {
         current.stroke = this.strokeColor.value
       })
     })
+    this.strokeColor.addEventListener('change', () => editor.endInteraction())
+    this.strokeColor.addEventListener('cancel', () => editor.endInteraction())
     this.strokeWidth = el('input', undefined) as HTMLInputElement
     this.strokeWidth.type = 'number'
     this.strokeWidth.min = '0'
@@ -210,7 +214,6 @@ export class PropertiesView {
         this.render()
         return
       }
-      editor.ensureSelectedShapeKeyframe()
       editor.updateSelectedShape((current) => {
         current.strokeWidth = Math.max(0, value)
       })
@@ -278,7 +281,6 @@ export class PropertiesView {
   }
 
   private applyPosition(axis: 'x' | 'y'): void {
-    this.editor.ensureSelectedShapeKeyframe()
     this.applyNumber(axis === 'x' ? this.posX : this.posY, (shape, value) => {
       if (axis === 'x') shape.center.x = value
       else shape.center.y = value
@@ -286,21 +288,18 @@ export class PropertiesView {
   }
 
   private applySize(field: 'width' | 'height'): void {
-    this.editor.ensureSelectedShapeKeyframe()
     this.applyNumber(field === 'width' ? this.width : this.height, (shape, value) => {
       shape[field] = Math.max(2, value)
     })
   }
 
   private applyRotation(): void {
-    this.editor.ensureSelectedShapeKeyframe()
     this.applyNumber(this.rotation, (shape, value) => {
       shape.rotation = value
     })
   }
 
   private applyOpacity(): void {
-    this.editor.ensureSelectedShapeKeyframe()
     this.applyNumber(this.opacity, (shape, value) => {
       shape.opacity = Math.min(1, Math.max(0, value))
     })
@@ -315,7 +314,7 @@ export class PropertiesView {
     const editor = this.editor
     const layer = editor.currentLayer
     const editable = layer !== undefined && !layer.locked
-    const selected = editor.selectedShapeId
+    const selected = editor.primarySelectedShapeId
     // Object-level: the buttons act on the selected object's own keyframe.
     const ownsKeyframe =
       layer !== undefined &&
@@ -389,26 +388,17 @@ export class PropertiesView {
    */
   private selectedShapePose(): Shape | null {
     const editor = this.editor
-    if (!editor.selectedShapeId) return null
+    const shapeId = editor.primarySelectedShapeId
+    if (!shapeId) return null
     const layer = editor.currentLayer
     if (!layer) return null
     const activeIndex = findKeyframeIndexForFrame(layer, editor.currentFrame)
     if (activeIndex !== -1) {
-      const shape = layer.keyframes[activeIndex].shapes.find(
-        (shape) => shape.id === editor.selectedShapeId
-      )
+      const shape = layer.keyframes[activeIndex].shapes.find((shape) => shape.id === shapeId)
       if (shape) return shape
     }
-    const nearestIndex = findNearestShapeKeyframeIndex(
-      layer,
-      editor.selectedShapeId,
-      editor.currentFrame
-    )
+    const nearestIndex = findNearestShapeKeyframeIndex(layer, shapeId, editor.currentFrame)
     if (nearestIndex === -1) return null
-    return (
-      layer.keyframes[nearestIndex].shapes.find(
-        (shape) => shape.id === editor.selectedShapeId
-      ) ?? null
-    )
+    return layer.keyframes[nearestIndex].shapes.find((shape) => shape.id === shapeId) ?? null
   }
 }

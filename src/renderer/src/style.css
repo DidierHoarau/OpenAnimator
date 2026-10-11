@@ -171,6 +171,13 @@ input:disabled {
   pointer-events: none;
 }
 
+.stage__marquee {
+  fill: rgba(56, 189, 248, 0.08);
+  stroke: var(--accent-blue);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
 /* Timeline (bottom panel) */
 
 .timeline {

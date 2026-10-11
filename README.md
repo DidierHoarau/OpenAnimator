@@ -22,6 +22,9 @@ The application now provides a working authoring core: layers with keyframes, a 
 - **Keyframes**: content keyframes and blank keyframes, insert/remove at the playhead, insert frame to extend holds.
 - **Classic tweening**: a tween on a keyframe interpolates matching shapes (matched by id) toward the next keyframe — position, size, rotation, opacity and fill color — with named easing curves (linear, ease-in, ease-out, ease-in-out) plus a cubic-bezier easing solver.
 - **Drawing tools**: rectangle and ellipse creation by drag (click for a default-size shape), selection with rotation-aware hit testing, move, nudge (arrow keys) and delete.
+- **Undo/redo**: snapshot history capped at 100 entries; a continuous drag or a color-swatch drag is a single undo step. `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` with statusbar feedback; history resets when a new or opened document replaces the current one.
+- **Stage zoom & pan**: wheel zooms to the cursor (10%–800%), middle-drag, Space-hold-drag and the Hand tool (`H`) pan, `Ctrl+0` resets to the 1:1 fit, `+`/`-` zoom around the view center. Creation thresholds, default sizes and selection overlays stay correct and crisp at every zoom.
+- **Multi-select**: the selection is a set — shift-click adds or toggles, rubber-band on empty stage area with the Select tool selects (shift unions). Move, nudge and delete apply to the whole selection; the properties panel edits the primary (last-selected) shape.
 - **Properties panel**: a right-side panel of collapsible sections whose expanded/collapsed state is remembered across restarts. Sections adapt to the editor state — the Shape section only appears while a shape is selected:
   - **Layer Explorer**: a tree of layers (visibility/lock toggles, current-layer highlight, keyframe count) with the shapes contained in each layer's content at the current frame; clicking a shape selects it.
   - **Layer**: all layer operations — insert keyframe / blank keyframe / frame, remove keyframe, classic tween toggle with easing, add/remove layers. Controls enable and disable according to the current layer, playhead and tween state.
@@ -50,7 +53,10 @@ The application now provides a working authoring core: layers with keyframes, a 
 │   │   ├── easing.ts      # Named eases and cubic-bezier solver
 │   │   ├── color.ts       # Hex color parsing and interpolation
 │   │   ├── geometry.ts    # Vector math helpers
-│   │   ├── hitTesting.ts  # Rotation-aware shape hit testing
+│   │   ├── hitTesting.ts  # Rotation-aware shape hit testing and bounds
+│   │   ├── render.ts      # evaluateDocumentAtFrame → renderer-agnostic tree
+│   │   ├── renderSvg.ts   # Shared SVG fragment builder for the render tree
+│   │   ├── viewTransform.ts # Stage zoom/pan math (view state, not document)
 │   │   ├── recentProjects.ts # Recent-projects list logic
 │   │   └── starterDocument.ts
 │   └── renderer/          # Editor UI
@@ -96,13 +102,22 @@ npm run dev        # start the app with hot reload
 | Keys                | Action                                  |
 | ------------------- | --------------------------------------- |
 | `V` / `R` / `O`     | Select / Rectangle / Ellipse tool       |
+| `H`                 | Hand tool (pan the stage view)          |
+| `Ctrl+Z`            | Undo                                    |
+| `Ctrl+Shift+Z` / `Ctrl+Y` | Redo                              |
+| `Ctrl+0`            | Reset the stage view to the 1:1 fit     |
+| `+` / `-`           | Zoom the stage in / out                 |
+| Mouse wheel         | Zoom the stage to the cursor            |
+| Middle-drag / hold `Space` and drag | Pan the stage view       |
 | `Ctrl+S`            | Save the current project                |
 | `Ctrl+Shift+S`      | Save the project to a new file          |
 | `Ctrl+O`            | Open a project file                     |
 | `Space`             | Play / pause                            |
 | `Escape`            | Stop and return to frame 1              |
 | `F5` / `F6` / `F7`  | Insert frame / keyframe / blank keyframe|
-| `Delete`            | Delete the selected shape               |
+| Shift-click         | Add to or toggle the selection          |
+| Rubber-band on empty stage | Select shapes (Shift unions)     |
+| `Delete`            | Delete the selected shapes              |
 | Arrow keys          | Nudge the selection (Shift = 10 px)     |
 
 ## Versioning and releases
