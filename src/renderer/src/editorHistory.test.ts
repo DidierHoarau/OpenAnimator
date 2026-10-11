@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createDocument, evaluateLayerAtFrame, getLayer } from '@shared/document'
-import type { PrimitiveNode } from '@shared/model'
+import type { DrawingLayer, PrimitiveNode } from '@shared/model'
 
 import { Editor } from './editor'
 
@@ -24,6 +24,13 @@ function nodeAt(editor: Editor, id: string): PrimitiveNode {
   const node = layer.keyframes.flatMap((keyframe) => keyframe.nodes).find((n) => n.id === id)
   if (!node || node.type !== 'primitive') throw new Error(`missing primitive ${id}`)
   return node
+}
+
+function nodeFrames(editor: Editor, id: string): number[] {
+  const layer = getLayer(editor.document, editor.currentLayerId)!
+  return layer.keyframes
+    .filter((keyframe) => keyframe.nodes.some((node) => node.id === id))
+    .map((keyframe) => keyframe.frame)
 }
 
 describe('Editor undo/redo history', () => {
@@ -288,5 +295,123 @@ describe('Editor undo/redo history', () => {
     expect(nodeAt(editor, 'a').center.x).toBe(3)
     editor.undo()
     expect(nodeAt(editor, 'a').center.x).toBe(55)
+  })
+
+  const drawingEditor = (): Editor =>
+    new Editor(createDocument('test', 960, 540, 24), {
+      createTransparentPng: async () => new Uint8Array([0]),
+      storeResource: async () => 'res-blank'
+    })
+
+  it('moving a cell is one undo step and redo restores the new position', () => {
+    const editor = drawingEditor()
+    editor.addLayerAtBottom('drawing')
+    const layerId = editor.currentLayerId
+    editor.commitStroke('res-a', 0)
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    const frames = (): number[] =>
+      (getLayer(editor.document, layerId) as DrawingLayer).cells.map((cell) => cell.frame)
+
+    // A no-op target and a frame without a cell move nothing.
+    expect(editor.moveCellToFrame(0, 0)).toBe(false)
+    expect(editor.moveCellToFrame(2, 4)).toBe(false)
+
+    expect(editor.setCellStartFrame(0, 3)).toBe(true)
+    expect(frames()).toEqual([3])
+    editor.undo()
+    expect(frames()).toEqual([0])
+    editor.redo()
+    expect(frames()).toEqual([3])
+
+    // Moving from the redone position is still a single entry per move.
+    editor.undo()
+    expect(editor.moveCellToFrame(0, 4)).toBe(true)
+    expect(frames()).toEqual([4])
+    editor.undo()
+    expect(frames()).toEqual([0])
+    expect(editor.canRedo).toBe(true)
+  })
+
+  it('retiming the last cell inserts a transparent cell in the same undo step', async () => {
+    const editor = drawingEditor()
+    editor.addLayerAtBottom('drawing')
+    const layerId = editor.currentLayerId
+    editor.commitStroke('res-a', 0)
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    editor.seekToFrame(1)
+    const layer = (): DrawingLayer => getLayer(editor.document, layerId) as DrawingLayer
+
+    // The last cell holds to the timeline end: that end is a no-op.
+    expect(await editor.setCellEndFrame(0, 5)).toBe(false)
+    expect(await editor.setCellEndFrame(0, 2)).toBe(true)
+    expect(layer().cells.map((cell) => cell.frame)).toEqual([0, 3])
+    expect(layer().cells[1].resourceId).toBe('res-blank')
+
+    editor.undo()
+    expect(layer().cells.map((cell) => cell.frame)).toEqual([0])
+    editor.redo()
+    expect(layer().cells.map((cell) => cell.frame)).toEqual([0, 3])
+
+    // With a following cell the retime shifts that cell instead.
+    expect(await editor.setCellEndFrame(0, 1)).toBe(true)
+    expect(layer().cells.map((cell) => cell.frame)).toEqual([0, 2])
+    editor.undo()
+    expect(layer().cells.map((cell) => cell.frame)).toEqual([0, 3])
+  })
+
+  it('moveNodeToFrame shifts the whole span and refuses collapsed moves', () => {
+    editor.addNode(rect('a', 0))
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    editor.seekToFrame(2)
+    expect(editor.ensureNodeKeyframe('a')).toBe(true)
+
+    expect(editor.moveNodeToFrame('nope', 1)).toBe(false)
+    expect(editor.moveNodeToFrame('a', 3)).toBe(true)
+    expect(nodeFrames(editor, 'a')).toEqual([3, 5])
+
+    // The span ends on the last frame: pulling it right is impossible.
+    const messages: string[] = []
+    editor.onMessage((message) => messages.push(message))
+    expect(editor.moveNodeToFrame('a', 5)).toBe(false)
+    expect(messages).toEqual(['The move would leave the timeline'])
+    expect(nodeFrames(editor, 'a')).toEqual([3, 5])
+
+    editor.undo()
+    expect(nodeFrames(editor, 'a')).toEqual([0, 2])
+    editor.redo()
+    expect(nodeFrames(editor, 'a')).toEqual([3, 5])
+  })
+
+  it('moving a multi-selection is one undo step', () => {
+    editor.addNode(rect('a', 0))
+    editor.addNode(rect('b', 60))
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    editor.seekToFrame(2)
+    expect(editor.ensureNodeKeyframe('b')).toBe(true)
+
+    editor.selectNodes(['a', 'b'], 'replace')
+    expect(editor.moveSelectedNodesToFrame(3)).toBe(true)
+    expect(nodeFrames(editor, 'a')).toEqual([3])
+    expect(nodeFrames(editor, 'b')).toEqual([3, 5])
+
+    // One undo restores both spans.
+    editor.undo()
+    expect(nodeFrames(editor, 'a')).toEqual([0])
+    expect(nodeFrames(editor, 'b')).toEqual([0, 2])
+    editor.redo()
+    expect(nodeFrames(editor, 'a')).toEqual([3])
+    expect(nodeFrames(editor, 'b')).toEqual([3, 5])
   })
 })
