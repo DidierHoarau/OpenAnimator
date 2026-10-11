@@ -116,8 +116,10 @@ export interface PreparedImage {
  * Decodes, (re-)encodes and stores raw image bytes in the main-process
  * resource store: PNG/JPEG/WebP keep their original bytes (no recompression),
  * GIFs are re-encoded to a PNG of their first frame and static SVGs are
- * rasterized at 2×. Identical content dedupes by SHA-256. Returns null (with
- * a status-bar message) for unsupported formats and undecodable bytes.
+ * rasterized at 2×. Identical content dedupes by SHA-256. The resource is also
+ * registered in the renderer cache so the stage and the library render it
+ * immediately, without a reload. Returns null (with a status-bar message) for
+ * unsupported formats and undecodable bytes.
  */
 export async function prepareImageResource(
   editor: Editor,
@@ -151,6 +153,10 @@ export async function prepareImageResource(
     return null
   }
   const { resourceId, deduped } = await window.api.addResource(resourceBytes, fileName)
+  // The main-process store is only half the story: the renderer cache must
+  // hold the bytes too, or the stage and library thumbnails resolve the
+  // resource id to a placeholder until the next reload.
+  editor.resources.put(resourceId, resourceBytes)
   return { resourceId, deduped, natural, name: fileName }
 }
 
