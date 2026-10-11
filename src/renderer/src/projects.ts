@@ -31,11 +31,12 @@ export function fileLabel(editor: Editor): string {
 async function loadProjectFromPath(
   editor: Editor,
   path: string,
-  document: AnimatorDocument
+  document: AnimatorDocument,
+  resources: Record<string, Uint8Array> = {}
 ): Promise<boolean> {
   document.name = projectNameFromPath(path)
   editor.filePath = path
-  editor.setDocument(document)
+  editor.setDocument(document, resources)
   editor.dirty = false
   void window.api.rememberProject(path, document.name)
   return true
@@ -72,7 +73,7 @@ export async function openDocument(editor: Editor): Promise<boolean> {
     window.alert(`Could not open the project: ${result.error ?? 'unknown error'}`)
     return false
   }
-  return loadProjectFromPath(editor, result.path, result.document)
+  return loadProjectFromPath(editor, result.path, result.document, result.resources)
 }
 
 /** Starts a new empty project after confirmation when there are unsaved changes. */
@@ -83,6 +84,7 @@ export async function newDocument(editor: Editor): Promise<boolean> {
   editor.filePath = null
   editor.newDocument()
   editor.dirty = false
+  void window.api.resetResourceStore()
   return true
 }
 
@@ -92,7 +94,7 @@ async function loadRecentProject(editor: Editor, path: string, overlay: HTMLElem
     window.alert(`Could not open the project: ${result.error}`)
     return
   }
-  await loadProjectFromPath(editor, path, result.document)
+  await loadProjectFromPath(editor, path, result.document, result.resources)
   overlay.remove()
 }
 

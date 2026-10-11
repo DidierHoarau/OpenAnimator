@@ -1,5 +1,5 @@
 /** Identifiers of the right-panel sections. */
-export type SectionId = 'layer' | 'shape' | 'group'
+export type SectionId = 'layer' | 'shape' | 'image' | 'group'
 
 /** Expanded/collapsed state of every panel section. */
 export type SectionState = Record<SectionId, boolean>
@@ -14,6 +14,7 @@ export const SECTION_STORAGE_KEY = 'openanimator.panelSections'
 export const DEFAULT_SECTION_STATE: SectionState = {
   layer: true,
   shape: true,
+  image: true,
   group: true
 }
 

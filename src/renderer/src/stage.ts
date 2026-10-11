@@ -117,7 +117,8 @@ export class StageView {
     this.onViewChange?.(this.view.scale)
   }
 
-  private toStagePoint(event: MouseEvent): Vec2 {
+  /** Stage-space point under a pointer/drag event (view transform applied). */
+  toStagePoint(event: MouseEvent): Vec2 {
     const ctm = this.svg.getScreenCTM()
     if (!ctm) return { x: 0, y: 0 }
     const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(ctm.inverse())
@@ -397,7 +398,10 @@ export class StageView {
         if (frame < 0 || frame >= editor.duration) continue
         const group = document.createElementNS(SVG_NS, 'g')
         group.setAttribute('opacity', String(0.24 / Math.abs(offset)))
-        group.innerHTML = renderLayersToSvgMarkup(evaluateDocumentAtFrame(doc, frame))
+        group.innerHTML = renderLayersToSvgMarkup(
+          evaluateDocumentAtFrame(doc, frame),
+          editor.resources.getUrl
+        )
         ghosts.appendChild(group)
       }
       this.svg.appendChild(ghosts)
@@ -405,7 +409,8 @@ export class StageView {
 
     const stageContent = document.createElementNS(SVG_NS, 'g')
     stageContent.innerHTML = renderLayersToSvgMarkup(
-      evaluateDocumentAtFrame(doc, editor.currentFrame)
+      evaluateDocumentAtFrame(doc, editor.currentFrame),
+      editor.resources.getUrl
     )
     this.svg.appendChild(stageContent)
 
