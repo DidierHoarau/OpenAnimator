@@ -189,7 +189,8 @@ export async function importImageBytes(
     naturalHeight: Math.max(1, prepared.natural.height),
     smoothing: true
   }
-  editor.addNode(node)
+  // One undo step covers both the stage node and its library asset entry.
+  editor.addImageWithAsset(node)
   return true
 }
 

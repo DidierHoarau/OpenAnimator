@@ -12,6 +12,7 @@ import {
   insertFrame,
   insertKeyframe,
   isAnimatorDocument,
+  isAsset,
   isSceneNode,
   removeKeyframe,
   removeLayer,
@@ -367,5 +368,56 @@ describe('isSceneNode', () => {
     expect(isSceneNode({ ...group, children: [{ ...group, children: [] }] })).toBe(true)
     // A group holding a junk child is invalid (recursive validation).
     expect(isSceneNode({ ...group, children: [{ type: 'alien', id: 'x' }] })).toBe(false)
+  })
+})
+
+describe('isAsset', () => {
+  function symbolContent(): GroupNode {
+    return {
+      type: 'group',
+      id: 'content',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      children: [rect('child', 0, 0)]
+    }
+  }
+
+  it('accepts valid symbol and image assets', () => {
+    expect(
+      isAsset({ id: 'a', name: 'Rocket', kind: 'symbol', content: symbolContent(), createdAt: 1 })
+    ).toBe(true)
+    expect(
+      isAsset({ id: 'b', name: 'pic', kind: 'image', resourceId: 'hash-a', createdAt: 2 })
+    ).toBe(true)
+    expect(
+      isAsset({ id: 'b', name: 'pic', kind: 'image', resourceId: 'hash-a', naturalWidth: 10, naturalHeight: 20, createdAt: 2 })
+    ).toBe(true)
+  })
+
+  it('rejects junk shapes and missing discriminant fields', () => {
+    expect(isAsset(null)).toBe(false)
+    expect(isAsset('nope')).toBe(false)
+    expect(isAsset({ id: 'a', name: 'x', kind: 'texture', createdAt: 1 })).toBe(false)
+    expect(isAsset({ id: 'a', name: 'x', kind: 'symbol', createdAt: 1 })).toBe(false)
+    // Symbol content must be a valid group node.
+    expect(isAsset({ id: 'a', name: 'x', kind: 'symbol', content: { type: 'alien' }, createdAt: 1 })).toBe(false)
+    expect(isAsset({ id: 'a', name: 'x', kind: 'symbol', content: null, createdAt: 1 })).toBe(false)
+    // Image assets need a resource id; sizes must be finite when present.
+    expect(isAsset({ id: 'a', name: 'x', kind: 'image', createdAt: 1 })).toBe(false)
+    expect(isAsset({ id: 'a', name: 'x', kind: 'image', resourceId: 'h', naturalWidth: NaN, createdAt: 1 })).toBe(false)
+    expect(isAsset({ id: 'a', name: 'x', kind: 'image', resourceId: 'h', createdAt: 'now' })).toBe(false)
+    expect(isAsset({ id: 'a', kind: 'image', resourceId: 'h', createdAt: 1 })).toBe(false)
+  })
+
+  it('feeds document validation: malformed assets reject the whole document', () => {
+    const valid = createDocument('test', 960, 540, 24)
+    expect(isAnimatorDocument(valid)).toBe(true)
+    expect(isAnimatorDocument({ ...valid, assets: [{ garbage: true }] })).toBe(false)
+    const withAsset = createDocument('test', 960, 540, 24)
+    withAsset.assets = [{ id: 'a', name: 'Rocket', kind: 'symbol', content: symbolContent(), createdAt: 1 }]
+    expect(isAnimatorDocument(withAsset)).toBe(true)
   })
 })

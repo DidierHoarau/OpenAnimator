@@ -1,5 +1,5 @@
 /** Identifiers of the right-panel sections. */
-export type SectionId = 'layer' | 'shape' | 'image' | 'group'
+export type SectionId = 'layer' | 'shape' | 'image' | 'group' | 'symbol'
 
 /** Expanded/collapsed state of every panel section. */
 export type SectionState = Record<SectionId, boolean>
@@ -10,12 +10,14 @@ export interface StorageLike {
 }
 
 export const SECTION_STORAGE_KEY = 'openanimator.panelSections'
+export const LIBRARY_STORAGE_KEY = 'openanimator.libraryVisible'
 
 export const DEFAULT_SECTION_STATE: SectionState = {
   layer: true,
   shape: true,
   image: true,
-  group: true
+  group: true,
+  symbol: true
 }
 
 const SECTION_IDS = Object.keys(DEFAULT_SECTION_STATE) as SectionId[]
@@ -45,6 +47,24 @@ export function loadSectionState(storage: StorageLike): SectionState {
 export function saveSectionState(storage: StorageLike, state: SectionState): void {
   try {
     storage.setItem(SECTION_STORAGE_KEY, JSON.stringify(state))
+  } catch {
+    // Persistence is best-effort.
+  }
+}
+
+/** Reads the persisted library-panel visibility (hidden by default). */
+export function loadLibraryVisible(storage: StorageLike): boolean {
+  try {
+    return storage.getItem(LIBRARY_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+/** Persists the library-panel visibility; storage failures are ignored. */
+export function saveLibraryVisible(storage: StorageLike, visible: boolean): void {
+  try {
+    storage.setItem(LIBRARY_STORAGE_KEY, String(visible))
   } catch {
     // Persistence is best-effort.
   }

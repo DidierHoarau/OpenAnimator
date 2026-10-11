@@ -1,6 +1,6 @@
 import { evaluateEasing } from './easing'
 import type { EasingName } from './easing'
-import type { AnimatorDocument, Keyframe, Layer, SceneNode } from './model'
+import type { AnimatorDocument, Asset, Keyframe, Layer, SceneNode } from './model'
 import { cloneNode } from './model'
 import { tweenNode } from './tween'
 
@@ -33,7 +33,8 @@ export function createDocument(name: string, width: number, height: number, fps:
     fps,
     background: '#10151b',
     layers: [layer],
-    frames: 1
+    frames: 1,
+    assets: []
   }
 }
 
@@ -413,6 +414,30 @@ function isLayer(value: unknown): value is Layer {
   )
 }
 
+/** Structural validation for one asset, keyed on the `kind` discriminant;
+ * symbol content is validated through `isSceneNode`. */
+export function isAsset(value: unknown): value is Asset {
+  if (typeof value !== 'object' || value === null) return false
+  const asset = value as Record<string, unknown> & Partial<Asset>
+  if (typeof asset.id !== 'string' || typeof asset.name !== 'string') return false
+  if (typeof asset.createdAt !== 'number' || !Number.isFinite(asset.createdAt)) return false
+  if (asset.kind === 'symbol') {
+    return (
+      asset.content !== undefined &&
+      isSceneNode(asset.content) &&
+      asset.content.type === 'group'
+    )
+  }
+  if (asset.kind === 'image') {
+    return (
+      typeof asset.resourceId === 'string' &&
+      (asset.naturalWidth === undefined || isFiniteNumber(asset.naturalWidth)) &&
+      (asset.naturalHeight === undefined || isFiniteNumber(asset.naturalHeight))
+    )
+  }
+  return false
+}
+
 /** Deep structural validation for documents restored from persistence.
  * Requires `schemaVersion: 2` and fully typed content; older documents go
  * through `migrateDocument` first. */
@@ -432,6 +457,8 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     typeof candidate.background === 'string' &&
     framesValid &&
     Array.isArray(candidate.layers) &&
-    candidate.layers.every(isLayer)
+    candidate.layers.every(isLayer) &&
+    Array.isArray(candidate.assets) &&
+    candidate.assets.every(isAsset)
   )
 }

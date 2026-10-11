@@ -112,15 +112,33 @@ export class ResourceCache {
     this.entries.clear()
     this.corrupt.clear()
     for (const [resourceId, bytes] of Object.entries(resources)) {
-      const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: sniffImageMime(bytes) })
-      this.entries.set(resourceId, { url: this.createUrl(blob), blob })
+      this.store(resourceId, bytes)
     }
     this.validateAsync()
   }
 
-  private validateAsync(): void {
+  /**
+   * Registers one resource (e.g. when an asset is imported into the session
+   * from the global library), replacing any previous entry under the same id.
+   * The blob is validated asynchronously like every reset-registered entry.
+   */
+  put(resourceId: string, bytes: Uint8Array): void {
+    const existing = this.entries.get(resourceId)
+    if (existing) this.revokeUrl(existing.url)
+    this.corrupt.delete(resourceId)
+    this.store(resourceId, bytes)
+    this.validateAsync(resourceId)
+  }
+
+  private store(resourceId: string, bytes: Uint8Array): void {
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: sniffImageMime(bytes) })
+    this.entries.set(resourceId, { url: this.createUrl(blob), blob })
+  }
+
+  private validateAsync(only?: string): void {
     if (!this.decode) return
     for (const [resourceId, entry] of [...this.entries]) {
+      if (only !== undefined && resourceId !== only) continue
       void this.decode(entry.blob)
         .then(() => {
           if (this.corrupt.delete(resourceId)) this.notify()

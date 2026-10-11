@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createDocument, evaluateLayerAtFrame, getLayer } from '@shared/document'
-import type { PrimitiveNode } from '@shared/model'
+import type { Asset, GroupNode, ImageNode, PrimitiveNode, SceneNode, SymbolNode } from '@shared/model'
 
 import { Editor } from './editor'
 
@@ -278,5 +278,308 @@ describe('Editor multi-select', () => {
 
     editor.selectNodes([], 'replace')
     expect(editor.getSelectionBounds()).toBeNull()
+  })
+})
+
+function symbolAsset(id: string, name: string, children: SceneNode[]): Asset {
+  return {
+    id,
+    name,
+    kind: 'symbol',
+    content: {
+      type: 'group',
+      id: 'content',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      children
+    },
+    createdAt: 1
+  }
+}
+
+function imageAsset(id: string, resourceId: string): Asset {
+  return { id, name: id, kind: 'image', resourceId, naturalWidth: 640, naturalHeight: 480, createdAt: 1 }
+}
+
+describe('Editor — asset library and symbols', () => {
+  let editor: Editor
+
+  beforeEach(() => {
+    editor = new Editor(createDocument('test', 960, 540, 24))
+  })
+
+  function nodesIn(layerId = editor.currentLayerId): SceneNode[] {
+    return getLayer(editor.document, layerId)!.keyframes[0].nodes
+  }
+
+  it('saveSelectionAsSymbol replaces the selection with one instance (one undo step)', () => {
+    editor.addNode(rect('a', 10, 0))
+    editor.addNode(rect('b', 110, 0))
+    editor.selectNodes(['a', 'b'], 'replace')
+
+    expect(editor.saveSelectionAsSymbol()).toBe(true)
+    expect(editor.document.assets).toHaveLength(1)
+    const asset = editor.document.assets[0]
+    expect(asset.kind).toBe('symbol')
+    expect(asset.name).toBe('Symbol 1')
+
+    const keyframeNodes = nodesIn()
+    expect(keyframeNodes).toHaveLength(1)
+    const instance = keyframeNodes[0] as SymbolNode
+    expect(instance.type).toBe('symbol')
+    expect(instance.assetId).toBe(asset.id)
+    expect(instance.width).toBe(asset.content!.width)
+    expect(instance.height).toBe(asset.content!.height)
+    expect(editor.selectedNodeIds).toEqual([instance.id])
+
+    editor.undo()
+    expect(editor.document.assets).toHaveLength(0)
+    expect(nodesIn().map((node) => node.id)).toEqual(['a', 'b'])
+    editor.redo()
+    expect(editor.document.assets).toHaveLength(1)
+    expect(nodesIn()[0].type).toBe('symbol')
+  })
+
+  it('saveSelectionAsSymbol numbers successive symbols and rejects an empty selection', () => {
+    editor.addNode(rect('a', 0))
+    editor.selectNodes(['a'], 'replace')
+    expect(editor.saveSelectionAsSymbol()).toBe(true)
+    editor.addNode(rect('b', 100))
+    editor.selectNodes(['b'], 'replace')
+    expect(editor.saveSelectionAsSymbol()).toBe(true)
+    expect(editor.document.assets.map((asset) => asset.name)).toEqual(['Symbol 1', 'Symbol 2'])
+
+    editor.selectNodes([], 'replace')
+    expect(editor.saveSelectionAsSymbol()).toBe(false)
+    expect(editor.document.assets).toHaveLength(2)
+  })
+
+  it('placeAsset places symbol instances at the natural content size', () => {
+    const asset = symbolAsset('s', 'Rocket', [
+      { id: 'c1', type: 'primitive', primitive: 'rect', center: { x: 0, y: 0 }, width: 100, height: 50, rotation: 0, fill: '#ff0000', opacity: 1 }
+    ])
+    editor.document.assets = [asset]
+
+    expect(editor.placeAsset('s')).toBe(true)
+    const instance = nodesIn()[0] as SymbolNode
+    expect(instance.type).toBe('symbol')
+    expect(instance.assetId).toBe('s')
+    expect(instance.center).toEqual({ x: 480, y: 270 })
+    expect(instance.width).toBe(100)
+    expect(instance.height).toBe(50)
+    expect(editor.selectedNodeIds).toEqual([instance.id])
+
+    expect(editor.placeAsset('gone')).toBe(false)
+  })
+
+  it('placeAsset places image assets as image nodes', () => {
+    editor.document.assets = [imageAsset('img', 'hash-a')]
+    expect(editor.placeAsset('img', { x: 100, y: 60 })).toBe(true)
+    const node = nodesIn()[0] as ImageNode
+    expect(node.type).toBe('image')
+    expect(node.resourceId).toBe('hash-a')
+    expect(node.center).toEqual({ x: 100, y: 60 })
+    expect(node.naturalWidth).toBe(640)
+  })
+
+  it('breakApartSelection decouples instances into editable groups', () => {
+    const asset = symbolAsset('s', 'Rocket', [
+      { id: 'c1', type: 'primitive', primitive: 'rect', center: { x: 0, y: 0 }, width: 100, height: 50, rotation: 0, fill: '#ff0000', opacity: 1 }
+    ])
+    editor.document.assets = [asset]
+    editor.placeAsset('s')
+    const instance = nodesIn()[0] as SymbolNode
+    editor.selectNodes([instance.id], 'replace')
+
+    expect(editor.breakApartSelection()).toBe(true)
+    const group = nodesIn()[0] as GroupNode
+    expect(group.type).toBe('group')
+    expect(group.center).toEqual(instance.center)
+    expect(group.width).toBe(instance.width)
+    expect(group.children[0].id).toBe('c1')
+    expect(editor.selectedNodeIds).toEqual([group.id])
+    // The asset itself stays; the content is a copy, not shared.
+    expect(editor.document.assets).toHaveLength(1)
+    expect(group.children[0]).not.toBe(asset.content!.children[0])
+
+    editor.undo()
+    expect(nodesIn()[0].type).toBe('symbol')
+  })
+
+  it('breakApartSelection is a no-op without a selected symbol', () => {
+    editor.addNode(rect('a', 0))
+    editor.selectNodes(['a'], 'replace')
+    expect(editor.breakApartSelection()).toBe(false)
+    expect(nodesIn()[0].type).toBe('primitive')
+  })
+
+  it('deleteAsset reports how many instances were on stage', () => {
+    const asset = symbolAsset('s', 'Rocket', [])
+    editor.document.assets = [asset]
+    editor.placeAsset('s')
+    editor.placeAsset('s')
+    expect(editor.countAssetInstances('s')).toBe(2)
+    expect(editor.deleteAsset('s')).toBe(2)
+    expect(editor.document.assets).toHaveLength(0)
+    // The instances stay (as placeholders) until removed manually.
+    expect(nodesIn()).toHaveLength(2)
+    expect(editor.deleteAsset('s')).toBe(0)
+  })
+
+  it('registers, renames and duplicates assets', () => {
+    const id = editor.registerImageAsset('hash-a', { width: 640, height: 480 }, 'photo.png')
+    expect(editor.document.assets).toHaveLength(1)
+    expect(editor.document.assets[0].kind).toBe('image')
+    expect(editor.document.assets[0].resourceId).toBe('hash-a')
+
+    editor.renameAsset(id, 'Hero image')
+    expect(editor.document.assets[0].name).toBe('Hero image')
+
+    const copyId = editor.duplicateAsset(id)
+    expect(copyId).not.toBe(id)
+    expect(editor.document.assets[1].name).toBe('Hero image copy')
+    expect(editor.document.assets).toHaveLength(2)
+    expect(editor.duplicateAsset('gone')).toBeNull()
+
+    editor.undo()
+    expect(editor.document.assets).toHaveLength(1)
+  })
+
+  it('importAndPlaceAsset registers asset + resources in one undo step', () => {
+    const asset = imageAsset('ext-1', 'hash-a')
+    const bytes = new Uint8Array([1, 2, 3])
+    editor.beginInteraction()
+    const placed = editor.importAndPlaceAsset(asset, { 'hash-a': bytes }, { x: 40, y: 40 })
+    editor.endInteraction()
+    expect(placed).toBe(true)
+    expect(editor.document.assets.map((entry) => entry.id)).toEqual(['ext-1'])
+    expect(editor.resources.getUrl('hash-a')).not.toBeNull()
+    expect((nodesIn()[0] as ImageNode).center).toEqual({ x: 40, y: 40 })
+
+    editor.undo()
+    expect(editor.document.assets).toHaveLength(0)
+    expect(nodesIn()).toHaveLength(0)
+    // Already-known assets are not re-registered (and survive a failed place).
+    editor.document.assets = [asset]
+    editor.beginInteraction()
+    expect(editor.importAndPlaceAsset(asset, { 'hash-a': bytes })).toBe(true)
+    editor.endInteraction()
+    expect(editor.document.assets).toHaveLength(1)
+    expect(nodesIn()).toHaveLength(1)
+  })
+
+  it('importAndPlaceAsset rolls back the asset when placement fails', () => {
+    editor.document.layers[0].locked = true
+    const asset = imageAsset('ext-1', 'hash-a')
+    expect(editor.importAndPlaceAsset(asset, { 'hash-a': new Uint8Array([1]) })).toBe(false)
+    expect(editor.document.assets).toHaveLength(0)
+    expect(editor.canUndo).toBe(false)
+  })
+})
+
+describe('Editor — symbol edit mode', () => {
+  let editor: Editor
+
+  beforeEach(() => {
+    editor = new Editor(createDocument('test', 960, 540, 24))
+  })
+
+  function rectAt(id: string, x: number, y = 0): PrimitiveNode {
+    return {
+      id,
+      type: 'primitive',
+      primitive: 'rect',
+      center: { x, y },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      fill: '#ff0000',
+      opacity: 1
+    }
+  }
+
+  function childAt(editor: Editor, index: number): PrimitiveNode {
+    const asset = editor.document.assets[0]
+    return asset.content!.children[index] as PrimitiveNode
+  }
+
+  it('edits the asset in isolation and commits to every instance', () => {
+    editor.document.assets = [
+      symbolAsset('s', 'Rocket', [
+        { id: 'c1', type: 'primitive', primitive: 'rect', center: { x: 0, y: 0 }, width: 100, height: 50, rotation: 0, fill: '#ff0000', opacity: 1 }
+      ])
+    ]
+    editor.placeAsset('s')
+
+    expect(editor.beginSymbolEdit('s')).toBe(true)
+    expect(editor.editingAssetId).toBe('s')
+    // The scratch document holds clones of the content children.
+    const scratchNodes = editor.document.layers[0].keyframes[0].nodes
+    expect(scratchNodes.map((node) => node.id)).toEqual(['c1'])
+    expect(editor.canUndo).toBe(false)
+
+    editor.addNode(rectAt('c2', 200))
+    editor.endSymbolEdit(true)
+
+    expect(editor.editingAssetId).toBeNull()
+    expect(editor.document.layers[0].keyframes[0].nodes[0].type).toBe('symbol')
+    const content = editor.document.assets[0].content!
+    expect(content.children.map((node) => node.id)).toEqual(['c1', 'c2'])
+    expect(content.width).toBeGreaterThan(100)
+    // One undo step reverts the whole commit.
+    editor.undo()
+    expect(editor.document.assets[0].content!.children.map((node) => node.id)).toEqual(['c1'])
+    editor.redo()
+    expect(editor.document.assets[0].content!.children.map((node) => node.id)).toEqual(['c1', 'c2'])
+
+    // A second edit session works from the updated content.
+    expect(editor.beginSymbolEdit('s')).toBe(true)
+    expect(editor.document.layers[0].keyframes[0].nodes.map((node) => node.id)).toEqual(['c1', 'c2'])
+    editor.endSymbolEdit(false)
+    expect(editor.document.assets[0].content!.children.map((node) => node.id)).toEqual(['c1', 'c2'])
+  })
+
+  it('refuses to start while already editing and ignores end without editing', () => {
+    editor.document.assets = [symbolAsset('s', 'Rocket', [])]
+    expect(editor.beginSymbolEdit('gone')).toBe(false)
+    expect(editor.beginSymbolEdit('s')).toBe(true)
+    expect(editor.beginSymbolEdit('s')).toBe(false)
+    editor.endSymbolEdit(false)
+    editor.endSymbolEdit(false) // no-op, no editing session
+    expect(editor.editingAssetId).toBeNull()
+  })
+
+  it('blocks asset-less edits and validates the asset graph on load', () => {
+    const messages: string[] = []
+    editor.onMessage((message) => messages.push(message))
+    expect(editor.beginSymbolEdit('nothing')).toBe(false)
+
+    // A cyclic asset graph still loads, but the status bar explains it.
+    const cyclic = symbolAsset('cyclic', 'Loop', [])
+    ;(cyclic.content!.children as SceneNode[]).push({
+      id: 'self',
+      type: 'symbol',
+      assetId: 'cyclic',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1
+    })
+    editor.document.assets = [cyclic]
+    editor.setDocument(editor.document)
+    expect(messages.some((message) => message.includes('cycle'))).toBe(true)
+  })
+
+  it('childAt edits land in content-local coordinates', () => {
+    editor.document.assets = [
+      symbolAsset('s', 'Rocket', [
+        { id: 'c1', type: 'primitive', primitive: 'rect', center: { x: 10, y: 20 }, width: 100, height: 50, rotation: 0, fill: '#ff0000', opacity: 1 }
+      ])
+    ]
+    expect(childAt(editor, 0).center).toEqual({ x: 10, y: 20 })
   })
 })

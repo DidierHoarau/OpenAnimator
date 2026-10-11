@@ -1,7 +1,7 @@
 /** IPC channel used by the renderer to fetch application information. */
 export const APP_API_CHANNEL = 'openanimator:app-info'
 
-import type { AnimatorDocument } from './model'
+import type { AnimatorDocument, Asset } from './model'
 
 export const DOCUMENT_SAVE_AS_CHANNEL = 'openanimator:document-save-as'
 export const DOCUMENT_SAVE_TO_CHANNEL = 'openanimator:document-save-to'
@@ -13,6 +13,10 @@ export const IMAGE_PICK_CHANNEL = 'openanimator:image-pick'
 export const RESOURCE_ADD_CHANNEL = 'openanimator:resource-add'
 export const RESOURCE_PURGE_CHANNEL = 'openanimator:resource-purge'
 export const RESOURCE_RESET_CHANNEL = 'openanimator:resource-reset'
+export const LIBRARY_LIST_CHANNEL = 'openanimator:library-list'
+export const LIBRARY_ADD_CHANNEL = 'openanimator:library-add'
+export const LIBRARY_REMOVE_CHANNEL = 'openanimator:library-remove'
+export const LIBRARY_RENAME_CHANNEL = 'openanimator:library-rename'
 
 export interface AppVersions {
   app: string
@@ -54,6 +58,19 @@ export interface RecentProject {
   lastOpenedAt: number
 }
 
+/** Binary resource of the global library, with its encoded-file extension. */
+export interface LibraryResource {
+  bytes: Uint8Array
+  ext: string
+}
+
+/** Contents of the global "My Library": asset index plus every referenced
+ * resource's bytes (keyed by content digest). */
+export interface LibraryListResult {
+  assets: Asset[]
+  resources: Record<string, LibraryResource>
+}
+
 /** API exposed to the renderer through the preload script. */
 export interface OpenAnimatorApi {
   versions(): Promise<AppVersions>
@@ -67,4 +84,8 @@ export interface OpenAnimatorApi {
   addResource(bytes: Uint8Array, fileName: string): Promise<ResourceAddResult>
   purgeUnusedResources(document: AnimatorDocument): Promise<ResourcePurgeResult>
   resetResourceStore(): Promise<void>
+  listLibrary(): Promise<LibraryListResult>
+  addLibraryAsset(asset: Asset, contextAssets?: Asset[]): Promise<void>
+  removeLibraryAsset(id: string): Promise<void>
+  renameLibraryAsset(id: string, name: string): Promise<void>
 }
