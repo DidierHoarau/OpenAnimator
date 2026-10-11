@@ -80,6 +80,7 @@ export class LibraryView {
   private previousAssetCount = 0
   private drag: DragState | null = null
   private transientUrls: string[] = []
+  private readonly visibilityListeners = new Set<(visible: boolean) => void>()
 
   constructor(
     editor: Editor,
@@ -159,11 +160,23 @@ export class LibraryView {
     return this.visible
   }
 
+  /** Notifies when the panel visibility changes (toolbar, auto-open, …). */
+  onVisibilityChanged(listener: (visible: boolean) => void): void {
+    this.visibilityListeners.add(listener)
+  }
+
   setVisible(visible: boolean): void {
     if (this.visible === visible) return
     this.visible = visible
     saveLibraryVisible(this.storage, visible)
     this.container.classList.toggle('hidden', !visible)
+    for (const listener of this.visibilityListeners) {
+      try {
+        listener(visible)
+      } catch (error) {
+        console.error('OpenAnimator: library visibility listener failed', error)
+      }
+    }
   }
 
   private setTab(tab: 'document' | 'global'): void {

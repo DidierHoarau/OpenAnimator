@@ -32,11 +32,16 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   const library = el('button', undefined, 'Library')
   library.title = 'Toggle the asset library panel'
   library.classList.add('toggle')
-  library.classList.toggle('active', libraryView.isVisible)
-  library.addEventListener('click', () => {
-    libraryView.setVisible(!libraryView.isVisible)
+  // The layout must drop the library column with the panel, or hiding the
+  // library would leave its reserved grid space on the screen. Auto-open
+  // (first asset) and persistence flow through the same notification.
+  const syncLibraryLayout = (): void => {
+    layout.classList.toggle('library-hidden', !libraryView.isVisible)
     library.classList.toggle('active', libraryView.isVisible)
-  })
+  }
+  library.addEventListener('click', () => libraryView.setVisible(!libraryView.isVisible))
+  libraryView.onVisibilityChanged(syncLibraryLayout)
+  syncLibraryLayout()
   const properties = el('button', undefined, 'Properties')
   properties.title = 'Toggle the properties panel'
   properties.classList.add('toggle')
