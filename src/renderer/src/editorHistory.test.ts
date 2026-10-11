@@ -89,6 +89,11 @@ describe('Editor undo/redo history', () => {
 
   it('pushes one entry for an auto-keyed properties-style edit', () => {
     editor.addNode(rect('a', 0))
+    // Extend the authored timeline explicitly so frame 5 is reachable.
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
     editor.seekToFrame(5)
     expect(
       editor.updateSelectedNode((node) => {
@@ -164,9 +169,11 @@ describe('Editor undo/redo history', () => {
 
   it('undo clamps the playhead when the timeline shrinks', () => {
     editor.addNode(rect('a', 0))
-    editor.seekToFrame(5)
-    expect(editor.duration).toBe(6)
-    expect(editor.currentFrame).toBe(5)
+    // + Frame is its own undo step that grows the authored timeline.
+    editor.insertFrameHere()
+    editor.seekToFrame(1)
+    expect(editor.duration).toBe(2)
+    expect(editor.currentFrame).toBe(1)
 
     editor.undo()
     expect(editor.duration).toBe(1)
@@ -234,6 +241,10 @@ describe('Editor undo/redo history', () => {
   it('grouping auto-keys the members inside the same undo step', () => {
     editor.addNode(rect('a', 10, 0))
     editor.addNode(rect('b', 60, 0))
+    while (editor.duration <= 3) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
     editor.seekToFrame(3)
     editor.selectNodes(['a', 'b'], 'replace')
     expect(editor.groupSelection()).toBe(true)

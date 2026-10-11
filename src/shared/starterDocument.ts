@@ -63,7 +63,7 @@ export function createStarterDocument(): AnimatorDocument {
   }
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'Untitled',
     width: 960,
     height: 540,

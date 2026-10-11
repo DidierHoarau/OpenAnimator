@@ -29,7 +29,7 @@ function primitive(id: string, overrides: Partial<PrimitiveNode> & { primitive: 
 /** Hand-written v2 equivalent of `fixtures/v1/tweened-strokes.json`. */
 function expectedTweenedStrokesDocument(): AnimatorDocument {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'Tween demo',
     width: 960,
     height: 540,
@@ -110,7 +110,7 @@ describe('migrateDocument — v1 fixtures', () => {
   it('migrates the multi-layer fixture including hidden/locked flags', () => {
     const raw = loadFixture('multi-layer')
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(2)
+    expect(migrated.schemaVersion).toBe(3)
     expect(migrated.layers).toHaveLength(2)
     expect(migrated.layers[0]).toMatchObject({
       id: 'layer-fx',
@@ -141,7 +141,7 @@ describe('migrateDocument — v1 fixtures', () => {
     const raw = loadFixture('minimal')
     const migrated = migrateDocument(raw)
     expect(migrated).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'Untitled',
       width: 960,
       height: 540,
@@ -314,7 +314,7 @@ describe('migrateDocument — invalid content', () => {
 
 describe('migrateDocument — assets', () => {
   const base = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'x',
     width: 100,
     height: 100,
@@ -397,7 +397,7 @@ describe('migrateDocument — assets', () => {
 
 describe('migrateDocument — drawing layers', () => {
   const baseWithUntypedLayer = () => ({
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'x',
     width: 100,
     height: 100,

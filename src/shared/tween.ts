@@ -44,6 +44,35 @@ export function tweenNode(from: SceneNode, to: SceneNode, t: number): SceneNode 
   if (from.type === 'symbol') {
     return { ...base, type: 'symbol', assetId: from.assetId }
   }
+  if (from.type === 'path') {
+    // Path geometry and paints snap from `from`; the transform and stroke
+    // width interpolate.
+    return {
+      ...base,
+      type: 'path',
+      d: from.d,
+      fill: from.fill,
+      stroke: from.stroke,
+      strokeWidth:
+        from.strokeWidth !== undefined && to.type === 'path' && to.strokeWidth !== undefined
+          ? lerp(from.strokeWidth, to.strokeWidth, t)
+          : from.strokeWidth
+    }
+  }
+  if (from.type === 'text') {
+    // Text content and font identity snap from `from`; the font size (and
+    // with it the laid-out box) interpolates.
+    return {
+      ...base,
+      type: 'text',
+      text: from.text,
+      fontFamily: from.fontFamily,
+      fontSize: to.type === 'text' ? lerp(from.fontSize, to.fontSize, t) : from.fontSize,
+      fontWeight: from.fontWeight,
+      fill: from.fill,
+      align: from.align
+    }
+  }
   if (to.type !== 'primitive' || from.primitive !== to.primitive) {
     // Unreachable at runtime (the types were matched above); snapping keeps
     // the interpolation total.

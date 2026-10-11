@@ -1,0 +1,32 @@
+import { evaluateDocumentAtFrame } from './render'
+import { renderLayersToSvgMarkup } from './renderSvg'
+import type { ResourceResolver } from './renderSvg'
+import type { AnimatorDocument } from './model'
+
+/**
+ * Standalone SVG source of one evaluated frame — the rasterization input
+ * shared by the renderer export pipeline (canvas path) and the headless CLI
+ * (resvg path). The backdrop rect is omitted when `transparent` is set so
+ * alpha formats keep the document's empty areas see-through.
+ */
+export function documentToSvgString(
+  document: AnimatorDocument,
+  frame: number,
+  resolveResource?: ResourceResolver,
+  options: { transparent?: boolean } = {}
+): string {
+  const markup = renderLayersToSvgMarkup(
+    evaluateDocumentAtFrame(document, frame),
+    resolveResource
+  )
+  const backdrop = options.transparent
+    ? ''
+    : `<rect x="0" y="0" width="${document.width}" height="${document.height}" fill="${document.background}"/>`
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${document.width}" height="${document.height}"` +
+    ` viewBox="0 0 ${document.width} ${document.height}">` +
+    backdrop +
+    markup +
+    '</svg>'
+  )
+}

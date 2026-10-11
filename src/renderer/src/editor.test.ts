@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   createDocument,
@@ -128,24 +128,58 @@ describe('Editor timeline operations', () => {
     expect(content.map((shape) => shape.id)).toEqual(['a'])
   })
 
-  it('seekToFrame extends the timeline so keyframes can land after the last one', () => {
+  it('seekToFrame clamps to the timeline instead of mutating the document', () => {
     editor.addNode(rect('a'))
-    const layerId = editor.currentLayerId
     expect(editor.duration).toBe(1)
 
-    editor.seekToFrame(5)
-    expect(editor.currentFrame).toBe(5)
-    expect(editor.duration).toBe(6)
+    // A click past the end never extends the document nor pushes history:
+    // check against a fresh editor so the addNode history entry stays out of
+    // the assertion.
+    const fresh = new Editor(createDocument('seek', 320, 180, 12))
+    fresh.seekToFrame(5)
+    expect(fresh.currentFrame).toBe(0)
+    expect(fresh.duration).toBe(1)
+    expect(fresh.canUndo).toBe(false)
 
+    // Extending the timeline stays an explicit edit (+ Frame / F5), after
+    // which keyframes can land past the last content frame.
+    editor.insertFrameHere()
+    editor.seekToFrame(1)
+    expect(editor.currentFrame).toBe(1)
+    expect(editor.duration).toBe(2)
     expect(editor.ensureNodeKeyframe('a')).toBe(true)
-    expect(editor.hasNodeKeyframeAt(layerId, 'a', 5)).toBe(true)
-    const layer = getLayer(editor.document, layerId)!
-    expect(layer.keyframes.some((keyframe) => keyframe.frame === 5)).toBe(true)
+    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'a', 1)).toBe(true)
+  })
 
-    // Seeking back stays inside the extended timeline.
-    editor.seekToFrame(2)
-    expect(editor.currentFrame).toBe(2)
-    expect(editor.duration).toBe(6)
+  it('view listeners are fault-isolated: one throwing view never starves the others', () => {
+    let failures = 0
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {
+      failures += 1
+    })
+    try {
+      let called = 0
+      editor.onDocChange(() => {
+        throw new Error('boom')
+      })
+      editor.onDocChange(() => {
+        called += 1
+      })
+      editor.addNode(rect('a'))
+      expect(called).toBe(1)
+      expect(failures).toBeGreaterThan(0)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('removeLayer auto-switches the tool off a drawing layer', () => {
+    editor.addLayerAtBottom('drawing')
+    const drawingLayerId = editor.currentLayerId
+    expect(editor.tool).toBe('brush')
+
+    editor.removeLayer(drawingLayerId)
+    expect(editor.currentLayer?.kind).toBe('object')
+    expect(editor.tool).toBe('select')
   })
 
   it('insertKeyframeHere and removeKeyframeHere act on the selected object', () => {
@@ -227,6 +261,11 @@ describe('Editor multi-select', () => {
     const layerId = editor.currentLayerId
     editor.selectNodes(['a', 'c'], 'replace')
 
+    // Extend the timeline explicitly, then move the playhead to frame 3.
+    while (editor.duration <= 3) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
     editor.seekToFrame(3)
     editor.updateSelectedNodes((node) => {
       node.center.x += 50
@@ -612,6 +651,15 @@ describe('drawing layers and paint tools', () => {
     return layer
   }
 
+  /** Grows the authored timeline up to `frame` through the explicit + Frame
+   * edit (seeking alone no longer extends the document). */
+  function extendTimelineTo(editor: Editor, frame: number): void {
+    while (editor.duration <= frame) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+  }
+
   /** Cell-op editor whose transparent buffers and stores are fully fake. */
   function seededEditor(storeLog: Uint8Array[] = []): { editor: Editor; layer: DrawingLayer } {
     let next = 0
@@ -707,6 +755,7 @@ describe('drawing layers and paint tools', () => {
 
     // A painted cell at 0, then F6 at frame 3 duplicates its resource.
     editor.commitStroke('paint-1', 0)
+    extendTimelineTo(editor, 3)
     editor.seekToFrame(3)
     expect(await editor.insertCellHere()).toBe(true)
     expect(liveLayer(editor, layer.id).cells.map((cell) => cell.frame)).toEqual([0, 3])
@@ -724,6 +773,7 @@ describe('drawing layers and paint tools', () => {
   it('insertBlankCellHere always seeds a transparent cell', async () => {
     const { editor, layer } = seededEditor()
     editor.commitStroke('paint-1', 0)
+    extendTimelineTo(editor, 3)
     editor.seekToFrame(2)
     expect(await editor.insertBlankCellHere()).toBe(true)
     // The blank cell is its own transparent resource, not the held content.
@@ -770,6 +820,7 @@ describe('drawing layers and paint tools', () => {
     expect(editor.seekToPreviousCell()).toBe(false)
     editor.commitStroke('paint-1', 0)
     editor.commitStroke('paint-2', 4)
+    extendTimelineTo(editor, 6)
     editor.seekToFrame(6)
     expect(editor.seekToPreviousCell()).toBe(true)
     expect(editor.currentFrame).toBe(4)

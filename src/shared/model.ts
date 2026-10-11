@@ -48,7 +48,45 @@ export interface SymbolNode extends NodeBase {
   assetId: string
 }
 
-export type SceneNode = PrimitiveNode | ImageNode | GroupNode | SymbolNode
+/**
+ * Vector path: `d` is SVG path data in node-local coordinates, normalized so
+ * its bounding-box center sits at (0,0). The placed size (`width`/`height`)
+ * maps that natural bbox to the stage — scale is folded into the transform,
+ * never re-encoded into `d`. Multiple subpaths (e.g. glyph outlines) are
+ * allowed; anchor editing is only offered for single-subpath paths.
+ */
+export interface PathNode extends NodeBase {
+  type: 'path'
+  d: string
+  fill?: string
+  stroke?: string
+  strokeWidth?: number
+}
+
+/** One pen anchor: on-curve point plus optional bezier handles (relative to
+ * the point). The editing view of a `PathNode`'s `d`. */
+export interface PathAnchor {
+  x: number
+  y: number
+  /** Handle controlling the incoming curve. */
+  in?: { x: number; y: number }
+  /** Handle controlling the outgoing curve. */
+  out?: { x: number; y: number }
+}
+
+/** Rendered text block laid out as explicit lines (`\n`); `width`/`height`
+ * are the measured layout box, refreshed whenever text or font changes. */
+export interface TextNode extends NodeBase {
+  type: 'text'
+  text: string
+  fontFamily: string
+  fontSize: number
+  fontWeight: number
+  fill: string
+  align: 'left' | 'center' | 'right'
+}
+
+export type SceneNode = PrimitiveNode | PathNode | TextNode | ImageNode | GroupNode | SymbolNode
 
 /** Reusable artwork: a symbol (group content) or an image (resource reference). */
 export interface Asset {
@@ -118,7 +156,7 @@ export function isDrawingLayer(layer: Layer): layer is DrawingLayer {
 
 /** The authoring document. `layers[0]` is the topmost layer. */
 export interface AnimatorDocument {
-  schemaVersion: 2
+  schemaVersion: 3
   name: string
   width: number
   height: number

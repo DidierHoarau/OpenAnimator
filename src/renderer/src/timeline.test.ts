@@ -237,15 +237,33 @@ describe('TimelineView', () => {
     expect(groupRow().querySelector('.tl-shape-kf')?.textContent).toBe('\u00d7')
   })
 
-  it('seeks past the last frame on cell clicks and keys only the target object', () => {
+  it('seeks by pointer position on tracks and keys only the target object', () => {
     editor.addNode(rect('a'))
     editor.addNode(rect('b'))
+    // Extend the authored timeline first — seeking no longer extends it.
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
     expandFirstLayer()
 
-    const cell = container.querySelector<HTMLElement>('.tl-row .tl-cell[data-frame="5"]')!
-    cell.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    // Tracks seek by geometry: HEAD_WIDTH (180) plus the clicked offset.
+    const layerTrack = container.querySelector<HTMLElement>('.tl-row .tl-track')!
+    layerTrack.getBoundingClientRect = () => ({ left: 180 }) as unknown as DOMRect
+    layerTrack.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 180 + 5 * 14 + 7 })
+    )
     expect(editor.currentFrame).toBe(5)
     expect(editor.duration).toBe(6)
+
+    // Clicking an object's track selects the object and seeks there.
+    const shapeTrack = container.querySelector<HTMLElement>('.tl-shape-row .tl-track')!
+    shapeTrack.getBoundingClientRect = () => ({ left: 180 }) as unknown as DOMRect
+    shapeTrack.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 180 + 3 * 14 + 7 })
+    )
+    expect(editor.currentFrame).toBe(3)
+    expect(editor.selectedNodeIds).toEqual(['a'])
 
     const buttonFor = (shapeId: string): HTMLButtonElement =>
       container.querySelector<HTMLButtonElement>(
@@ -255,10 +273,15 @@ describe('TimelineView', () => {
     expect(buttonFor('b').textContent).toBe('◇')
 
     buttonFor('a').click()
-    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'a', 5)).toBe(true)
-    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'b', 5)).toBe(false)
+    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'a', 3)).toBe(true)
+    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'b', 3)).toBe(false)
     expect(buttonFor('a').textContent).toBe('×')
     expect(buttonFor('b').textContent).toBe('◇')
+
+    // Keyframe markers still seek to their exact frame.
+    const marker = container.querySelector<HTMLElement>('.tl-shape-row .tl-key[data-frame="0"]')!
+    marker.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(editor.currentFrame).toBe(0)
   })
 })
 
@@ -306,11 +329,16 @@ describe('TimelineView — drawing layers', () => {
     expect(badges).toEqual(['\u25a3', '\u270e'])
   })
 
-  it('renders a filmstrip row with per-frame thumbnails and blank markers', () => {
-    const layer = addDrawingLayer()
+  it('renders a filmstrip row with one element per cell span and seeks by pointer', () => {
+    addDrawingLayer()
     editor.resources.put('res-1', new Uint8Array([1, 2, 3]))
-    // One cell at frame 3: frames 0–2 have no cell yet, 3–39 hold the cell.
+    // One cell at frame 3: frames 0–2 are blank, 3+ hold the cell.
     editor.commitStroke('res-1', 3)
+    // Extend the authored timeline so the playhead can reach frame 4+.
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
     // Expand the drawing layer (second row) to show its filmstrip.
     ;[...container.querySelectorAll<HTMLElement>('.tl-toggle')][1].click()
     view.render()
@@ -318,19 +346,22 @@ describe('TimelineView — drawing layers', () => {
     const filmstrip = container.querySelector<HTMLElement>('.tl-filmstrip-row')!
     expect(filmstrip.querySelector('.tl-head .name')?.textContent).toBe('cells')
     const cells = [...filmstrip.querySelectorAll<HTMLElement>('.tl-filmstrip-cell')]
-    // The grid always shows at least MIN_FRAMES (40) cells.
-    expect(cells.length).toBe(40)
-    expect(cells[0].dataset.frame).toBe('0')
-    expect(filmstrip.querySelectorAll('.tl-filmstrip-thumb')).toHaveLength(37)
-    const blanks = cells
-      .filter((cell) => cell.classList.contains('tl-cell-blank'))
-      .map((cell) => cell.dataset.frame)
-    expect(blanks).toEqual(['0', '1', '2'])
+    // Span-based: one blank run then one held run, not one element per frame.
+    expect(cells).toHaveLength(2)
+    expect(cells[0].classList.contains('tl-cell-blank')).toBe(true)
+    expect(cells[0].style.left).toBe('0px')
+    expect(cells[0].style.width).toBe(`${3 * 14}px`)
+    expect(cells[1].querySelectorAll('img')).toHaveLength(1)
+    expect(cells[1].style.left).toBe(`${3 * 14}px`)
+    expect(cells[1].style.width).toBe(`${(40 - 3) * 14}px`)
 
-    // Filmstrip cells seek the playhead like any track cell.
-    cells[4].dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    // Tracks seek by pointer position: a click 4.5 frame widths in lands on frame 4.
+    const track = filmstrip.querySelector<HTMLElement>('.tl-track')!
+    track.getBoundingClientRect = () => ({ left: 180 }) as unknown as DOMRect
+    track.dispatchEvent(
+      new MouseEvent('pointerdown', { bubbles: true, clientX: 180 + 4 * 14 + 7 })
+    )
     expect(editor.currentFrame).toBe(4)
-    void layer
   })
 
   it('shows cell operations and resolution in the drawing-layer context menu', () => {

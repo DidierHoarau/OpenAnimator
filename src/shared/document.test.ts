@@ -54,7 +54,7 @@ function firstLayer(doc: AnimatorDocument): ObjectLayer {
 describe('document operations', () => {
   it('creates a document with one empty layer and keyframe at 0', () => {
     const doc = createDocument('test', 960, 540, 24)
-    expect(doc.schemaVersion).toBe(2)
+    expect(doc.schemaVersion).toBe(3)
     expect(doc.layers).toHaveLength(1)
     expect(firstLayer(doc).keyframes).toEqual([{ frame: 0, nodes: [] }])
     expect(documentDuration(doc)).toBe(1)
@@ -210,13 +210,13 @@ describe('document operations', () => {
     expect(documentDuration(doc)).toBe(41)
   })
 
-  it('isAnimatorDocument requires schemaVersion 2 and validates deeply', () => {
+  it('isAnimatorDocument requires schemaVersion 3 and validates deeply', () => {
     const valid = createDocument('test', 960, 540, 24)
     firstLayer(valid).keyframes[0].nodes.push(rect('a', 0, 0))
     expect(isAnimatorDocument(valid)).toBe(true)
     expect(isAnimatorDocument(cloneDocument(valid))).toBe(true)
 
-    // Anything without schemaVersion 2 (e.g. a v1 document) is rejected here;
+    // Anything without schemaVersion 3 (e.g. a v1 document) is rejected here;
     // those go through migrateDocument instead.
     const v1 = valid as unknown as Record<string, unknown>
     delete v1.schemaVersion
@@ -370,6 +370,45 @@ describe('isSceneNode', () => {
       children: [rect('child', 0, 0)]
     }
     expect(isSceneNode(group)).toBe(true)
+
+    const path: SceneNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0L10 10',
+      stroke: '#ffffff',
+      strokeWidth: 2
+    }
+    expect(isSceneNode(path)).toBe(true)
+    expect(isSceneNode({ ...path, fill: '#22d3ee' })).toBe(true)
+    expect(isSceneNode({ ...path, d: 42 })).toBe(false)
+    expect(isSceneNode({ ...path, fill: 5 })).toBe(false)
+    expect(isSceneNode({ ...path, strokeWidth: 'thick' })).toBe(false)
+
+    const text: SceneNode = {
+      type: 'text',
+      id: 't',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hello',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 700,
+      fill: '#ffffff',
+      align: 'center'
+    }
+    expect(isSceneNode(text)).toBe(true)
+    expect(isSceneNode({ ...text, text: 5 })).toBe(false)
+    expect(isSceneNode({ ...text, fontSize: 'big' })).toBe(false)
+    expect(isSceneNode({ ...text, align: 'justified' })).toBe(false)
+    expect(isSceneNode({ ...text, fill: null })).toBe(false)
 
     expect(isSceneNode({ type: 'alien', id: 'x' })).toBe(false)
     expect(isSceneNode({ ...rect('a', 0, 0), type: 'nope' })).toBe(false)

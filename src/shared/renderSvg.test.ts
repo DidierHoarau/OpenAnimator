@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { escapeXmlAttribute, nodeToSvgMarkup, renderLayersToSvgMarkup } from './renderSvg'
-import type { GroupNode, ImageNode, PrimitiveNode, SymbolNode } from './model'
+import type { GroupNode, ImageNode, PathNode, PrimitiveNode, SymbolNode, TextNode } from './model'
 import type { RenderLayer } from './render'
 
 function shape(overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
@@ -206,5 +206,126 @@ describe('renderSvg', () => {
   it('renders an empty layer list and a layer without nodes to empty markup', () => {
     expect(renderLayersToSvgMarkup([])).toBe('')
     expect(renderLayersToSvgMarkup([{ layerId: 'l', name: 'l', nodes: [] }])).toBe('')
+  })
+
+  it('renders a path with its placed scale folded into the transform', () => {
+    const path: PathNode = {
+      type: 'path',
+      id: 'p1',
+      center: { x: 100, y: 50 },
+      width: 40,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      d: 'M-20 -10L20 10',
+      stroke: '#f59e0b',
+      strokeWidth: 3
+    }
+    const markup = nodeToSvgMarkup(path)
+    // Natural bbox of the data is 40×20, so the placed size maps 1:1.
+    expect(markup).toBe(
+      '<g transform="translate(100 50) rotate(0) scale(1 1)" opacity="1">' +
+        '<path d="M-20 -10L20 10" fill="none" stroke="#f59e0b" stroke-width="3"/></g>'
+    )
+  })
+
+  it('scales path geometry to the placed size and fills when a fill is set', () => {
+    const path: PathNode = {
+      type: 'path',
+      id: 'p2',
+      center: { x: 0, y: 0 },
+      width: 80,
+      height: 40,
+      rotation: 0,
+      opacity: 0.5,
+      d: 'M-20 -10L20 10',
+      fill: '#22d3ee'
+    }
+    const markup = nodeToSvgMarkup(path)
+    expect(markup).toContain('scale(2 2)')
+    expect(markup).toContain('fill="#22d3ee"')
+    expect(markup).toContain('opacity="0.5"')
+    expect(markup).not.toContain('stroke=')
+  })
+
+  it('escapes hostile path data into the d attribute', () => {
+    const path: PathNode = {
+      type: 'path',
+      id: 'p3',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0"><script>alert(1)</script>'
+    }
+    const markup = nodeToSvgMarkup(path)
+    expect(markup).not.toContain('<script>')
+    expect(markup).toContain('d="M0 0&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"')
+  })
+
+  it('renders text lines as tspans anchored by alignment', () => {
+    const node: TextNode = {
+      type: 'text',
+      id: 't1',
+      center: { x: 100, y: 50 },
+      width: 100,
+      height: 60,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hello\nWorld',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 700,
+      fill: '#e2e8f0',
+      align: 'center'
+    }
+    const markup = nodeToSvgMarkup(node)
+    expect(markup.startsWith('<text font-family="Noto Sans" font-size="24" font-weight="700" fill="#e2e8f0" text-anchor="middle" transform="translate(100 50) rotate(0)" opacity="1">')).toBe(true)
+    // Baselines: -30 + 19.2 for the first line, + 30 for the second.
+    expect(markup).toContain('<tspan x="0" y="-10.8">Hello</tspan>')
+    expect(markup).toContain('<tspan x="0" y="19.2">World</tspan>')
+    expect(markup.endsWith('</text>')).toBe(true)
+  })
+
+  it('renders left- and right-aligned text anchored to the box edges', () => {
+    const base: TextNode = {
+      type: 'text',
+      id: 't2',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    expect(nodeToSvgMarkup(base)).toContain('<tspan x="-50"')
+    expect(nodeToSvgMarkup({ ...base, align: 'right' })).toContain('<tspan x="50"')
+  })
+
+  it('escapes hostile text content so it cannot inject markup', () => {
+    const node: TextNode = {
+      type: 'text',
+      id: 't3',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: '<script>alert(1)</script>',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    const markup = nodeToSvgMarkup(node)
+    expect(markup).not.toContain('<script>')
+    expect(markup).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
   })
 })

@@ -4,6 +4,7 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 
 import { APP_API_CHANNEL } from '../shared/api'
 import type { AppVersions } from '../shared/api'
+import { registerExportHandlers } from './exports'
 import { registerLibraryHandlers } from './library'
 import { registerProjectHandlers } from './projects'
 
@@ -41,6 +42,7 @@ function createWindow(): void {
 app.whenReady().then(() => {
   registerProjectHandlers()
   registerLibraryHandlers()
+  registerExportHandlers()
 
   ipcMain.handle(APP_API_CHANNEL, (): AppVersions => ({
     app: app.getVersion(),

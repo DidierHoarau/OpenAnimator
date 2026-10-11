@@ -5,7 +5,9 @@ import type { Rect } from '@shared/hitTesting'
 import { evaluateDocumentAtFrame } from '@shared/render'
 import { renderLayersToSvgMarkup } from '@shared/renderSvg'
 import { isObjectLayer } from '@shared/model'
-import type { PrimitiveNode } from '@shared/model'
+import type { PathAnchor, PathNode, PrimitiveNode, TextNode } from '@shared/model'
+import { buildPathData, normalizePathData, pathDataBounds } from '@shared/pathModel'
+import { applyTextMetrics } from '@shared/textModel'
 import { identityView, panView, zoomAtView } from '@shared/viewTransform'
 import type { ViewTransform } from '@shared/viewTransform'
 import { DrawingSession } from './drawing'
@@ -13,15 +15,20 @@ import type { Editor } from './editor'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const DEFAULT_FILL = '#38bdf8'
+const DEFAULT_TEXT_FILL = '#e2e8f0'
 /** Minimum drag distance in screen pixels before a gesture is a drag. */
 const MIN_DRAG = 4
 const DEFAULT_CREATE_WIDTH = 120
 const DEFAULT_CREATE_HEIGHT = 90
 const ZOOM_STEP = 1.25
+/** Pen: stage-space distance within which a click closes the path. */
+const PEN_CLOSE_RADIUS = 10
+const PEN_STROKE = '#e2e8f0'
+const PEN_STROKE_WIDTH = 3
 
 interface DragState {
-  mode: 'create' | 'move' | 'marquee' | 'pan'
-  kind: 'rect' | 'ellipse'
+  mode: 'create' | 'move' | 'marquee' | 'pan' | 'pen'
+  kind: 'rect' | 'ellipse' | 'line'
   start: Vec2
   last: Vec2
   /** Marquee: union with the current selection instead of replacing it. */
@@ -32,6 +39,8 @@ interface DragState {
   origins: Map<string, Vec2>
   startView: ViewTransform
   preview: SVGElement | null
+  /** Pen: index of the anchor whose handles are being dragged. */
+  penIndex: number
 }
 
 /**
@@ -51,6 +60,11 @@ export class StageView {
   private drag: DragState | null = null
   /** Live paint stroke (brush/eraser), mirrored onto the overlay canvas. */
   private session: DrawingSession | null = null
+  /** Pen tool: committed anchors of the path being placed (stage coords). */
+  private penAnchors: PathAnchor[] = []
+  /** Pen tool: current pointer position for the rubber-band segment. */
+  private penCursor: Vec2 | null = null
+  private penPreview: SVGGElement | null = null
   private view: ViewTransform = identityView()
   private spaceDown = false
   private spaceUsedForPan = false
@@ -73,6 +87,9 @@ export class StageView {
     this.svg.addEventListener('pointerup', (event) => this.onPointerUp(event))
     this.svg.addEventListener('pointercancel', () => {
       this.cancelDrag()
+    })
+    this.svg.addEventListener('dblclick', () => {
+      if (this.editor.tool === 'pen') this.commitPen(false)
     })
     this.svg.addEventListener('wheel', (event) => this.onWheel(event), { passive: false })
 
@@ -145,7 +162,13 @@ export class StageView {
   private updateCursor(): void {
     if (this.spaceDown || this.editor.tool === 'hand') {
       this.svg.style.cursor = this.drag?.mode === 'pan' ? 'grabbing' : 'grab'
-    } else if (this.editor.tool === 'brush' || this.editor.tool === 'eraser') {
+    } else if (
+      this.editor.tool === 'brush' ||
+      this.editor.tool === 'eraser' ||
+      this.editor.tool === 'pen' ||
+      this.editor.tool === 'text' ||
+      this.editor.tool === 'line'
+    ) {
       this.svg.style.cursor = 'crosshair'
     } else {
       this.svg.style.cursor = ''
@@ -224,7 +247,7 @@ export class StageView {
     }
 
     if (
-      (editor.tool === 'rect' || editor.tool === 'ellipse') &&
+      (editor.tool === 'rect' || editor.tool === 'ellipse' || editor.tool === 'line') &&
       layer &&
       !layer.locked &&
       layer.visible
@@ -232,10 +255,62 @@ export class StageView {
       this.drag = this.newDrag('create', point, editor.tool)
       this.svg.setPointerCapture(event.pointerId)
       event.preventDefault()
+      return
+    }
+
+    if (editor.tool === 'pen' && layer && !layer.locked && layer.visible) {
+      // Clicking the first anchor closes the path; anything else places one.
+      const first = this.penAnchors[0]
+      if (
+        first &&
+        this.penAnchors.length >= 3 &&
+        Math.hypot(point.x - first.x, point.y - first.y) < PEN_CLOSE_RADIUS / this.view.scale
+      ) {
+        this.commitPen(true)
+        return
+      }
+      this.penAnchors.push({ x: point.x, y: point.y })
+      this.penCursor = point
+      const drag = this.newDrag('pen', point)
+      drag.penIndex = this.penAnchors.length - 1
+      this.drag = drag
+      this.svg.setPointerCapture(event.pointerId)
+      this.drawPenPreview()
+      event.preventDefault()
+      return
+    }
+
+    if (editor.tool === 'text' && layer && !layer.locked && layer.visible) {
+      this.placeTextNode(point)
+      event.preventDefault()
     }
   }
 
-  private newDrag(mode: DragState['mode'], point: Vec2, kind: 'rect' | 'ellipse' = 'rect'): DragState {
+  /** Creates a default text node at `point` and selects it; content and font
+   * are edited in the properties panel. The tool switches back to select so
+   * extra clicks do not stack more text nodes. */
+  private placeTextNode(point: Vec2): void {
+    const node: TextNode = {
+      id: createId('node'),
+      type: 'text',
+      center: point,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      text: 'Text',
+      fontFamily: 'Noto Sans',
+      fontSize: 48,
+      fontWeight: 400,
+      fill: DEFAULT_TEXT_FILL,
+      align: 'left'
+    }
+    applyTextMetrics(node, this.editor.measureText)
+    this.editor.addNode(node)
+    this.editor.setTool('select')
+  }
+
+  private newDrag(mode: DragState['mode'], point: Vec2, kind: DragState['kind'] = 'rect'): DragState {
     return {
       mode,
       kind,
@@ -245,7 +320,8 @@ export class StageView {
       moveStarted: false,
       origins: new Map(),
       startView: { ...this.view },
-      preview: null
+      preview: null,
+      penIndex: -1
     }
   }
 
@@ -257,10 +333,19 @@ export class StageView {
       return
     }
     const drag = this.drag
-    if (!drag) return
+    if (!drag) {
+      // Pen hover: keep the rubber-band segment attached to the pointer.
+      if (this.editor.tool === 'pen' && this.penAnchors.length > 0) {
+        this.penCursor = this.toStagePoint(event)
+        this.drawPenPreview()
+      }
+      return
+    }
     drag.last = this.toStagePoint(event)
     if (drag.mode === 'create') {
       this.updatePreview(drag)
+    } else if (drag.mode === 'pen') {
+      this.updatePenHandles(drag)
     } else if (drag.mode === 'move') {
       this.updateMove(drag)
     } else if (drag.mode === 'marquee') {
@@ -312,6 +397,10 @@ export class StageView {
     if (drag.mode === 'create') {
       drag.preview?.remove()
       this.finishCreate(drag)
+    } else if (drag.mode === 'pen') {
+      // The anchor (with its handles) stays placed; the path commits on
+      // double-click, closing click, Enter or layer/tool change.
+      this.drawPenPreview()
     } else if (drag.mode === 'move') {
       if (drag.moveStarted) this.editor.endInteraction()
     } else if (drag.mode === 'marquee') {
@@ -329,6 +418,10 @@ export class StageView {
   }
 
   private finishCreate(drag: DragState): void {
+    if (drag.kind === 'line') {
+      this.finishLineCreate(drag)
+      return
+    }
     let width = Math.abs(drag.last.x - drag.start.x)
     let height = Math.abs(drag.last.y - drag.start.y)
     let center = {
@@ -355,6 +448,138 @@ export class StageView {
       opacity: 1
     }
     this.editor.addNode(node)
+  }
+
+  /** Commits a line-tool drag as a straight 2-anchor path node. */
+  private finishLineCreate(drag: DragState): void {
+    const minSize = MIN_DRAG / this.view.scale
+    let start = drag.start
+    let end = drag.last
+    if (Math.abs(end.x - start.x) < minSize && Math.abs(end.y - start.y) < minSize) {
+      // A click without a real drag produces a default-length horizontal line.
+      const half = DEFAULT_CREATE_WIDTH / this.view.scale / 2
+      start = { x: start.x - half, y: start.y }
+      end = { x: start.x + 2 * half, y: start.y }
+    }
+    const raw = buildPathData(
+      [
+        { x: start.x, y: start.y },
+        { x: end.x, y: end.y }
+      ],
+      false
+    )
+    const bounds = pathDataBounds(raw)
+    const d = normalizePathData(raw)
+    const node: PathNode = {
+      id: createId('node'),
+      type: 'path',
+      center: bounds
+        ? { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+        : { ...start },
+      width: Math.max(2, bounds?.width ?? 2),
+      height: Math.max(2, bounds?.height ?? 2),
+      rotation: 0,
+      opacity: 1,
+      d,
+      stroke: PEN_STROKE,
+      strokeWidth: PEN_STROKE_WIDTH
+    }
+    this.editor.addNode(node)
+  }
+
+  /**
+   * Commits the pen path: consecutive duplicate anchors are dropped, short
+   * paths are discarded, and the geometry is normalized into a PathNode —
+   * filled when closed, stroked when open.
+   */
+  private commitPen(closed: boolean): void {
+    const anchors = this.penAnchors.filter((anchor, index) => {
+      const previous = this.penAnchors[index - 1]
+      return !previous || Math.hypot(anchor.x - previous.x, anchor.y - previous.y) > 0.5
+    })
+    this.cancelPen()
+    if (anchors.length < 2) return
+    const raw = buildPathData(anchors, closed)
+    const bounds = pathDataBounds(raw)
+    if (!bounds) return
+    const node: PathNode = {
+      id: createId('node'),
+      type: 'path',
+      center: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
+      width: Math.max(2, bounds.width),
+      height: Math.max(2, bounds.height),
+      rotation: 0,
+      opacity: 1,
+      d: normalizePathData(raw),
+      ...(closed
+        ? { fill: DEFAULT_FILL, stroke: PEN_STROKE, strokeWidth: PEN_STROKE_WIDTH }
+        : { stroke: PEN_STROKE, strokeWidth: PEN_STROKE_WIDTH })
+    }
+    this.editor.addNode(node)
+  }
+
+  /** Discards the in-progress pen path and its preview. */
+  cancelPen(): void {
+    this.penAnchors = []
+    this.penCursor = null
+    this.clearPenPreview()
+  }
+
+  /** Public hook for the keyboard shortcuts (Enter commits, Escape cancels). */
+  finishPen(): void {
+    if (this.editor.tool === 'pen') this.commitPen(false)
+  }
+
+  private updatePenHandles(drag: DragState): void {
+    const anchor = this.penAnchors[drag.penIndex]
+    if (!anchor) return
+    const out = { x: drag.last.x - anchor.x, y: drag.last.y - anchor.y }
+    if (Math.hypot(out.x, out.y) < 2 / this.view.scale) {
+      delete anchor.out
+      delete anchor.in
+    } else {
+      // A drag pulls a mirrored smooth handle pair out of the anchor.
+      anchor.out = out
+      anchor.in = { x: -out.x, y: -out.y }
+    }
+    this.drawPenPreview()
+  }
+
+  /** Dashed preview of the in-progress pen path with its anchors. */
+  private drawPenPreview(): void {
+    if (!this.penPreview) {
+      this.penPreview = document.createElementNS(SVG_NS, 'g')
+      this.penPreview.classList.add('stage__pen')
+      this.svg.appendChild(this.penPreview)
+    }
+    const group = this.penPreview
+    while (group.firstChild) group.removeChild(group.firstChild)
+    if (this.penAnchors.length === 0) return
+    const preview = document.createElementNS(SVG_NS, 'path')
+    const anchors = [...this.penAnchors]
+    if (this.penCursor && this.drag === null) {
+      anchors.push({ x: this.penCursor.x, y: this.penCursor.y })
+    }
+    preview.setAttribute('d', buildPathData(anchors, false))
+    preview.setAttribute('fill', 'none')
+    preview.setAttribute('stroke', DEFAULT_FILL)
+    preview.setAttribute('stroke-width', '1.5')
+    preview.setAttribute('stroke-dasharray', '6 4')
+    preview.setAttribute('vector-effect', 'non-scaling-stroke')
+    group.appendChild(preview)
+    for (const anchor of this.penAnchors) {
+      const dot = document.createElementNS(SVG_NS, 'circle')
+      dot.setAttribute('cx', String(anchor.x))
+      dot.setAttribute('cy', String(anchor.y))
+      dot.setAttribute('r', String(3 / this.view.scale))
+      dot.setAttribute('fill', DEFAULT_FILL)
+      group.appendChild(dot)
+    }
+  }
+
+  private clearPenPreview(): void {
+    this.penPreview?.remove()
+    this.penPreview = null
   }
 
   private applyMarquee(drag: DragState): void {
@@ -390,6 +615,14 @@ export class StageView {
     const drag = this.drag
     if (!drag) return
     this.drag = null
+    if (drag.mode === 'pen') {
+      // The in-flight anchor was never committed by the user: drop it.
+      this.penAnchors.splice(drag.penIndex, 1)
+      if (this.penAnchors.length === 0) this.clearPenPreview()
+      else this.drawPenPreview()
+      this.updateCursor()
+      return
+    }
     if (drag.mode === 'move' && drag.moveStarted) this.editor.endInteraction()
     drag.preview?.remove()
     this.updateCursor()
@@ -446,6 +679,22 @@ export class StageView {
   }
 
   private updatePreview(drag: DragState): void {
+    if (drag.kind === 'line') {
+      let preview = drag.preview as SVGLineElement | null
+      if (!preview) {
+        preview = document.createElementNS(SVG_NS, 'line')
+        preview.setAttribute('stroke', DEFAULT_FILL)
+        preview.setAttribute('stroke-width', '1.5')
+        preview.setAttribute('vector-effect', 'non-scaling-stroke')
+        this.svg.appendChild(preview)
+        drag.preview = preview
+      }
+      preview.setAttribute('x1', String(drag.start.x))
+      preview.setAttribute('y1', String(drag.start.y))
+      preview.setAttribute('x2', String(drag.last.x))
+      preview.setAttribute('y2', String(drag.last.y))
+      return
+    }
     let preview = drag.preview
     if (!preview) {
       preview = document.createElementNS(SVG_NS, drag.kind === 'rect' ? 'rect' : 'ellipse')
@@ -510,9 +759,8 @@ export class StageView {
         if (frame < 0 || frame >= editor.duration) continue
         const group = document.createElementNS(SVG_NS, 'g')
         group.setAttribute('opacity', String(0.24 / Math.abs(offset)))
-        group.innerHTML = renderLayersToSvgMarkup(
-          evaluateDocumentAtFrame(doc, frame),
-          editor.resources.getUrl
+        group.innerHTML = renderLayersToSvgMarkup(evaluateDocumentAtFrame(doc, frame), (id) =>
+          editor.resources.getUrl(id)
         )
         ghosts.appendChild(group)
       }
@@ -522,7 +770,7 @@ export class StageView {
     const stageContent = document.createElementNS(SVG_NS, 'g')
     stageContent.innerHTML = renderLayersToSvgMarkup(
       evaluateDocumentAtFrame(doc, editor.currentFrame),
-      editor.resources.getUrl
+      (id) => editor.resources.getUrl(id)
     )
     this.svg.appendChild(stageContent)
 
@@ -546,6 +794,11 @@ export class StageView {
       }
     }
     this.updateCursor()
+    // A pen path is abandoned when the tool changes; otherwise it previews.
+    if (this.penAnchors.length > 0) {
+      if (editor.tool === 'pen') this.drawPenPreview()
+      else this.cancelPen()
+    }
     if (this.session) this.paintOverlay()
     else this.clearOverlay()
   }
