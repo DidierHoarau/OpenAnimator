@@ -1,15 +1,14 @@
 import type { AnimatorDocument, Asset, SceneNode } from './model'
+import { isObjectLayer } from './model'
 
 /**
  * Counts how many times each resource is referenced by the document: one walk
- * over every layer's keyframes, recursing into group children, plus one walk
- * over the document assets (image assets reference their resource; symbol
- * assets reference the images inside their content, including through nested
- * symbol instances, guarded against cycles). Used by the main process to
- * write only referenced resources into the project file and for the explicit
- * purge-unused command. Resources referenced by nodes that merely hold
- * through (no dedicated keyframe) are counted through their owning keyframe
- * content — the count is over the persisted content.
+ * over every object layer's keyframes (recursing into group children), one
+ * over every drawing layer's cells, plus one walk over the document assets
+ * (image assets reference their resource; symbol assets reference the images
+ * inside their content, including through nested symbol instances, guarded
+ * against cycles). Used by the main process to write only referenced
+ * resources into the project file and for the explicit purge-unused command.
  */
 export function collectResourceCounts(document: AnimatorDocument): Map<string, number> {
   const counts = new Map<string, number>()
@@ -26,8 +25,12 @@ export function collectResourceCounts(document: AnimatorDocument): Map<string, n
     }
   }
   for (const layer of document.layers) {
-    for (const keyframe of layer.keyframes) {
-      for (const node of keyframe.nodes) visit(node)
+    if (isObjectLayer(layer)) {
+      for (const keyframe of layer.keyframes) {
+        for (const node of keyframe.nodes) visit(node)
+      }
+    } else {
+      for (const cell of layer.cells) count(cell.resourceId)
     }
   }
   const byId = new Map(document.assets.map((asset) => [asset.id, asset]))

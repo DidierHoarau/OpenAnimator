@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createDocument, getLayer } from '@shared/document'
-import type { PrimitiveNode, SceneNode } from '@shared/model'
+import type { DrawingLayer, PrimitiveNode, SceneNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { TimelineView } from './timeline'
@@ -259,5 +259,119 @@ describe('TimelineView', () => {
     expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'b', 5)).toBe(false)
     expect(buttonFor('a').textContent).toBe('×')
     expect(buttonFor('b').textContent).toBe('◇')
+  })
+})
+
+describe('TimelineView — drawing layers', () => {
+  let editor: Editor
+  let container: HTMLElement
+  let view: TimelineView
+
+  beforeEach(() => {
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24), {
+      createTransparentPng: async () => new Uint8Array([0]),
+      storeResource: async () => 'res-1'
+    })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    view = new TimelineView(editor, container)
+  })
+
+  const addDrawingLayer = (): DrawingLayer => {
+    editor.addLayerAtBottom('drawing')
+    const layer = getLayer(editor.document, editor.currentLayerId)!
+    if (layer.kind !== 'drawing') throw new Error('expected a drawing layer')
+    return layer
+  }
+
+  it('adds object and drawing layers from the two bottom lines', () => {
+    const lines = [...container.querySelectorAll<HTMLElement>('.tl-add-layer')]
+    expect(lines.map((line) => line.textContent)).toEqual(['+ Object Layer', '+ Drawing Layer'])
+
+    lines[1].click()
+    expect(editor.document.layers[1].kind).toBe('drawing')
+    expect(editor.tool).toBe('brush')
+
+    lines[0].click()
+    expect(editor.document.layers[2].kind).toBe('object')
+  })
+
+  it('badges each layer row with its kind', () => {
+    editor.addLayerAtBottom('drawing')
+    view.render()
+    const badges = [...container.querySelectorAll<HTMLElement>('.tl-row .tl-kind')].map(
+      (badge) => badge.textContent
+    )
+    expect(badges).toEqual(['\u25a3', '\u270e'])
+  })
+
+  it('renders a filmstrip row with per-frame thumbnails and blank markers', () => {
+    const layer = addDrawingLayer()
+    editor.resources.put('res-1', new Uint8Array([1, 2, 3]))
+    // One cell at frame 3: frames 0–2 have no cell yet, 3–39 hold the cell.
+    editor.commitStroke('res-1', 3)
+    // Expand the drawing layer (second row) to show its filmstrip.
+    ;[...container.querySelectorAll<HTMLElement>('.tl-toggle')][1].click()
+    view.render()
+
+    const filmstrip = container.querySelector<HTMLElement>('.tl-filmstrip-row')!
+    expect(filmstrip.querySelector('.tl-head .name')?.textContent).toBe('cells')
+    const cells = [...filmstrip.querySelectorAll<HTMLElement>('.tl-filmstrip-cell')]
+    // The grid always shows at least MIN_FRAMES (40) cells.
+    expect(cells.length).toBe(40)
+    expect(cells[0].dataset.frame).toBe('0')
+    expect(filmstrip.querySelectorAll('.tl-filmstrip-thumb')).toHaveLength(37)
+    const blanks = cells
+      .filter((cell) => cell.classList.contains('tl-cell-blank'))
+      .map((cell) => cell.dataset.frame)
+    expect(blanks).toEqual(['0', '1', '2'])
+
+    // Filmstrip cells seek the playhead like any track cell.
+    cells[4].dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    expect(editor.currentFrame).toBe(4)
+    void layer
+  })
+
+  it('shows cell operations and resolution in the drawing-layer context menu', () => {
+    const layer = addDrawingLayer()
+    view.render()
+    const row = [...container.querySelectorAll<HTMLElement>('.tl-row')].find(
+      (candidate) => candidate.dataset.layerId === layer.id
+    )!
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 12, clientY: 12 }))
+    const menu = container.querySelector<HTMLElement>('.tl-context-menu')!
+    const labels = [...menu.querySelectorAll('button')].map((button) => button.textContent)
+    expect(labels).toEqual(
+      expect.arrayContaining([
+        'Insert Cell (F6)',
+        'Insert Blank Cell (F7)',
+        'Clear Cell',
+        'Remove Cell'
+      ])
+    )
+    const resolution = menu.querySelector<HTMLInputElement>('.tl-context-resolution input')!
+    expect(resolution.value).toBe('1')
+    expect(resolution.closest('.tl-context-resolution')?.classList.contains('hidden')).toBe(false)
+
+    // Changing the resolution updates the layer.
+    resolution.value = '3'
+    resolution.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(
+      (getLayer(editor.document, layer.id) as DrawingLayer).resolutionScale
+    ).toBe(3)
+  })
+
+  it('hides cell operations in the object-layer context menu', () => {
+    view.render()
+    const row = container.querySelector<HTMLElement>('.tl-row')!
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 12, clientY: 12 }))
+    const menu = container.querySelector<HTMLElement>('.tl-context-menu')!
+    const insertCell = [...menu.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Insert Cell (F6)'
+    )!
+    // The cell operations exist for every layer but are hidden on objects.
+    expect(insertCell.classList.contains('hidden')).toBe(true)
+    expect(menu.querySelector('.tl-context-resolution')?.classList.contains('hidden')).toBe(true)
   })
 })

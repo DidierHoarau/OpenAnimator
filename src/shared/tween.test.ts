@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { evaluateLayerAtFrame } from './document'
-import type { AnimatorDocument, GroupNode, ImageNode, Layer, PrimitiveNode, SceneNode, SymbolNode } from './model'
+import type { AnimatorDocument, GroupNode, ImageNode, ObjectLayer, PrimitiveNode, SceneNode, SymbolNode } from './model'
 import { tweenNode, tweenNodes } from './tween'
 
 function shape(id: string, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
@@ -179,7 +179,8 @@ describe('tweenNodes', () => {
 })
 
 describe('evaluateLayerAtFrame', () => {
-  const layer: Layer = {
+  const layer: ObjectLayer = {
+    kind: 'object',
     id: 'layer',
     name: 'Layer 1',
     visible: true,
@@ -195,7 +196,7 @@ describe('evaluateLayerAtFrame', () => {
   }
 
   it('renders nothing before the first keyframe', () => {
-    const emptyLayer: Layer = { ...layer, keyframes: [{ frame: 5, nodes: [shape('a')] }] }
+    const emptyLayer: ObjectLayer = { ...layer, keyframes: [{ frame: 5, nodes: [shape('a')] }] }
     expect(evaluateLayerAtFrame(emptyLayer, 2)).toEqual([])
   })
 
@@ -214,7 +215,7 @@ describe('evaluateLayerAtFrame', () => {
   })
 
   it('tweens each node toward its own next keyframe and hides it after its last one', () => {
-    const partial: Layer = {
+    const partial: ObjectLayer = {
       ...layer,
       keyframes: [
         {
@@ -245,7 +246,8 @@ describe('evaluateLayerAtFrame', () => {
   })
 
   it('tweens a group through a tweened span as one unit', () => {
-    const groupLayer: Layer = {
+    const groupLayer: ObjectLayer = {
+      kind: 'object',
       id: 'layer',
       name: 'Layer 1',
       visible: true,
@@ -266,7 +268,7 @@ describe('evaluateLayerAtFrame', () => {
   })
 
   it('ignores a tween on the final keyframe', () => {
-    const trailing: Layer = {
+    const trailing: ObjectLayer = {
       ...layer,
       keyframes: [
         ...layer.keyframes,
@@ -289,7 +291,7 @@ describe('document validation', () => {
       height: 100,
       fps: 24,
       background: '#000000',
-      layers: [{ id: 'l', name: 'L', visible: true, locked: false, keyframes: [] as never[] }],
+      layers: [{ kind: 'object', id: 'l', name: 'L', visible: true, locked: false, keyframes: [] as never[] }],
       assets: []
     }
     expect(isAnimatorDocument(valid)).toBe(true)

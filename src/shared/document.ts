@@ -1,7 +1,7 @@
 import { evaluateEasing } from './easing'
 import type { EasingName } from './easing'
-import type { AnimatorDocument, Asset, Keyframe, Layer, SceneNode } from './model'
-import { cloneNode } from './model'
+import type { AnimatorDocument, Asset, DrawingCell, DrawingLayer, Keyframe, Layer, ObjectLayer, SceneNode } from './model'
+import { cloneNode, isObjectLayer } from './model'
 import { tweenNode } from './tween'
 
 let idCounter = 0
@@ -12,13 +12,28 @@ export function createId(prefix: string): string {
   return `${prefix}-${idCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-export function createLayer(name: string): Layer {
+export function createLayer(name: string): ObjectLayer {
   return {
+    kind: 'object',
     id: createId('layer'),
     name,
     visible: true,
     locked: false,
     keyframes: []
+  }
+}
+
+/** A new drawing layer starts blank: its first cell appears on the first
+ * stroke or cell operation. */
+export function createDrawingLayer(name: string, resolutionScale = 1): DrawingLayer {
+  return {
+    kind: 'drawing',
+    id: createId('layer'),
+    name,
+    visible: true,
+    locked: false,
+    resolutionScale,
+    cells: []
   }
 }
 
@@ -42,20 +57,26 @@ export function getLayer(document: AnimatorDocument, layerId: string): Layer | u
   return document.layers.find((layer) => layer.id === layerId)
 }
 
-/** Total number of frames: the furthest keyframe + 1 and the authored length
- * (`frames`), whichever is larger; at least 1. */
+/** Total number of frames: the furthest keyframe or cell + 1 and the authored
+ * length (`frames`), whichever is larger; at least 1. */
 export function documentDuration(document: AnimatorDocument): number {
   let max = 0
   for (const layer of document.layers) {
-    for (const keyframe of layer.keyframes) {
-      max = Math.max(max, keyframe.frame)
+    if (isObjectLayer(layer)) {
+      for (const keyframe of layer.keyframes) {
+        max = Math.max(max, keyframe.frame)
+      }
+    } else {
+      for (const cell of layer.cells) {
+        max = Math.max(max, cell.frame)
+      }
     }
   }
   return Math.max(1, max + 1, document.frames ?? 0)
 }
 
 /** Index of the last keyframe at or before `frame`, or -1 when none exists. */
-export function findKeyframeIndexForFrame(layer: Layer, frame: number): number {
+export function findKeyframeIndexForFrame(layer: ObjectLayer, frame: number): number {
   let index = -1
   for (let i = 0; i < layer.keyframes.length; i++) {
     if (layer.keyframes[i].frame <= frame) index = i
@@ -64,8 +85,51 @@ export function findKeyframeIndexForFrame(layer: Layer, frame: number): number {
   return index
 }
 
-export function findKeyframeAtFrame(layer: Layer, frame: number): Keyframe | undefined {
+export function findKeyframeAtFrame(layer: ObjectLayer, frame: number): Keyframe | undefined {
   return layer.keyframes.find((keyframe) => keyframe.frame === frame)
+}
+
+/** Index of the last cell at or before `frame`, or -1 when none exists. */
+export function findCellIndexForFrame(layer: DrawingLayer, frame: number): number {
+  let index = -1
+  for (let i = 0; i < layer.cells.length; i++) {
+    if (layer.cells[i].frame <= frame) index = i
+    else break
+  }
+  return index
+}
+
+export function findCellAtFrame(layer: DrawingLayer, frame: number): DrawingCell | undefined {
+  return layer.cells.find((cell) => cell.frame === frame)
+}
+
+/**
+ * Resource id of the cell holding `frame`: the latest cell at or before it
+ * (cells hold until the next cell), or null when the layer is blank there —
+ * after the last cell a drawing layer shows nothing, consistent with the
+ * per-object spans of object layers.
+ */
+export function resolveCellAtFrame(layer: DrawingLayer, frame: number): string | null {
+  const index = findCellIndexForFrame(layer, frame)
+  return index === -1 ? null : layer.cells[index].resourceId
+}
+
+/** Frame of the closest cell strictly before `frame`, or null. */
+export function findPreviousCellFrame(layer: DrawingLayer, frame: number): number | null {
+  let latest: number | null = null
+  for (const cell of layer.cells) {
+    if (cell.frame < frame) latest = cell.frame
+    else break
+  }
+  return latest
+}
+
+/** Frame of the closest cell strictly after `frame`, or null. */
+export function findNextCellFrame(layer: DrawingLayer, frame: number): number | null {
+  for (const cell of layer.cells) {
+    if (cell.frame > frame) return cell.frame
+  }
+  return null
 }
 
 /**
@@ -74,7 +138,7 @@ export function findKeyframeAtFrame(layer: Layer, frame: number): Keyframe | und
  * earliest keyframe containing it is returned instead, so callers can always
  * copy an existing pose forward. Returns -1 when the node never appears.
  */
-export function findNearestNodeKeyframeIndex(layer: Layer, nodeId: string, frame: number): number {
+export function findNearestNodeKeyframeIndex(layer: ObjectLayer, nodeId: string, frame: number): number {
   let latest = -1
   let earliest = -1
   for (let i = 0; i < layer.keyframes.length; i++) {
@@ -92,7 +156,7 @@ export function findNearestNodeKeyframeIndex(layer: Layer, nodeId: string, frame
  * toward that node's own next keyframe when the owning keyframe carries a
  * tween.
  */
-export function evaluateLayerAtFrame(layer: Layer, frame: number): SceneNode[] {
+export function evaluateLayerAtFrame(layer: ObjectLayer, frame: number): SceneNode[] {
   const last = new Map<string, number>()
   for (let i = 0; i < layer.keyframes.length; i++) {
     for (const node of layer.keyframes[i].nodes) {
@@ -148,7 +212,7 @@ export function evaluateLayerAtFrame(layer: Layer, frame: number): SceneNode[] {
  * Inserts a keyframe at `frame` holding a copy of the content active at that
  * frame. Returns the created keyframe, or null when one already exists there.
  */
-export function insertKeyframe(layer: Layer, frame: number): Keyframe | null {
+export function insertKeyframe(layer: ObjectLayer, frame: number): Keyframe | null {
   if (findKeyframeAtFrame(layer, frame)) return null
   const previous = findKeyframeIndexForFrame(layer, frame)
   const nodes = previous === -1 ? [] : layer.keyframes[previous].nodes.map(cloneNode)
@@ -159,7 +223,7 @@ export function insertKeyframe(layer: Layer, frame: number): Keyframe | null {
 }
 
 /** Inserts a blank (empty) keyframe at `frame`. Returns null if one exists. */
-export function insertBlankKeyframe(layer: Layer, frame: number): Keyframe | null {
+export function insertBlankKeyframe(layer: ObjectLayer, frame: number): Keyframe | null {
   if (findKeyframeAtFrame(layer, frame)) return null
   const keyframe: Keyframe = { frame, nodes: [] }
   layer.keyframes.push(keyframe)
@@ -168,16 +232,49 @@ export function insertBlankKeyframe(layer: Layer, frame: number): Keyframe | nul
 }
 
 /** Removes the keyframe at `frame`. Returns true when something was removed. */
-export function removeKeyframe(layer: Layer, frame: number): boolean {
+export function removeKeyframe(layer: ObjectLayer, frame: number): boolean {
   const index = layer.keyframes.findIndex((keyframe) => keyframe.frame === frame)
   if (index === -1) return false
   layer.keyframes.splice(index, 1)
   return true
 }
 
+/**
+ * Sets the content of the cell at `frame`: creates the cell when the frame
+ * has none (auto-cell on draw), or re-points the existing one. Returns the cell.
+ */
+export function setCellContent(layer: DrawingLayer, frame: number, resourceId: string): DrawingCell {
+  const existing = findCellAtFrame(layer, frame)
+  if (existing) {
+    existing.resourceId = resourceId
+    return existing
+  }
+  const cell: DrawingCell = { frame, resourceId }
+  layer.cells.push(cell)
+  layer.cells.sort((a, b) => a.frame - b.frame)
+  return cell
+}
+
+/**
+ * Inserts a cell at `frame` holding `resourceId`. Returns the created cell,
+ * or null when a cell already exists exactly at that frame.
+ */
+export function insertCell(layer: DrawingLayer, frame: number, resourceId: string): DrawingCell | null {
+  if (findCellAtFrame(layer, frame)) return null
+  return setCellContent(layer, frame, resourceId)
+}
+
+/** Removes the cell exactly at `frame`. Returns true when one was removed. */
+export function removeCell(layer: DrawingLayer, frame: number): boolean {
+  const index = layer.cells.findIndex((cell) => cell.frame === frame)
+  if (index === -1) return false
+  layer.cells.splice(index, 1)
+  return true
+}
+
 /** Sets or clears the tween on the keyframe at `frame`. */
 export function setKeyframeTween(
-  layer: Layer,
+  layer: ObjectLayer,
   frame: number,
   tween: Keyframe['tween']
 ): boolean {
@@ -188,16 +285,22 @@ export function setKeyframeTween(
   return true
 }
 
-/** Inserts a frame on the given layer: shifts the layer's keyframes strictly
- * after `frame` one frame later (extending the hold of the keyframe active at
- * the playhead) and grows the document's authored timeline so the playhead can
- * move past the last keyframe. */
+/** Inserts a frame on the timeline: shifts the keyframes of object layers and
+ * the cells of drawing layers strictly after `frame` one frame later
+ * (extending the hold of the content active at the playhead) and grows the
+ * document's authored timeline so the playhead can move past the last content. */
 export function insertFrame(document: AnimatorDocument, layerId: string, frame: number): void {
   const layer = getLayer(document, layerId)
   if (!layer) return
   for (const target of document.layers) {
-    for (const keyframe of target.keyframes) {
-      if (keyframe.frame > frame) keyframe.frame += 1
+    if (isObjectLayer(target)) {
+      for (const keyframe of target.keyframes) {
+        if (keyframe.frame > frame) keyframe.frame += 1
+      }
+    } else {
+      for (const cell of target.cells) {
+        if (cell.frame > frame) cell.frame += 1
+      }
     }
   }
   document.frames = Math.max(document.frames ?? 0, frame + 2)
@@ -205,7 +308,7 @@ export function insertFrame(document: AnimatorDocument, layerId: string, frame: 
 
 /** Adds a node to the keyframe content active at `frame`, creating a blank
  * keyframe first when the frame sits before the first keyframe. */
-export function addNodeToLayer(layer: Layer, frame: number, node: SceneNode): void {
+export function addNodeToLayer(layer: ObjectLayer, frame: number, node: SceneNode): void {
   let keyframe = findKeyframeAtFrame(layer, frame)
   if (!keyframe) {
     const index = findKeyframeIndexForFrame(layer, frame)
@@ -225,7 +328,7 @@ export function addNodeToLayer(layer: Layer, frame: number, node: SceneNode): vo
  * keyframe becomes empty it is removed as well: the timeline has no blank
  * keyframes, so content before the frame holds through it.
  */
-export function removeNodeFromLayer(layer: Layer, frame: number, nodeId: string): boolean {
+export function removeNodeFromLayer(layer: ObjectLayer, frame: number, nodeId: string): boolean {
   const index = findKeyframeIndexForFrame(layer, frame)
   if (index === -1) return false
   const keyframe = layer.keyframes[index]
@@ -238,7 +341,7 @@ export function removeNodeFromLayer(layer: Layer, frame: number, nodeId: string)
 
 /** Updates a node inside the keyframe content active at `frame`. */
 export function updateNodeInLayer(
-  layer: Layer,
+  layer: ObjectLayer,
   frame: number,
   nodeId: string,
   update: (node: SceneNode) => void
@@ -256,7 +359,7 @@ export function updateNodeInLayer(
  * Keyframes emptied by the removal are dropped. Returns how many keyframes
  * contained the node.
  */
-export function removeNodeFromAllKeyframes(layer: Layer, nodeId: string): number {
+export function removeNodeFromAllKeyframes(layer: ObjectLayer, nodeId: string): number {
   let removed = 0
   for (let i = layer.keyframes.length - 1; i >= 0; i--) {
     const keyframe = layer.keyframes[i]
@@ -270,7 +373,7 @@ export function removeNodeFromAllKeyframes(layer: Layer, nodeId: string): number
 }
 
 /** Sets the display name of a node in every keyframe that contains it. */
-export function renameNodeInLayer(layer: Layer, nodeId: string, name: string): boolean {
+export function renameNodeInLayer(layer: ObjectLayer, nodeId: string, name: string): boolean {
   let renamed = false
   for (const keyframe of layer.keyframes) {
     const node = keyframe.nodes.find((candidate) => candidate.id === nodeId)
@@ -283,17 +386,24 @@ export function renameNodeInLayer(layer: Layer, nodeId: string, name: string): b
 }
 
 /**
- * Removes a frame from the timeline: keyframes after `frame` shift one frame
- * earlier on every layer and the keyframe exactly at `frame` is deleted, so
- * the content of frame `frame + 1` collapses into `frame`. A layer's last
- * remaining keyframe is never removed.
+ * Removes a frame from the timeline: keyframes of object layers and cells of
+ * drawing layers after `frame` shift one frame earlier and the content exactly
+ * at `frame` is deleted, so the content of frame `frame + 1` collapses into
+ * `frame`. A layer's last remaining keyframe or cell is never removed.
  */
 export function removeFrame(document: AnimatorDocument, frame: number): void {
   for (const layer of document.layers) {
-    for (const keyframe of layer.keyframes) {
-      if (keyframe.frame > frame) keyframe.frame -= 1
+    if (isObjectLayer(layer)) {
+      for (const keyframe of layer.keyframes) {
+        if (keyframe.frame > frame) keyframe.frame -= 1
+      }
+      if (layer.keyframes.length > 1) removeKeyframe(layer, frame)
+    } else {
+      for (const cell of layer.cells) {
+        if (cell.frame > frame) cell.frame -= 1
+      }
+      if (layer.cells.length > 1) removeCell(layer, frame)
     }
-    if (layer.keyframes.length > 1) removeKeyframe(layer, frame)
   }
   if (document.frames !== undefined) {
     document.frames = Math.max(1, document.frames - 1)
@@ -322,10 +432,25 @@ export function renameLayer(document: AnimatorDocument, layerId: string, name: s
 export function addLayer(
   document: AnimatorDocument,
   name: string,
-  position: 'top' | 'bottom' = 'top'
+  position?: 'top' | 'bottom',
+  kind?: 'object'
+): ObjectLayer
+export function addLayer(
+  document: AnimatorDocument,
+  name: string,
+  position: 'top' | 'bottom' | undefined,
+  kind: 'drawing'
+): DrawingLayer
+export function addLayer(
+  document: AnimatorDocument,
+  name: string,
+  position: 'top' | 'bottom' = 'top',
+  kind: Layer['kind'] = 'object'
 ): Layer {
-  const layer = createLayer(name)
-  layer.keyframes.push({ frame: 0, nodes: [] })
+  const layer: Layer = kind === 'drawing' ? createDrawingLayer(name) : createLayer(name)
+  if (isObjectLayer(layer)) {
+    layer.keyframes.push({ frame: 0, nodes: [] })
+  }
   // New layers go on top unless explicitly appended at the bottom.
   if (position === 'bottom') document.layers.push(layer)
   else document.layers.unshift(layer)
@@ -401,17 +526,35 @@ function isKeyframe(value: unknown): value is Keyframe {
   return EASING_NAMES.includes((keyframe.tween as { easing?: unknown }).easing as EasingName)
 }
 
+function isDrawingCell(value: unknown): value is DrawingCell {
+  if (typeof value !== 'object' || value === null) return false
+  const cell = value as Record<string, unknown> & Partial<DrawingCell>
+  return Number.isInteger(cell.frame) && (cell.frame as number) >= 0 && typeof cell.resourceId === 'string'
+}
+
 function isLayer(value: unknown): value is Layer {
   if (typeof value !== 'object' || value === null) return false
   const layer = value as Record<string, unknown> & Partial<Layer>
-  return (
-    typeof layer.id === 'string' &&
-    typeof layer.name === 'string' &&
-    typeof layer.visible === 'boolean' &&
-    typeof layer.locked === 'boolean' &&
-    Array.isArray(layer.keyframes) &&
-    layer.keyframes.every(isKeyframe)
-  )
+  if (
+    typeof layer.id !== 'string' ||
+    typeof layer.name !== 'string' ||
+    typeof layer.visible !== 'boolean' ||
+    typeof layer.locked !== 'boolean'
+  ) {
+    return false
+  }
+  if (layer.kind === 'object') {
+    return Array.isArray(layer.keyframes) && layer.keyframes.every(isKeyframe)
+  }
+  if (layer.kind === 'drawing') {
+    return (
+      isFiniteNumber(layer.resolutionScale) &&
+      (layer.resolutionScale as number) >= 1 &&
+      Array.isArray(layer.cells) &&
+      layer.cells.every(isDrawingCell)
+    )
+  }
+  return false
 }
 
 /** Structural validation for one asset, keyed on the `kind` discriminant;

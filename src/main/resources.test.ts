@@ -22,7 +22,9 @@ function documentWithImage(resourceId: string): AnimatorDocument {
     naturalHeight: 10,
     smoothing: true
   }
-  document.layers[0].keyframes[0].nodes.push(image)
+  const layer = document.layers[0]
+  if (layer.kind !== 'object') throw new Error('expected an object layer')
+  layer.keyframes[0].nodes.push(image)
   return document
 }
 
@@ -79,6 +81,25 @@ describe('ResourceStore', () => {
     store.reset(next)
     expect(store.all().size).toBe(1)
     expect(store.all().has(nextId)).toBe(true)
+  })
+
+  it('keeps resources referenced by drawing cells when purging', () => {
+    const store = new ResourceStore()
+    const cellId = store.add(PNG_BYTES, 'png').resourceId
+    const unusedId = store.add(JPG_BYTES, 'jpg').resourceId
+    const document = createDocument('test', 100, 100, 24)
+    document.layers.push({
+      kind: 'drawing',
+      id: 'draw',
+      name: 'Draw',
+      visible: true,
+      locked: false,
+      resolutionScale: 1,
+      cells: [{ frame: 0, resourceId: cellId }]
+    })
+    expect(store.purgeUnused(document)).toBe(1)
+    expect(store.all().has(cellId)).toBe(true)
+    expect(store.all().has(unusedId)).toBe(false)
   })
 })
 

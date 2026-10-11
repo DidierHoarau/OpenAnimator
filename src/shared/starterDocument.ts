@@ -33,6 +33,7 @@ export function createStarterDocument(): AnimatorDocument {
 
   const ballId = createId('node')
   const demoLayer = {
+    kind: 'object' as const,
     id: createId('layer'),
     name: 'Demo',
     visible: true,
@@ -53,6 +54,7 @@ export function createStarterDocument(): AnimatorDocument {
   }
 
   const backgroundLayer = {
+    kind: 'object' as const,
     id: createId('layer'),
     name: 'Background',
     visible: true,

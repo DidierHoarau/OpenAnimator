@@ -140,6 +140,7 @@ function validateLegacyLayer(value: unknown, index: number): Layer {
     throw new MigrationError(`invalid layer ${where}: "keyframes" must be an array`)
   }
   return {
+    kind: 'object',
     id: layer.id,
     name: layer.name,
     visible: layer.visible,
@@ -192,10 +193,11 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
 /**
  * Normalizes a parsed project file to the current schema: v2 documents are
  * deep-validated and returned detached from the parsed input (documents
- * saved before the asset library existed are normalized to `assets: []`),
- * v1 documents are migrated (each legacy `Shape` becomes a `PrimitiveNode`
- * with `kind` → `primitive`). Invalid content raises `MigrationError`. The
- * input is never mutated.
+ * saved before the asset library existed are normalized to `assets: []`,
+ * those saved before drawing layers existed get `kind: 'object'` on every
+ * layer), v1 documents are migrated (each legacy `Shape` becomes a
+ * `PrimitiveNode` with `kind` → `primitive`). Invalid content raises
+ * `MigrationError`. The input is never mutated.
  */
 export function migrateDocument(raw: unknown): AnimatorDocument {
   if (typeof raw === 'object' && raw !== null && (raw as { schemaVersion?: unknown }).schemaVersion === 2) {
@@ -203,9 +205,23 @@ export function migrateDocument(raw: unknown): AnimatorDocument {
     if (source.assets !== undefined && !Array.isArray(source.assets)) {
       throw new MigrationError('invalid document: "assets" must be an array')
     }
-    // Additive normalization: inject the (possibly missing) assets field
-    // before deep validation so pre-library v2 files keep opening.
-    const candidate = { ...source, assets: (source.assets as unknown[] | undefined) ?? [] }
+    // Additive normalization: inject the (possibly missing) assets field and
+    // the layer kind before deep validation so pre-library / pre-drawing v2
+    // files keep opening.
+    const layers = Array.isArray(source.layers)
+      ? source.layers.map((layer) =>
+          typeof layer === 'object' &&
+          layer !== null &&
+          (layer as { kind?: unknown }).kind === undefined
+            ? { ...(layer as Record<string, unknown>), kind: 'object' as const }
+            : layer
+        )
+      : source.layers
+    const candidate = {
+      ...source,
+      layers,
+      assets: (source.assets as unknown[] | undefined) ?? []
+    }
     if (!isAnimatorDocument(candidate)) {
       throw new MigrationError('This file is not a valid OpenAnimator project.')
     }

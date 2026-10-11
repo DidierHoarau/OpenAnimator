@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { evaluateDocumentAtFrame } from './render'
-import type { AnimatorDocument, Asset, GroupNode, Layer, PrimitiveNode, SceneNode, SymbolNode } from './model'
+import { drawingCellNodeId, evaluateDocumentAtFrame } from './render'
+import type { AnimatorDocument, Asset, GroupNode, ObjectLayer, PrimitiveNode, SceneNode, SymbolNode } from './model'
 
 function rect(id: string, x = 0, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
   return {
@@ -18,8 +18,9 @@ function rect(id: string, x = 0, overrides: Partial<PrimitiveNode> = {}): Primit
   }
 }
 
-function layer(id: string, overrides: Partial<Layer>): Layer {
+function layer(id: string, overrides: Partial<ObjectLayer> = {}): ObjectLayer {
   return {
+    kind: 'object',
     id,
     name: id,
     visible: true,
@@ -315,5 +316,69 @@ describe('evaluateDocumentAtFrame', () => {
     }
     const group = evaluateDocumentAtFrame(doc, 5)[0].nodes[0] as GroupNode
     expect(group.center.x).toBeCloseTo(50)
+  })
+})
+
+describe('evaluateDocumentAtFrame — drawing layers', () => {
+  const docWithDrawing = (): { doc: AnimatorDocument; drawingId: string } => {
+    const doc: AnimatorDocument = {
+      schemaVersion: 2,
+      name: 't',
+      width: 100,
+      height: 50,
+      fps: 24,
+      background: '#000',
+      assets: [],
+      layers: [
+        layer('obj', { keyframes: [{ frame: 0, nodes: [rect('a', 5)] }] }),
+        {
+          kind: 'drawing',
+          id: 'draw',
+          name: 'Draw',
+          visible: true,
+          locked: false,
+          resolutionScale: 2,
+          cells: [{ frame: 3, resourceId: 'res-cell' }]
+        }
+      ]
+    }
+    return { doc, drawingId: 'draw' }
+  }
+
+  it('resolves the held cell into one synthetic full-stage image node', () => {
+    const { doc, drawingId } = docWithDrawing()
+    const rendered = evaluateDocumentAtFrame(doc, 7)
+    const drawLayer = rendered.find((entry) => entry.layerId === drawingId)!
+    expect(drawLayer.nodes).toHaveLength(1)
+    const cellNode = drawLayer.nodes[0]
+    expect(cellNode.type).toBe('image')
+    if (cellNode.type !== 'image') throw new Error('expected an image node')
+    expect(cellNode.id).toBe(drawingCellNodeId(drawingId))
+    expect(cellNode.resourceId).toBe('res-cell')
+    // Full-stage geometry with the buffer resolution baked in.
+    expect(cellNode.center).toEqual({ x: 50, y: 25 })
+    expect(cellNode.width).toBe(100)
+    expect(cellNode.height).toBe(50)
+    expect(cellNode.naturalWidth).toBe(200)
+    expect(cellNode.naturalHeight).toBe(100)
+    expect(cellNode.smoothing).toBe(true)
+  })
+
+  it('renders nothing for frames before the first cell', () => {
+    const { doc, drawingId } = docWithDrawing()
+    const rendered = evaluateDocumentAtFrame(doc, 2)
+    expect(rendered.find((entry) => entry.layerId === drawingId)!.nodes).toEqual([])
+  })
+
+  it('keeps object layers and cells interleaved in paint order', () => {
+    const { doc } = docWithDrawing()
+    const rendered = evaluateDocumentAtFrame(doc, 5)
+    // Paint order is bottom of the stack first: the drawing layer sits below
+    // the object layer that was added above it.
+    expect(rendered.map((entry) => entry.layerId)).toEqual(['draw', 'obj'])
+    // Hidden layers drop out entirely, cells included.
+    const hidden = docWithDrawing()
+    ;(hidden.doc.layers[1] as { visible: boolean }).visible = false
+    expect(evaluateDocumentAtFrame(hidden.doc, 5).map((entry) => entry.layerId)).toEqual(['obj'])
   })
 })

@@ -15,7 +15,7 @@ import {
   renameLayer,
   renameNodeInLayer
 } from './document'
-import type { PrimitiveNode } from './model'
+import type { AnimatorDocument, ObjectLayer, PrimitiveNode } from './model'
 
 function rect(id: string): PrimitiveNode {
   return {
@@ -31,10 +31,16 @@ function rect(id: string): PrimitiveNode {
   }
 }
 
+function firstLayer(doc: AnimatorDocument): ObjectLayer {
+  const layer = doc.layers[0]
+  if (layer.kind !== 'object') throw new Error('expected an object layer')
+  return layer
+}
+
 describe('timeline document operations', () => {
   it('removeNodeFromLayer drops the keyframe emptied by the removal', () => {
     const doc = createDocument('test', 960, 540, 24)
-    const layer = doc.layers[0]
+    const layer = firstLayer(doc)
     addNodeToLayer(layer, 0, rect('a'))
     expect(findKeyframeAtFrame(layer, 0)?.nodes).toHaveLength(1)
 
@@ -46,7 +52,7 @@ describe('timeline document operations', () => {
 
   it('removeNodeFromAllKeyframes reports and drops every emptied keyframe', () => {
     const doc = createDocument('test', 960, 540, 24)
-    const layer = doc.layers[0]
+    const layer = firstLayer(doc)
     addNodeToLayer(layer, 0, rect('a'))
     addNodeToLayer(layer, 0, rect('b'))
     // kf 4 copies a and b; drop b so both keyframes hold exactly one shape.
@@ -62,7 +68,7 @@ describe('timeline document operations', () => {
 
   it('renameNodeInLayer renames the node in every keyframe it appears in', () => {
     const doc = createDocument('test', 960, 540, 24)
-    const layer = doc.layers[0]
+    const layer = firstLayer(doc)
     addNodeToLayer(layer, 0, rect('a'))
     insertKeyframe(layer, 3)
 
@@ -75,7 +81,7 @@ describe('timeline document operations', () => {
 
   it('removeFrame shifts later keyframes and deletes the keyframe at the frame', () => {
     const doc = createDocument('test', 960, 540, 24)
-    const layer = doc.layers[0]
+    const layer = firstLayer(doc)
     addNodeToLayer(layer, 0, rect('a'))
     insertKeyframe(layer, 2)
     insertFrame(doc, layer.id, 0)
@@ -89,7 +95,7 @@ describe('timeline document operations', () => {
 
   it('removeFrame never deletes the last remaining keyframe of a layer', () => {
     const doc = createDocument('test', 960, 540, 24)
-    const layer = doc.layers[0]
+    const layer = firstLayer(doc)
     addNodeToLayer(layer, 0, rect('a'))
     insertKeyframe(layer, 1)
 
@@ -103,7 +109,7 @@ describe('timeline document operations', () => {
 
   it('moveLayer reorders layers, clamps out-of-range targets and reports no-ops', () => {
     const doc = createDocument('test', 960, 540, 24)
-    const first = doc.layers[0]
+    const first = firstLayer(doc)
     const second = addLayer(doc, 'Second', 'bottom')
     expect(doc.layers[1].id).toBe(second.id)
 
