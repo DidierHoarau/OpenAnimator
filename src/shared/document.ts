@@ -41,7 +41,7 @@ export function createDocument(name: string, width: number, height: number, fps:
   const layer = createLayer('Layer 1')
   layer.keyframes.push({ frame: 0, nodes: [] })
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     name,
     width,
     height,
@@ -511,6 +511,22 @@ export function isSceneNode(value: unknown): value is SceneNode {
       return Array.isArray(node.children) && node.children.every(isSceneNode)
     case 'symbol':
       return typeof node.assetId === 'string'
+    case 'path':
+      return (
+        typeof node.d === 'string' &&
+        (node.fill === undefined || typeof node.fill === 'string') &&
+        (node.stroke === undefined || typeof node.stroke === 'string') &&
+        (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth))
+      )
+    case 'text':
+      return (
+        typeof node.text === 'string' &&
+        typeof node.fontFamily === 'string' &&
+        isFiniteNumber(node.fontSize) &&
+        isFiniteNumber(node.fontWeight) &&
+        typeof node.fill === 'string' &&
+        (node.align === 'left' || node.align === 'center' || node.align === 'right')
+      )
     default:
       return false
   }
@@ -582,7 +598,7 @@ export function isAsset(value: unknown): value is Asset {
 }
 
 /** Deep structural validation for documents restored from persistence.
- * Requires `schemaVersion: 2` and fully typed content; older documents go
+ * Requires `schemaVersion: 3` and fully typed content; older documents go
  * through `migrateDocument` first. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
@@ -591,7 +607,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     candidate.frames === undefined ||
     (typeof candidate.frames === 'number' && Number.isInteger(candidate.frames) && candidate.frames >= 1)
   return (
-    candidate.schemaVersion === 2 &&
+    candidate.schemaVersion === 3 &&
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
     typeof candidate.height === 'number' &&

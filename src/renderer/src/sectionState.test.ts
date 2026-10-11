@@ -29,6 +29,8 @@ describe('section state', () => {
     expect(state).toEqual({
       layer: true,
       shape: true,
+      path: true,
+      text: true,
       image: true,
       group: true,
       symbol: true,
@@ -41,6 +43,8 @@ describe('section state', () => {
     const state: SectionState = {
       layer: false,
       shape: true,
+      path: false,
+      text: true,
       image: true,
       group: false,
       symbol: true,
@@ -67,6 +71,8 @@ describe('section state', () => {
     expect(loadSectionState(storage)).toEqual({
       layer: true,
       shape: true,
+      path: true,
+      text: true,
       image: true,
       group: true,
       symbol: true,

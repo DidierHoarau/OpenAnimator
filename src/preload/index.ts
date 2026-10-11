@@ -6,6 +6,8 @@ import {
   DOCUMENT_READ_CHANNEL,
   DOCUMENT_SAVE_AS_CHANNEL,
   DOCUMENT_SAVE_TO_CHANNEL,
+  EXPORT_PICK_PATH_CHANNEL,
+  EXPORT_WRITE_CHANNEL,
   IMAGE_PICK_CHANNEL,
   LIBRARY_ADD_CHANNEL,
   LIBRARY_LIST_CHANNEL,
@@ -35,7 +37,9 @@ const api: OpenAnimatorApi = {
   addLibraryAsset: (asset, contextAssets) =>
     ipcRenderer.invoke(LIBRARY_ADD_CHANNEL, asset, contextAssets),
   removeLibraryAsset: (id) => ipcRenderer.invoke(LIBRARY_REMOVE_CHANNEL, id),
-  renameLibraryAsset: (id, name) => ipcRenderer.invoke(LIBRARY_RENAME_CHANNEL, id, name)
+  renameLibraryAsset: (id, name) => ipcRenderer.invoke(LIBRARY_RENAME_CHANNEL, id, name),
+  pickExportPath: (request) => ipcRenderer.invoke(EXPORT_PICK_PATH_CHANNEL, request),
+  writeExportFile: (path, bytes) => ipcRenderer.invoke(EXPORT_WRITE_CHANNEL, path, bytes)
 }
 
 if (process.contextIsolated) {

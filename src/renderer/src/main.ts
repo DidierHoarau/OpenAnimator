@@ -6,36 +6,21 @@ import { isDrawingLayer } from '@shared/model'
 
 import { preloadDrawingCells } from './cellPreload'
 import { el } from './dom'
-import { Editor, toolCompatibleWithLayer } from './editor'
-import type { Tool } from './editor'
+import { Editor } from './editor'
 import { importImageBytes, importImageViaDialog } from './imageImport'
 import { LibraryView } from './library'
+import { attachPanelSplitters } from './panelLayout'
 import { PropertiesView } from './properties'
+import { showExportDialog } from './exportDialog'
 import { fileLabel, newDocument, openDocument, saveDocument, showStartupDialog } from './projects'
+import { showScriptConsole } from './scripting/scriptConsole'
 import { StageView } from './stage'
 import { TimelineView } from './timeline'
+import { buildToolsPanel } from './toolsPanel'
 
 function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryView): HTMLElement {
   const toolbar = el('header', 'toolbar')
   toolbar.appendChild(el('span', 'title', 'OpenAnimator'))
-
-  const tools = el('div', 'group')
-  const toolButtons: Array<[Tool, string, string]> = [
-    ['select', 'Select', 'Select and move shapes (V)'],
-    ['hand', 'Hand', 'Pan the stage view (H, or hold Space and drag)'],
-    ['brush', 'Brush', 'Paint on the current drawing layer (B)'],
-    ['eraser', 'Eraser', 'Erase on the current drawing layer (E)'],
-    ['rect', 'Rectangle', 'Draw a rectangle (R)'],
-    ['ellipse', 'Ellipse', 'Draw an ellipse (O)']
-  ]
-  for (const [tool, label, title] of toolButtons) {
-    const button = el('button', undefined, label)
-    button.title = title
-    button.dataset.tool = tool
-    button.addEventListener('click', () => editor.setTool(tool))
-    tools.appendChild(button)
-  }
-  toolbar.appendChild(tools)
 
   toolbar.appendChild(el('span', 'sep'))
 
@@ -81,6 +66,9 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   const saveAsButton = el('button', undefined, 'Save As…')
   saveAsButton.title = 'Save the project to a new file (Ctrl+Shift+S)'
   saveAsButton.addEventListener('click', () => void saveDocument(editor, { as: true }))
+  const exportButton = el('button', undefined, 'Export…')
+  exportButton.title = 'Export the animation as PNG sequence, GIF or video'
+  exportButton.addEventListener('click', () => showExportDialog(editor))
   const purgeButton = el('button', undefined, 'Purge Unused')
   purgeButton.title = 'Remove resources no object references from the session store'
   purgeButton.addEventListener('click', () => {
@@ -90,21 +78,13 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
       )
     })
   })
-  docs.append(importButton, newButton, openButton, saveButton, saveAsButton, purgeButton)
+  const scriptButton = el('button', undefined, 'Script…')
+  scriptButton.title = 'Run a JSON command payload through the editor'
+  scriptButton.addEventListener('click', () => showScriptConsole(editor))
+  docs.append(importButton, newButton, openButton, saveButton, saveAsButton, exportButton, purgeButton, scriptButton)
   toolbar.appendChild(docs)
 
-  const updateTools = (): void => {
-    for (const button of tools.querySelectorAll<HTMLButtonElement>('button[data-tool]')) {
-      const tool = (button.getAttribute('data-tool') ?? 'select') as Tool
-      // Tools that cannot act on the current layer kind are dimmed, e.g. the
-      // brush on an object layer or the rectangle tool on a drawing layer.
-      button.disabled = !toolCompatibleWithLayer(tool, editor.currentLayer)
-      button.classList.toggle('active', tool === editor.tool)
-    }
-  }
-  updateTools()
   editor.onUiChange(() => {
-    updateTools()
     onion.classList.toggle('active', editor.onionSkin)
   })
   return toolbar
@@ -165,7 +145,10 @@ function buildStatusbar(editor: Editor, stageView: StageView): HTMLElement {
 function registerKeyboard(editor: Editor, stageView: StageView): void {
   window.addEventListener('keydown', (event) => {
     const target = event.target as HTMLElement | null
-    const inTextField = target instanceof HTMLInputElement || target instanceof HTMLSelectElement
+    const inTextField =
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLTextAreaElement
     if (event.ctrlKey || event.metaKey) {
       const key = event.key.toLowerCase()
       if (key === 's') {
@@ -231,6 +214,25 @@ function registerKeyboard(editor: Editor, stageView: StageView): void {
       case 'O':
         editor.setTool('ellipse')
         break
+      case 'l':
+      case 'L':
+        editor.setTool('line')
+        break
+      case 'p':
+      case 'P':
+        editor.setTool('pen')
+        break
+      case 't':
+      case 'T':
+        editor.setTool('text')
+        break
+      case 'Enter':
+        // Enter commits an open pen path.
+        if (editor.tool === 'pen') {
+          event.preventDefault()
+          stageView.finishPen()
+        }
+        break
       case '+':
       case '=':
         event.preventDefault()
@@ -245,7 +247,9 @@ function registerKeyboard(editor: Editor, stageView: StageView): void {
         stageView.setSpacePressed(true)
         break
       case 'Escape':
-        editor.stopPlayback()
+        // Escape cancels an in-progress pen path, otherwise playback.
+        if (editor.tool === 'pen') stageView.cancelPen()
+        else editor.stopPlayback()
         break
       case 'F5':
         event.preventDefault()
@@ -323,6 +327,25 @@ function registerFileDrop(editor: Editor, workspace: HTMLElement, stageView: Sta
   })
 }
 
+/**
+ * Global renderer error surfacing: uncaught errors and unhandled rejections
+ * are logged with their stack and reported through the status bar, so a
+ * broken view can never fail silently for the user.
+ */
+function registerErrorSurfacing(editor: Editor): void {
+  const report = (kind: string, error: unknown): void => {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`OpenAnimator: ${kind}`, error)
+    editor.showMessage(`Unexpected error: ${message}`)
+  }
+  window.addEventListener('error', (event) => {
+    if (event.error) report('uncaught error', event.error)
+  })
+  window.addEventListener('unhandledrejection', (event) => {
+    report('unhandled rejection', event.reason)
+  })
+}
+
 async function bootstrap(): Promise<void> {
   const root = document.querySelector<HTMLDivElement>('#app')
   if (!root) throw new Error('Missing #app root element')
@@ -342,17 +365,20 @@ async function bootstrap(): Promise<void> {
   layout.append(
     buildToolbar(editor, layout, libraryView),
     libraryHost,
+    buildToolsPanel(editor),
     workspace,
     propertiesHost,
     timelineHost,
     buildStatusbar(editor, stageView)
   )
+  attachPanelSplitters(layout)
   root.appendChild(layout)
 
   new TimelineView(editor, timelineHost)
   new PropertiesView(editor, propertiesHost)
   registerKeyboard(editor, stageView)
   registerFileDrop(editor, workspace, stageView)
+  registerErrorSurfacing(editor)
   showStartupDialog(editor)
 
   // Warm the image cache for every drawing cell when playback starts so the

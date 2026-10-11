@@ -79,11 +79,11 @@ describe('PropertiesView sections', () => {
     new PropertiesView(editor, container)
   })
 
-  it('renders the layer, shape, image, group, symbol and draw sections', () => {
+  it('renders the layer, shape, path, text, image, group, symbol and draw sections', () => {
     const titles = [...container.querySelectorAll('.panel-section-title')].map((node) =>
       node.textContent?.trim()
     )
-    expect(titles).toEqual(['Layer', 'Shape', 'Image', 'Group', 'Symbol', 'Draw'])
+    expect(titles).toEqual(['Layer', 'Shape', 'Path', 'Text', 'Image', 'Group', 'Symbol', 'Draw'])
   })
 
   it('shows the shape section for primitives, the image section for images and the group section for groups', () => {
@@ -375,6 +375,12 @@ describe('PropertiesView — Draw section', () => {
   it('navigates cells and runs cell operations from the section buttons', async () => {
     editor.addLayerAtBottom('drawing')
     editor.commitStroke('res-1', 0)
+    // Extend the authored timeline so the playhead can sit past the cell
+    // (seeking no longer extends the timeline as a side effect).
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
     editor.seekToFrame(2)
     // A fresh render pass after the seek.
     const section = drawSection()

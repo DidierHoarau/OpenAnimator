@@ -1,5 +1,7 @@
 import { groupNaturalSize } from './groups'
-import type { GroupNode, ImageNode, PrimitiveNode, SceneNode, SymbolNode } from './model'
+import type { GroupNode, ImageNode, PathNode, PrimitiveNode, SceneNode, SymbolNode, TextNode } from './model'
+import { layoutText } from './textModel'
+import { pathNaturalSize } from './pathModel'
 import type { RenderLayer } from './render'
 
 /**
@@ -86,6 +88,45 @@ function imageToSvgMarkup(node: ImageNode, resolveResource: ResourceResolver | u
   return `${markup}/>`
 }
 
+/**
+ * SVG markup for a path node: the geometry is drawn in its natural local
+ * coordinates and the placed size is folded into the transform (the path data
+ * is normalized to a (0,0)-centered bbox at creation, so scaling around the
+ * origin keeps it centered).
+ */
+function pathToSvgMarkup(node: PathNode): string {
+  const natural = pathNaturalSize(node)
+  const sx = natural.width === 0 ? 1 : node.width / natural.width
+  const sy = natural.height === 0 ? 1 : node.height / natural.height
+  let markup =
+    `<g${attr(
+      'transform',
+      `translate(${node.center.x} ${node.center.y}) rotate(${node.rotation}) scale(${sx} ${sy})`
+    )}${attr('opacity', node.opacity)}><path${attr('d', node.d)}` +
+    attr('fill', node.fill ?? 'none')
+  if (node.stroke !== undefined) markup += attr('stroke', node.stroke)
+  if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
+  return `${markup}/></g>`
+}
+
+/** SVG markup for a text node: one `<tspan>` per explicit line, positioned
+ * by the shared layout math. Text content is XML-escaped. */
+function textToSvgMarkup(node: TextNode): string {
+  const layout = layoutText(node)
+  let markup =
+    `<text${attr('font-family', node.fontFamily)}` +
+    `${attr('font-size', node.fontSize)}` +
+    `${attr('font-weight', node.fontWeight)}` +
+    `${attr('fill', node.fill)}` +
+    `${attr('text-anchor', layout.anchor)}` +
+    placementAttrs(node.center, node.rotation, node.opacity) +
+    '>'
+  for (let i = 0; i < layout.lines.length; i++) {
+    markup += `<tspan${attr('x', layout.anchorX)}${attr('y', layout.baselines[i])}>${escapeXmlAttribute(layout.lines[i])}</tspan>`
+  }
+  return `${markup}</text>`
+}
+
 function symbolToSvgMarkup(node: SymbolNode): string {
   return (
     `<rect${attr('x', -node.width / 2)}${attr('y', -node.height / 2)}` +
@@ -118,6 +159,10 @@ export function nodeToSvgMarkup(node: SceneNode, resolveResource?: ResourceResol
       return symbolToSvgMarkup(node)
     case 'primitive':
       return primitiveToSvgMarkup(node)
+    case 'path':
+      return pathToSvgMarkup(node)
+    case 'text':
+      return textToSvgMarkup(node)
   }
 }
 

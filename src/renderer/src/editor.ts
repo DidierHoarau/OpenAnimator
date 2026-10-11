@@ -47,21 +47,37 @@ import { cloneNode, isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { AnimatorDocument, Asset, DrawingLayer, GroupNode, ImageNode, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
 import { validateAssetGraph } from '@shared/symbols'
 import { createId } from '@shared/document'
+import { measureLineWidthCanvas } from '@shared/textModel'
+import type { MeasureLineWidth } from '@shared/textModel'
 import { createTransparentPng } from './drawing'
 import { ResourceCache } from './resourceCache'
 
-export type Tool = 'select' | 'rect' | 'ellipse' | 'hand' | 'brush' | 'eraser'
+export type Tool =
+  | 'select'
+  | 'hand'
+  | 'brush'
+  | 'eraser'
+  | 'rect'
+  | 'ellipse'
+  | 'line'
+  | 'pen'
+  | 'text'
 
 /**
  * Whether a tool may be active while `layer` is the current layer: the tool
- * availability matrix (Brush/Eraser only on drawing layers, Select/Rectangle/
- * Ellipse only on object layers, Hand everywhere).
+ * availability matrix (Brush/Eraser only on drawing layers, the object tools
+ * only on object layers, Hand everywhere).
  */
 export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): boolean {
   if (tool === 'hand') return true
   if (!layer) return false
   return isObjectLayer(layer)
-    ? tool === 'select' || tool === 'rect' || tool === 'ellipse'
+    ? tool === 'select' ||
+        tool === 'rect' ||
+        tool === 'ellipse' ||
+        tool === 'line' ||
+        tool === 'pen' ||
+        tool === 'text'
     : tool === 'brush' || tool === 'eraser'
 }
 
@@ -71,6 +87,8 @@ export interface EditorDeps {
   createTransparentPng?: (width: number, height: number) => Promise<Uint8Array | null>
   /** Stores bytes in the session resource store; returns the resource id. */
   storeResource?: (bytes: Uint8Array) => Promise<string | null>
+  /** Measures one text line's width (injectable for DOM-free tests). */
+  measureText?: MeasureLineWidth
 }
 
 function defaultStoreResource(bytes: Uint8Array): Promise<string | null> {
@@ -112,6 +130,8 @@ export class Editor {
   brushSize = 6
   /** Brush stroke opacity 0..1 (the eraser always erases fully). */
   brushOpacity = 1
+  /** Measures one text line's width for text-node layout (injectable). */
+  readonly measureText: MeasureLineWidth
 
   private readonly deps: EditorDeps
   /** Transparent cell buffers already stored, keyed by pixel size: blank
@@ -136,6 +156,7 @@ export class Editor {
   constructor(document: AnimatorDocument, deps: EditorDeps = {}) {
     this.document = document
     this.deps = deps
+    this.measureText = deps.measureText ?? measureLineWidthCanvas
     this.currentLayerId = document.layers[0]?.id ?? ''
     this.autoSwitchTool()
   }
@@ -181,20 +202,41 @@ export class Editor {
 
   private docChanged(): void {
     this.dirty = true
-    for (const listener of this.docListeners) listener()
+    this.notifyListeners(this.docListeners)
   }
 
   private frameChanged(): void {
-    for (const listener of this.frameListeners) listener()
+    this.notifyListeners(this.frameListeners)
   }
 
   private uiChanged(): void {
-    for (const listener of this.uiListeners) listener()
+    this.notifyListeners(this.uiListeners)
+  }
+
+  /**
+   * Notifies listeners with per-listener fault isolation: one throwing view
+   * must never starve the views registered after it (a single broken render
+   * used to freeze the whole application).
+   */
+  private notifyListeners(listeners: Iterable<() => void>): void {
+    for (const listener of listeners) {
+      try {
+        listener()
+      } catch (error) {
+        console.error('OpenAnimator: a view failed to handle an update', error)
+      }
+    }
   }
 
   /** Surfaces a transient status-bar message (import feedback, hints…). */
   showMessage(message: string): void {
-    for (const listener of this.messageListeners) listener(message)
+    for (const listener of [...this.messageListeners]) {
+      try {
+        listener(message)
+      } catch (error) {
+        console.error('OpenAnimator: a message listener failed', error)
+      }
+    }
   }
 
   /**
@@ -302,18 +344,12 @@ export class Editor {
   }
 
   /**
-   * Moves the playhead within the visible grid, extending the authored
-   * timeline when seeking past its end so keyframes can be added after the
-   * last one. Playback advances through setFrame and is unaffected.
+   * Moves the playhead within the authored timeline. Seeking past the end
+   * clamps to the last frame: extending the document is an explicit edit
+   * (+ Frame / F5), never a side effect of a mere click.
    */
   seekToFrame(frame: number): void {
-    const target = Math.max(0, Math.floor(frame))
-    if (target >= this.duration) {
-      this.pushHistory()
-      this.document.frames = target + 1
-      this.docChanged()
-    }
-    this.setFrame(target)
+    this.setFrame(Math.max(0, Math.floor(frame)))
   }
 
   setTool(tool: Tool): void {
@@ -496,6 +532,27 @@ export class Editor {
     const primary = this.primarySelectedNodeId
     if (!primary) return false
     return this.updateNodesById([primary], update)
+  }
+
+  /**
+   * Replaces the primary selected node in the keyframe active at the current
+   * frame with the node returned by `replace` — one history entry. Keeping
+   * the same id preserves the object's span and tween pairing.
+   */
+  replaceSelectedNode(replace: (node: SceneNode) => SceneNode): boolean {
+    const layer = this.currentLayer
+    const primary = this.primarySelectedNodeId
+    if (!layer || !isObjectLayer(layer) || layer.locked || !primary) return false
+    const index = findKeyframeIndexForFrame(layer, this.currentFrame)
+    if (index === -1) return false
+    const keyframe = layer.keyframes[index]
+    const nodeIndex = keyframe.nodes.findIndex((node) => node.id === primary)
+    if (nodeIndex === -1) return false
+    this.pushHistory()
+    keyframe.nodes[nodeIndex] = replace(keyframe.nodes[nodeIndex])
+    this.docChanged()
+    this.uiChanged()
+    return true
   }
 
   /**
@@ -1163,6 +1220,21 @@ export class Editor {
     return true
   }
 
+  /**
+   * Sets the cell of a drawing layer at a frame to a registered resource id,
+   * creating the cell when needed (scripting surface for frame-by-frame
+   * workflows — e.g. duplicating a cell to extend a hold).
+   */
+  setCell(layerId: string, frame: number, resourceId: string): boolean {
+    const layer = getLayer(this.document, layerId)
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return false
+    if (!Number.isInteger(frame) || frame < 0 || !this.resources.getUrl(resourceId)) return false
+    this.pushHistory()
+    setCellContentOp(layer, frame, resourceId)
+    this.docChanged()
+    return true
+  }
+
   /** Seeks to the nearest cell boundary before/after the playhead. */
   seekToPreviousCell(): boolean {
     const layer = this.currentLayer
@@ -1233,6 +1305,27 @@ export class Editor {
     this.pushHistory()
     removeFrame(this.document, this.currentFrame)
     this.currentFrame = Math.min(this.currentFrame, Math.max(0, this.duration - 1))
+    this.docChanged()
+    this.frameChanged()
+    return true
+  }
+
+  /**
+   * Resizes the authored timeline to `frames` frames in one history entry:
+   * shorter timelines drop the trailing frames, longer ones append holds.
+   * Used by the timeline UI and the scripting command API.
+   */
+  setDuration(frames: number): boolean {
+    const target = Math.max(1, Math.floor(frames))
+    if (!Number.isFinite(target) || target === this.duration) return false
+    this.pushHistory()
+    while (this.duration < target) {
+      insertFrame(this.document, this.currentLayerId, this.duration - 1)
+    }
+    while (this.duration > target) {
+      removeFrame(this.document, this.duration - 1)
+    }
+    this.currentFrame = Math.min(this.currentFrame, this.duration - 1)
     this.docChanged()
     this.frameChanged()
     return true
@@ -1316,6 +1409,10 @@ export class Editor {
     if (this.currentLayerId === layerId) {
       this.currentLayerId = this.document.layers[0]?.id ?? ''
     }
+    // The removed layer may have carried the active tool (e.g. Brush on a
+    // drawing layer); re-evaluate so the tool always matches the new current
+    // layer and stage interactions cannot throw.
+    this.autoSwitchTool()
     this.pruneSelection()
     this.docChanged()
     this.uiChanged()

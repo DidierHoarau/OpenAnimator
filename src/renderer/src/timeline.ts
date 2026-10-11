@@ -19,7 +19,9 @@ const NODE_KIND_LABELS: Record<string, string> = {
   ellipse: 'Ellipse',
   group: 'Group',
   image: 'Image',
-  symbol: 'Symbol'
+  symbol: 'Symbol',
+  path: 'Path',
+  text: 'Text'
 }
 /** Swatch/span color for node kinds without a fill of their own. */
 const NEUTRAL_COLOR = '#64748b'
@@ -27,6 +29,39 @@ const NEUTRAL_COLOR = '#64748b'
 function nodeLabel(node: SceneNode): string {
   const kind = node.type === 'primitive' ? node.primitive : node.type
   return node.name || NODE_KIND_LABELS[kind] || 'Object'
+}
+
+/** Timeline swatch/span color: a node's own paint where it has one. */
+function nodeColor(node: SceneNode): string {
+  if (node.type === 'primitive') return node.fill
+  if (node.type === 'path') return node.stroke ?? node.fill ?? NEUTRAL_COLOR
+  if (node.type === 'text') return node.fill
+  return NEUTRAL_COLOR
+}
+
+/**
+ * Maximal frame runs resolving to the same cell: [start, end) with the held
+ * resource id, or null for blank frames. Consistent with resolveCellAtFrame,
+ * so leading frames are blank and the last cell holds to the end.
+ */
+function filmstripSpans(
+  layer: DrawingLayer,
+  frames: number
+): Array<{ start: number; end: number; resourceId: string | null }> {
+  const spans: Array<{ start: number; end: number; resourceId: string | null }> = []
+  if (frames <= 0) return spans
+  let start = 0
+  let current = resolveCellAtFrame(layer, 0)
+  for (let frame = 1; frame < frames; frame++) {
+    const value = resolveCellAtFrame(layer, frame)
+    if (value !== current) {
+      spans.push({ start, end: frame, resourceId: current })
+      start = frame
+      current = value
+    }
+  }
+  spans.push({ start, end: frames, resourceId: current })
+  return spans
 }
 
 /** Row targeted by the context menu: a layer row or one of its object rows. */
@@ -37,7 +72,7 @@ interface MenuTarget {
 
 /**
  * Bottom panel: a unified timeline with an integrated layer tree on the left
- * and the frame grid on the right.
+ * and the frame tracks on the right.
  *
  * The top controls hold playback (moved out of the right panel) and frame
  * add/remove. Layers render as expandable rows; when expanded, each shape of
@@ -205,6 +240,11 @@ export class TimelineView {
       this.editor.seekToFrame(Number(frameTarget.dataset.frame))
       return
     }
+    const track = target.closest<HTMLElement>('.tl-track')
+    if (track?.dataset.frames !== undefined) {
+      this.seekIntoTrack(event, track)
+      return
+    }
     const shapeRow = target.closest<HTMLElement>('.tl-shape-row')
     if (shapeRow?.dataset.shapeId) {
       this.editor.setCurrentLayer(shapeRow.dataset.layerId!)
@@ -215,6 +255,25 @@ export class TimelineView {
     if (row?.dataset.layerId) {
       this.editor.setCurrentLayer(row.dataset.layerId)
     }
+  }
+
+  /**
+   * Track clicks seek by geometry: the frame is derived from the pointer
+   * position instead of one element per frame, keeping the DOM tiny on long
+   * timelines. Clicking an object's track also selects the object and its
+   * layer; clicking a layer track makes that layer current.
+   */
+  private seekIntoTrack(event: PointerEvent, track: HTMLElement): void {
+    const rect = track.getBoundingClientRect()
+    const frames = Number(track.dataset.frames)
+    const offset = event.clientX - rect.left
+    const frame = Math.max(0, Math.min(frames - 1, Math.floor(offset / FRAME_WIDTH)))
+    const row = track.closest<HTMLElement>('.tl-row')
+    if (row?.dataset.layerId) this.editor.setCurrentLayer(row.dataset.layerId)
+    if (row?.classList.contains('tl-shape-row') && row.dataset.shapeId) {
+      this.editor.selectNodes([row.dataset.shapeId], event.shiftKey ? 'toggle' : 'replace')
+    }
+    this.editor.seekToFrame(frame)
   }
 
   render(): void {
@@ -379,9 +438,9 @@ export class TimelineView {
   }
 
   /**
-   * Filmstrip of a drawing layer: one thumbnail per frame from the resolved
-   * cell (a held cell repeats until the next one; frames after the last cell
-   * render gray). Clicking a frame seeks the playhead.
+   * Filmstrip of a drawing layer: one element per maximal run of frames that
+   * resolve to the same cell (a held cell repeats until the next one; frames
+   * before the first cell render blank). Clicking a frame seeks the playhead.
    */
   private buildFilmstripRow(layer: DrawingLayer, frames: number): HTMLDivElement {
     const row = el('div', 'tl-row tl-filmstrip-row')
@@ -393,14 +452,14 @@ export class TimelineView {
     row.appendChild(head)
 
     const track = el('div', 'tl-track tl-filmstrip')
+    track.dataset.frames = String(frames)
     track.style.width = `${frames * FRAME_WIDTH}px`
     track.style.height = `${ROW_HEIGHT}px`
-    for (let frame = 0; frame < frames; frame++) {
+    for (const span of filmstripSpans(layer, frames)) {
       const cell = el('div', 'tl-cell tl-filmstrip-cell')
-      cell.dataset.frame = String(frame)
-      cell.style.left = `${frame * FRAME_WIDTH}px`
-      const resourceId = resolveCellAtFrame(layer, frame)
-      const url = resourceId ? this.editor.resources.getUrl(resourceId) : null
+      cell.style.left = `${span.start * FRAME_WIDTH}px`
+      cell.style.width = `${(span.end - span.start) * FRAME_WIDTH}px`
+      const url = span.resourceId ? this.editor.resources.getUrl(span.resourceId) : null
       if (url) {
         const thumb = document.createElement('img')
         thumb.className = 'tl-filmstrip-thumb'
@@ -438,7 +497,7 @@ export class TimelineView {
 
     const head = el('div', 'tl-head')
     const swatch = el('span', 'tl-swatch')
-    swatch.style.background = node.type === 'primitive' ? node.fill : NEUTRAL_COLOR
+    swatch.style.background = nodeColor(node)
     const label = el('span', 'name', nodeLabel(node))
     label.title = label.textContent ?? ''
     const span = this.getNodeFrameSpan(layer, node.id)
@@ -501,7 +560,7 @@ export class TimelineView {
       span ? span.start : null,
       span ? span.end : null,
       frames,
-      node.type === 'primitive' ? node.fill : NEUTRAL_COLOR
+      nodeColor(node)
     )
     const sorted = [...layer.keyframes].sort((a, b) => a.frame - b.frame)
     for (let i = 0; i < sorted.length; i++) {
@@ -525,7 +584,7 @@ export class TimelineView {
     return track
   }
 
-  /** Track with seek cells and an optional span bar for one row height. */
+  /** Track with pointer-geometry seeking and an optional span bar for one row height. */
   private buildBarTrack(
     spanStart: number | null,
     spanEnd: number | null,
@@ -533,6 +592,7 @@ export class TimelineView {
     fill?: string
   ): HTMLDivElement {
     const track = el('div', 'tl-track')
+    track.dataset.frames = String(frames)
     track.style.width = `${frames * FRAME_WIDTH}px`
     track.style.height = `${ROW_HEIGHT}px`
     if (spanStart !== null && spanEnd !== null) {
@@ -542,12 +602,6 @@ export class TimelineView {
       if (fill) bar.style.background = fill
       bar.title = `frames ${spanStart + 1}\u2013${spanEnd}`
       track.appendChild(bar)
-    }
-    for (let frame = 0; frame < frames; frame++) {
-      const cell = el('div', 'tl-cell')
-      cell.dataset.frame = String(frame)
-      cell.style.left = `${frame * FRAME_WIDTH}px`
-      track.appendChild(cell)
     }
     return track
   }

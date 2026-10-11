@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { evaluateLayerAtFrame } from './document'
-import type { AnimatorDocument, GroupNode, ImageNode, ObjectLayer, PrimitiveNode, SceneNode, SymbolNode } from './model'
+import type { AnimatorDocument, GroupNode, ImageNode, ObjectLayer, PathNode, PrimitiveNode, SceneNode, SymbolNode, TextNode } from './model'
 import { tweenNode, tweenNodes } from './tween'
 
 function shape(id: string, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
@@ -156,6 +156,96 @@ describe('tweenNode', () => {
     expect((tweenNode(groupNode, shapeNode, 0.5) as GroupNode).type).toBe('group')
     expect((tweenNode(groupNode, shapeNode, 1) as PrimitiveNode).type).toBe('primitive')
   })
+
+  it('tweens a path: transform and stroke width lerp, geometry snaps from `from`', () => {
+    const from: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0L10 10',
+      stroke: '#111111',
+      strokeWidth: 2
+    }
+    const to: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 100, y: 50 },
+      width: 200,
+      height: 150,
+      rotation: 90,
+      opacity: 0.2,
+      d: 'M999 999',
+      stroke: '#222222',
+      strokeWidth: 10
+    }
+    const result = tweenNode(from, to, 0.5) as PathNode
+    expect(result.center).toEqual({ x: 50, y: 25 })
+    expect(result.width).toBe(150)
+    expect(result.height).toBe(100)
+    expect(result.rotation).toBe(45)
+    expect(result.strokeWidth).toBe(6)
+    expect(result.d).toBe('M0 0L10 10')
+    expect(result.stroke).toBe('#111111')
+    expect(result.fill).toBeUndefined()
+  })
+
+  it('keeps a path stroke width when only one side defines it', () => {
+    const from: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0L1 1',
+      strokeWidth: 4
+    }
+    const to: PathNode = { ...from, strokeWidth: undefined }
+    expect((tweenNode(from, to, 0.5) as PathNode).strokeWidth).toBe(4)
+  })
+
+  it('tweens a text: font size lerps, content and font snap from `from`', () => {
+    const from: TextNode = {
+      type: 'text',
+      id: 't',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      text: 'From',
+      fontFamily: 'Noto Sans',
+      fontSize: 20,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    const to: TextNode = {
+      ...from,
+      center: { x: 50, y: 0 },
+      width: 300,
+      height: 100,
+      text: 'To',
+      fontSize: 60,
+      fontWeight: 700,
+      align: 'right',
+      fill: '#000000'
+    }
+    const result = tweenNode(from, to, 0.5) as TextNode
+    expect(result.fontSize).toBe(40)
+    expect(result.width).toBe(200)
+    expect(result.height).toBe(75)
+    expect(result.text).toBe('From')
+    expect(result.fontFamily).toBe('Noto Sans')
+    expect(result.fontWeight).toBe(400)
+    expect(result.fill).toBe('#ffffff')
+    expect(result.align).toBe('left')
+  })
 })
 
 describe('tweenNodes', () => {
@@ -285,7 +375,7 @@ describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       name: 'test',
       width: 100,
       height: 100,

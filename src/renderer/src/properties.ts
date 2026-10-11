@@ -9,11 +9,14 @@ import {
 import type { EasingName } from '@shared/easing'
 import { isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { ImageNode, SceneNode } from '@shared/model'
+import { pathDataToAnchors } from '@shared/pathModel'
+import { applyTextMetrics } from '@shared/textModel'
 
 import type { Editor } from './editor'
 import { el } from './dom'
 import type { ImageImportDeps } from './imageImport'
 import { pickImageFile, prepareImageResource } from './imageImport'
+import { convertSelectedTextToOutlines } from './textOutlines'
 import {
   loadSectionState,
   saveSectionState,
@@ -24,6 +27,7 @@ import {
 const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#e6edf3'
 const DEFAULT_STROKE_WIDTH = 2
+const DEFAULT_TEXT_FILL = '#e2e8f0'
 const EASINGS: EasingName[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out']
 
 function normalizeHex(value: string, fallback: string): string {
@@ -119,6 +123,20 @@ export class PropertiesView {
   private readonly duplicateCellButton: HTMLButtonElement
   private readonly clearCellButton: HTMLButtonElement
   private readonly nextCellButton: HTMLButtonElement
+  private readonly pathStrokeToggle: HTMLInputElement
+  private readonly pathStrokeColor: HTMLInputElement
+  private readonly pathStrokeWidth: HTMLInputElement
+  private readonly pathFillToggle: HTMLInputElement
+  private readonly pathFillColor: HTMLInputElement
+  private readonly pathInfoLabel: HTMLElement
+  private readonly textContent: HTMLTextAreaElement
+  private readonly textFont: HTMLInputElement
+  private readonly textSize: HTMLInputElement
+  private readonly textWeight: HTMLSelectElement
+  private readonly textAlign: HTMLSelectElement
+  private readonly textColor: HTMLInputElement
+  private readonly textHex: HTMLInputElement
+  private readonly outlinesButton: HTMLButtonElement
   private readonly imageImportDeps: ImageImportDeps
   private lastNodeId: string | null = null
 
@@ -256,6 +274,211 @@ export class PropertiesView {
     })
     outlineRow.append(this.strokeToggle, this.strokeColor, this.strokeWidth)
     shape.content.append(this.transformRows, fillRows)
+
+    // Path properties, visible only while a path node is selected.
+    const path = this.createSection('path', 'Path')
+    const pathStrokeRows = el('div', 'panel-rows')
+    const pathStrokeRow = this.row(pathStrokeRows, 'Outline')
+    this.pathStrokeToggle = el('input', undefined) as HTMLInputElement
+    this.pathStrokeToggle.type = 'checkbox'
+    this.pathStrokeToggle.title = 'Enable the path outline'
+    this.pathStrokeToggle.addEventListener('change', () => {
+      const enabled = this.pathStrokeToggle.checked
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'path') return
+        if (enabled) {
+          current.stroke = current.stroke ?? DEFAULT_STROKE
+          current.strokeWidth = current.strokeWidth ?? DEFAULT_STROKE_WIDTH
+        } else {
+          delete current.stroke
+          delete current.strokeWidth
+        }
+      })
+      this.render()
+    })
+    this.pathStrokeColor = el('input', 'color-swatch') as HTMLInputElement
+    this.pathStrokeColor.type = 'color'
+    this.pathStrokeColor.title = 'Outline color'
+    this.pathStrokeColor.addEventListener('input', () => {
+      editor.beginInteraction()
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'path') current.stroke = this.pathStrokeColor.value
+      })
+    })
+    this.pathStrokeColor.addEventListener('change', () => editor.endInteraction())
+    this.pathStrokeColor.addEventListener('cancel', () => editor.endInteraction())
+    this.pathStrokeWidth = el('input', undefined) as HTMLInputElement
+    this.pathStrokeWidth.type = 'number'
+    this.pathStrokeWidth.min = '0'
+    this.pathStrokeWidth.step = '1'
+    this.pathStrokeWidth.title = 'Outline width'
+    this.pathStrokeWidth.addEventListener('change', () => {
+      const value = Number(this.pathStrokeWidth.value)
+      if (!Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'path') current.strokeWidth = Math.max(0, value)
+      })
+    })
+    pathStrokeRow.append(this.pathStrokeToggle, this.pathStrokeColor, this.pathStrokeWidth)
+
+    const pathFillRow = this.row(pathStrokeRows, 'Fill')
+    this.pathFillToggle = el('input', undefined) as HTMLInputElement
+    this.pathFillToggle.type = 'checkbox'
+    this.pathFillToggle.title = 'Enable the path fill'
+    this.pathFillToggle.addEventListener('change', () => {
+      const enabled = this.pathFillToggle.checked
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'path') return
+        if (enabled) current.fill = current.fill ?? DEFAULT_FILL
+        else delete current.fill
+      })
+      this.render()
+    })
+    this.pathFillColor = el('input', 'color-swatch') as HTMLInputElement
+    this.pathFillColor.type = 'color'
+    this.pathFillColor.title = 'Fill color'
+    this.pathFillColor.addEventListener('input', () => {
+      editor.beginInteraction()
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'path') current.fill = this.pathFillColor.value
+      })
+    })
+    this.pathFillColor.addEventListener('change', () => editor.endInteraction())
+    this.pathFillColor.addEventListener('cancel', () => editor.endInteraction())
+    pathFillRow.append(this.pathFillToggle, this.pathFillColor)
+
+    const pathInfoRow = this.row(path.content, 'Geometry')
+    this.pathInfoLabel = el('span', 'panel-file-name')
+    this.pathInfoLabel.title = 'Anchor count of the path (compound paths cannot be anchor-edited)'
+    pathInfoRow.appendChild(this.pathInfoLabel)
+    path.content.append(this.transformRows, pathStrokeRows)
+
+    // Text properties, visible only while a text node is selected.
+    const text = this.createSection('text', 'Text')
+    const textContentRow = this.row(text.content, 'Content')
+    this.textContent = el('textarea', 'panel-textarea') as HTMLTextAreaElement
+    this.textContent.rows = 3
+    this.textContent.title = 'Text content — use line breaks for multiple lines'
+    this.textContent.addEventListener('change', () => {
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        current.text = this.textContent.value
+        applyTextMetrics(current, editor.measureText)
+      })
+    })
+    textContentRow.appendChild(this.textContent)
+
+    const fontRows = el('div', 'panel-rows')
+    const fontRow = this.row(fontRows, 'Font')
+    this.textFont = el('input') as HTMLInputElement
+    this.textFont.type = 'text'
+    this.textFont.title = 'Font family (renders with locally installed fonts)'
+    this.textFont.addEventListener('change', () => {
+      const family = this.textFont.value.trim()
+      if (!family) {
+        this.render()
+        return
+      }
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        current.fontFamily = family
+        applyTextMetrics(current, editor.measureText)
+      })
+    })
+    fontRow.appendChild(this.textFont)
+
+    const textSizeRow = this.row(fontRows, "Size")
+    this.textSize = el('input') as HTMLInputElement
+    this.textSize.type = 'number'
+    this.textSize.min = '4'
+    this.textSize.title = 'Font size in stage pixels'
+    this.textSize.addEventListener('change', () => {
+      const value = Number(this.textSize.value)
+      if (!Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        current.fontSize = Math.max(4, value)
+        applyTextMetrics(current, editor.measureText)
+      })
+    })
+    textSizeRow.appendChild(this.textSize)
+
+    const weightRow = this.row(fontRows, 'Weight')
+    this.textWeight = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['400', 'Regular'],
+      ['700', 'Bold']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.textWeight.appendChild(option)
+    }
+    this.textWeight.title = 'Font weight (outlines convert with the bundled Noto Sans weight)'
+    this.textWeight.addEventListener('change', () => {
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        current.fontWeight = Number(this.textWeight.value)
+        applyTextMetrics(current, editor.measureText)
+      })
+    })
+    weightRow.appendChild(this.textWeight)
+
+    const alignRow = this.row(fontRows, 'Align')
+    this.textAlign = el('select', 'tl-select') as HTMLSelectElement
+    for (const align of ['left', 'center', 'right'] as const) {
+      const option = el('option', undefined, align)
+      option.value = align
+      this.textAlign.appendChild(option)
+    }
+    this.textAlign.title = 'Text alignment within the text box'
+    this.textAlign.addEventListener('change', () => {
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'text') current.align = this.textAlign.value as typeof current.align
+      })
+    })
+    alignRow.appendChild(this.textAlign)
+
+    const textColorRow = this.row(fontRows, 'Fill')
+    this.textColor = el('input', 'color-swatch') as HTMLInputElement
+    this.textColor.type = 'color'
+    this.textColor.title = 'Text color'
+    this.textColor.addEventListener('input', () => {
+      editor.beginInteraction()
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'text') current.fill = this.textColor.value
+      })
+    })
+    this.textColor.addEventListener('change', () => editor.endInteraction())
+    this.textColor.addEventListener('cancel', () => editor.endInteraction())
+    this.textHex = el('input', 'hex-input') as HTMLInputElement
+    this.textHex.type = 'text'
+    this.textHex.title = 'Text color as hex'
+    this.textHex.placeholder = '#rrggbb'
+    this.textHex.addEventListener('change', () => {
+      if (parseHexColor(this.textHex.value)) {
+        editor.updateSelectedNode((current) => {
+          if (current.type === 'text') current.fill = normalizeHex(this.textHex.value, DEFAULT_TEXT_FILL)
+        })
+      } else {
+        this.render()
+      }
+    })
+    textColorRow.append(this.textColor, this.textHex)
+
+    const textActions = el('div', 'panel-buttons')
+    this.outlinesButton = this.button(
+      'Convert to Outlines',
+      'Replace the text with vector paths (bundled Noto Sans, regular or bold)',
+      () => void convertSelectedTextToOutlines(editor).then(() => this.render())
+    )
+    textActions.appendChild(this.outlinesButton)
+    text.content.append(this.transformRows, textContentRow, fontRows, textActions)
 
     // Group properties, visible only while a group is selected.
     const group = this.createSection('group', 'Group')
@@ -409,7 +632,16 @@ export class PropertiesView {
     cellActions.append(this.prevCellButton, this.duplicateCellButton, this.clearCellButton, this.nextCellButton)
     draw.content.append(cellActions)
 
-    scroll.append(layer.root, shape.root, image.root, group.root, symbol.root, draw.root)
+    scroll.append(
+      layer.root,
+      shape.root,
+      path.root,
+      text.root,
+      image.root,
+      group.root,
+      symbol.root,
+      draw.root
+    )
     container.appendChild(scroll)
 
     editor.onDocChange(() => this.render())
@@ -551,8 +783,12 @@ export class PropertiesView {
     const isImage = node?.type === 'image'
     const isGroup = node?.type === 'group'
     const isSymbol = node?.type === 'symbol'
+    const isPath = node?.type === 'path'
+    const isText = node?.type === 'text'
     // Mutually exclusive: the section matches the primary selected node kind.
     this.sections.get('shape')?.setVisible(isPrimitive)
+    this.sections.get('path')?.setVisible(isPath)
+    this.sections.get('text')?.setVisible(isText)
     this.sections.get('image')?.setVisible(isImage)
     this.sections.get('group')?.setVisible(isGroup)
     this.sections.get('symbol')?.setVisible(isSymbol)
@@ -569,7 +805,11 @@ export class PropertiesView {
         ? this.sections.get('symbol')!.content
         : isImage
           ? this.sections.get('image')!.content
-          : this.sections.get('shape')!.content
+          : isPath
+            ? this.sections.get('path')!.content
+            : isText
+              ? this.sections.get('text')!.content
+              : this.sections.get('shape')!.content
     if (this.transformRows.parentElement !== host) {
       host.insertBefore(this.transformRows, host.firstChild)
     }
@@ -578,7 +818,7 @@ export class PropertiesView {
       input.disabled = !editable
     }
 
-    const keepFocused = (input: HTMLInputElement): boolean =>
+    const keepFocused = (input: HTMLElement): boolean =>
       document.activeElement === input && this.lastNodeId === node.id
 
     if (!keepFocused(this.posX)) this.posX.value = String(round(node.center.x))
@@ -615,6 +855,38 @@ export class PropertiesView {
       }
       this.strokeColor.disabled = !editable || !outlined
       this.strokeWidth.disabled = !editable || !outlined
+    }
+    if (node.type === 'path') {
+      const outlined = node.stroke !== undefined
+      const filled = node.fill !== undefined
+      if (!keepFocused(this.pathStrokeToggle)) this.pathStrokeToggle.checked = outlined
+      if (!keepFocused(this.pathStrokeColor)) {
+        this.pathStrokeColor.value = normalizeHex(node.stroke ?? DEFAULT_STROKE, DEFAULT_STROKE)
+      }
+      if (!keepFocused(this.pathStrokeWidth)) {
+        this.pathStrokeWidth.value = String(node.strokeWidth ?? DEFAULT_STROKE_WIDTH)
+      }
+      if (!keepFocused(this.pathFillToggle)) this.pathFillToggle.checked = filled
+      if (!keepFocused(this.pathFillColor)) {
+        this.pathFillColor.value = normalizeHex(node.fill ?? DEFAULT_FILL, DEFAULT_FILL)
+      }
+      this.pathStrokeColor.disabled = !editable || !outlined
+      this.pathStrokeWidth.disabled = !editable || !outlined
+      this.pathFillColor.disabled = !editable || !filled
+      const parsed = pathDataToAnchors(node.d)
+      this.pathInfoLabel.textContent = parsed
+        ? `${parsed.anchors.length} anchors${parsed.closed ? ' · closed' : ''}`
+        : 'compound path'
+    }
+    if (node.type === 'text') {
+      if (!keepFocused(this.textContent)) this.textContent.value = node.text
+      if (!keepFocused(this.textFont)) this.textFont.value = node.fontFamily
+      if (!keepFocused(this.textSize)) this.textSize.value = String(node.fontSize)
+      if (!keepFocused(this.textWeight)) this.textWeight.value = String(node.fontWeight)
+      if (!keepFocused(this.textAlign)) this.textAlign.value = node.align
+      if (!keepFocused(this.textColor)) this.textColor.value = normalizeHex(node.fill, DEFAULT_TEXT_FILL)
+      if (!keepFocused(this.textHex)) this.textHex.value = node.fill
+      this.outlinesButton.disabled = !editable
     }
     this.lastNodeId = node.id
   }

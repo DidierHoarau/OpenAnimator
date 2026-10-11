@@ -17,6 +17,8 @@ export const LIBRARY_LIST_CHANNEL = 'openanimator:library-list'
 export const LIBRARY_ADD_CHANNEL = 'openanimator:library-add'
 export const LIBRARY_REMOVE_CHANNEL = 'openanimator:library-remove'
 export const LIBRARY_RENAME_CHANNEL = 'openanimator:library-rename'
+export const EXPORT_PICK_PATH_CHANNEL = 'openanimator:export-pick-path'
+export const EXPORT_WRITE_CHANNEL = 'openanimator:export-write'
 
 export interface AppVersions {
   app: string
@@ -71,6 +73,15 @@ export interface LibraryListResult {
   resources: Record<string, LibraryResource>
 }
 
+/** Save-dialog request for an export destination file. */
+export interface ExportPathRequest {
+  defaultName: string
+  /** Electron file filters, e.g. `[{ name: 'GIF', extensions: ['gif'] }]`. */
+  filters: Array<{ name: string; extensions: string[] }>
+}
+
+export type ExportWriteResult = { ok: true } | { ok: false; error: string }
+
 /** API exposed to the renderer through the preload script. */
 export interface OpenAnimatorApi {
   versions(): Promise<AppVersions>
@@ -88,4 +99,8 @@ export interface OpenAnimatorApi {
   addLibraryAsset(asset: Asset, contextAssets?: Asset[]): Promise<void>
   removeLibraryAsset(id: string): Promise<void>
   renameLibraryAsset(id: string, name: string): Promise<void>
+  /** Asks the user for an export destination through a save dialog. */
+  pickExportPath(request: ExportPathRequest): Promise<SaveAsResult>
+  /** Writes rendered export bytes to the chosen destination. */
+  writeExportFile(path: string, bytes: Uint8Array): Promise<ExportWriteResult>
 }

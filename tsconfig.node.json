@@ -20,7 +20,8 @@
     "vitest.config.ts",
     "src/main/**/*",
     "src/preload/**/*",
-    "src/shared/**/*"
+    "src/shared/**/*",
+    "src/cli/**/*"
   ],
   "exclude": ["src/preload/index.d.ts"]
 }

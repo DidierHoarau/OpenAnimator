@@ -98,6 +98,13 @@ export class ResourceCache {
     return this.entries.get(resourceId)?.url ?? null
   }
 
+  /** The stored blob of the resource, or null when missing/corrupt. Used by
+   * the export pipeline to build data: URLs (blob: references cannot load
+   * inside an SVG rasterized through `<img>`). */
+  getBlob(resourceId: string): Blob | null {
+    return this.entries.get(resourceId)?.blob ?? null
+  }
+
   isCorrupt(resourceId: string): boolean {
     return this.corrupt.has(resourceId)
   }

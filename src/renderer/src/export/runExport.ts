@@ -1,0 +1,125 @@
+import type { Editor } from '../editor'
+import type { ExportOptions } from '@shared/exportOptions'
+import { EXPORT_FORMATS, exportExtension, exportFrameCount, exportPixelSize } from '@shared/exportOptions'
+import { encodeGif, gifDelayMs } from '@shared/gifEncode'
+import { packPngSequence } from '@shared/pngSequence'
+import type { ExportPathRequest, ExportWriteResult, SaveAsResult } from '@shared/api'
+
+import { FrameRasterizer, createDefaultFrameRasterDeps } from './frameRaster'
+import type { FrameRasterDeps } from './frameRaster'
+import { createResourceDataUrlResolver } from './resourceDataUrl'
+import { CanceledError, canEncodeVideo, encodeVideo } from './videoEncoder'
+
+export interface ExportProgress {
+  done: number
+  total: number
+}
+
+export interface ExportRunnerDeps extends FrameRasterDeps {
+  pickExportPath(request: ExportPathRequest): Promise<SaveAsResult>
+  writeExportFile(path: string, bytes: Uint8Array): Promise<ExportWriteResult>
+  /** Status-bar feedback (progress milestones, results, errors). */
+  showMessage(message: string): void
+  onProgress?(progress: ExportProgress): void
+}
+
+export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps {
+  return {
+    ...createDefaultFrameRasterDeps(),
+    resolveResourceDataUrl: createResourceDataUrlResolver(editor.resources),
+    pickExportPath: (request) => window.api.pickExportPath(request),
+    writeExportFile: (path, bytes) => window.api.writeExportFile(path, bytes),
+    showMessage: (message) => editor.showMessage(message)
+  }
+}
+
+/**
+ * Runs one export end to end: asks for the destination, rasterizes the frame
+ * range through the shared pipeline, encodes the chosen format and writes the
+ * result. Returns true when a file was written; canceling or errors surface
+ * through the status bar and return false. `signal.canceled` is polled
+ * between frames — the dialog sets it from its Cancel button.
+ */
+export async function runExport(
+  editor: Editor,
+  options: ExportOptions,
+  deps: ExportRunnerDeps,
+  signal: { canceled: boolean }
+): Promise<boolean> {
+  const document = editor.document
+  const total = exportFrameCount(options)
+  if (total < 1) {
+    deps.showMessage('Nothing to export: the frame range is empty')
+    return false
+  }
+
+  const formatInfo = EXPORT_FORMATS.find((entry) => entry.format === options.format)
+  const pick = await deps.pickExportPath({
+    defaultName: `${document.name || 'Untitled'}.${exportExtension(options.format)}`,
+    filters: [{ name: formatInfo?.label ?? 'Export', extensions: [exportExtension(options.format)] }]
+  })
+  if (pick.canceled) return false
+
+  const rasterizer = new FrameRasterizer(document, options, deps)
+  const { width, height } = exportPixelSize(document, options)
+  try {
+    let bytes: Uint8Array
+    if (options.format === 'png-sequence') {
+      const pngs: Uint8Array[] = []
+      for (let frame = options.fromFrame; frame <= options.toFrame; frame++) {
+        throwIfCanceled(signal)
+        const canvas = await rasterizer.rasterizeToCanvas(frame)
+        pngs.push(await rasterizer.canvasToPng(canvas))
+        reportProgress(deps, pngs.length, total)
+      }
+      bytes = packPngSequence(pngs)
+    } else if (options.format === 'gif') {
+      const delayMs = gifDelayMs(options)
+      const frames = []
+      for (let frame = options.fromFrame; frame <= options.toFrame; frame++) {
+        throwIfCanceled(signal)
+        const canvas = await rasterizer.rasterizeToCanvas(frame)
+        frames.push({ data: rasterizer.canvasToRgba(canvas), width, height, delayMs })
+        reportProgress(deps, frames.length, total)
+      }
+      bytes = encodeGif(frames)
+    } else {
+      if (!canEncodeVideo()) {
+        throw new Error('Video export needs WebCodecs, which this environment does not provide')
+      }
+      bytes = await encodeVideo(
+        options,
+        { width, height },
+        async (canvas, frame) => {
+          const rasterized = await rasterizer.rasterizeToCanvas(frame)
+          const context = canvas.getContext('2d')
+          context?.drawImage(rasterized, 0, 0)
+          reportProgress(deps, frame - options.fromFrame + 1, total)
+        },
+        signal
+      )
+    }
+
+    const written = await deps.writeExportFile(pick.path, bytes)
+    if (!written.ok) throw new Error(written.error)
+    deps.showMessage(`Exported to ${pick.path}`)
+    return true
+  } catch (error) {
+    if (error instanceof CanceledError || signal.canceled) {
+      deps.showMessage('Export canceled')
+      return false
+    }
+    const message = error instanceof Error ? error.message : String(error)
+    console.error('OpenAnimator: export failed', error)
+    deps.showMessage(`Export failed: ${message}`)
+    return false
+  }
+}
+
+function throwIfCanceled(signal: { canceled: boolean }): void {
+  if (signal.canceled) throw new CanceledError()
+}
+
+function reportProgress(deps: ExportRunnerDeps, done: number, total: number): void {
+  deps.onProgress?.({ done, total })
+}
