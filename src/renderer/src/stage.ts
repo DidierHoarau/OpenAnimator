@@ -1,31 +1,57 @@
 import { createId, evaluateLayerAtFrame } from '@shared/document'
 import type { Vec2 } from '@shared/geometry'
-import { hitTestShapes } from '@shared/hitTesting'
+import { hitTestShapes, rectIntersectsRect, shapeBounds } from '@shared/hitTesting'
+import type { Rect } from '@shared/hitTesting'
+import { evaluateDocumentAtFrame } from '@shared/render'
+import { renderLayersToSvgMarkup } from '@shared/renderSvg'
 import type { Shape } from '@shared/model'
+import { identityView, panView, zoomAtView } from '@shared/viewTransform'
+import type { ViewTransform } from '@shared/viewTransform'
 import type { Editor } from './editor'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 const DEFAULT_FILL = '#38bdf8'
+/** Minimum drag distance in screen pixels before a gesture is a drag. */
 const MIN_DRAG = 4
+const DEFAULT_CREATE_WIDTH = 120
+const DEFAULT_CREATE_HEIGHT = 90
+const ZOOM_STEP = 1.25
 
 interface DragState {
-  mode: 'create' | 'move'
+  mode: 'create' | 'move' | 'marquee' | 'pan'
   kind: 'rect' | 'ellipse'
   start: Vec2
   last: Vec2
-  origin: Vec2
+  /** Marquee: union with the current selection instead of replacing it. */
+  additive: boolean
+  /** Move drag: whether the interaction was opened (past the drag threshold). */
+  moveStarted: boolean
+  /** Move drag: shape centers captured at pointer-down, per selected id. */
+  origins: Map<string, Vec2>
+  startView: ViewTransform
   preview: SVGElement | null
 }
 
-/** Renders the document on an SVG stage and handles stage interactions. */
+/**
+ * Renders the document on an SVG stage and handles stage interactions:
+ * drawing, (multi-)selection, and view navigation (zoom/pan). The view
+ * transform lives only here — it is never part of the document. Rendering
+ * goes through the shared evaluate + renderSvg pipeline so the stage and
+ * onion skinning can never drift apart.
+ */
 export class StageView {
-  private readonly svg: SVGSVGElement
-  private drag: DragState | null = null
+  /** Notified after every view change with the current scale (for the statusbar). */
+  onViewChange?: (scale: number) => void
 
-  constructor(
-    private readonly editor: Editor,
-    host: HTMLElement
-  ) {
+  private readonly svg: SVGSVGElement
+  private readonly editor: Editor
+  private drag: DragState | null = null
+  private view: ViewTransform = identityView()
+  private spaceDown = false
+  private spaceUsedForPan = false
+
+  constructor(editor: Editor, host: HTMLElement) {
+    this.editor = editor
     this.svg = document.createElementNS(SVG_NS, 'svg')
     this.svg.classList.add('stage')
     this.svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
@@ -37,6 +63,7 @@ export class StageView {
     this.svg.addEventListener('pointercancel', () => {
       this.cancelDrag()
     })
+    this.svg.addEventListener('wheel', (event) => this.onWheel(event), { passive: false })
 
     editor.onDocChange(() => this.render())
     editor.onFrameChange(() => this.render())
@@ -44,42 +71,147 @@ export class StageView {
     this.render()
   }
 
-  private toStagePoint(event: PointerEvent): Vec2 {
+  /** Marks the Space key state; the stage claims Space drags for panning. */
+  setSpacePressed(down: boolean): void {
+    if (down && this.spaceDown) return
+    this.spaceDown = down
+    if (down) this.spaceUsedForPan = false
+    this.updateCursor()
+  }
+
+  /** True when the Space press was consumed by a pan drag (no play toggle). */
+  get spaceUsed(): boolean {
+    return this.spaceUsedForPan
+  }
+
+  zoomIn(): void {
+    this.zoomBy(ZOOM_STEP)
+  }
+
+  zoomOut(): void {
+    this.zoomBy(1 / ZOOM_STEP)
+  }
+
+  /** Resets to the 1:1 letterboxed fit of the stage in the viewport. */
+  resetView(): void {
+    this.view = identityView()
+    this.applyView()
+  }
+
+  private zoomBy(factor: number): void {
+    const doc = this.editor.document
+    const center = {
+      x: this.view.tx + doc.width / (2 * this.view.scale),
+      y: this.view.ty + doc.height / (2 * this.view.scale)
+    }
+    this.view = zoomAtView(this.view, center, factor)
+    this.applyView()
+  }
+
+  private applyView(): void {
+    const doc = this.editor.document
+    this.svg.setAttribute(
+      'viewBox',
+      `${this.view.tx} ${this.view.ty} ${doc.width / this.view.scale} ${doc.height / this.view.scale}`
+    )
+    this.onViewChange?.(this.view.scale)
+  }
+
+  private toStagePoint(event: MouseEvent): Vec2 {
     const ctm = this.svg.getScreenCTM()
     if (!ctm) return { x: 0, y: 0 }
     const point = new DOMPoint(event.clientX, event.clientY).matrixTransform(ctm.inverse())
     return { x: point.x, y: point.y }
   }
 
+  private updateCursor(): void {
+    if (this.spaceDown || this.editor.tool === 'hand') {
+      this.svg.style.cursor = this.drag?.mode === 'pan' ? 'grabbing' : 'grab'
+    } else {
+      this.svg.style.cursor = ''
+    }
+  }
+
+  private onWheel(event: WheelEvent): void {
+    event.preventDefault()
+    const factor = Math.exp(-event.deltaY * 0.0015)
+    this.view = zoomAtView(this.view, this.toStagePoint(event), factor)
+    this.applyView()
+  }
+
   private onPointerDown(event: PointerEvent): void {
-    if (event.button !== 0) return
     const editor = this.editor
     const point = this.toStagePoint(event)
+
+    // Panning: middle-button drag, left drag with Space held, or the Hand tool.
+    if (event.button === 1 || (event.button === 0 && (this.spaceDown || editor.tool === 'hand'))) {
+      this.drag = this.newDrag('pan', point)
+      if (this.spaceDown) this.spaceUsedForPan = true
+      this.updateCursor()
+      this.svg.setPointerCapture(event.pointerId)
+      event.preventDefault()
+      return
+    }
+    if (event.button !== 0) return
+
     const layer = editor.currentLayer
 
     if (editor.tool === 'select') {
       const content = layer ? evaluateLayerAtFrame(layer, editor.currentFrame) : []
       const hit = layer && layer.visible ? hitTestShapes(content, point) : undefined
-      editor.selectShape(hit?.id ?? null)
-      if (hit && layer && !layer.locked) {
-        editor.ensureSelectedShapeKeyframe()
-        this.drag = { mode: 'move', kind: 'rect', start: point, last: point, origin: { ...hit.center }, preview: null }
+      if (!hit) {
+        // Rubber-band selection from empty stage area; Shift unions.
+        if (!event.shiftKey) editor.selectShapes([], 'replace')
+        const drag = this.newDrag('marquee', point)
+        drag.additive = event.shiftKey
+        this.drag = drag
+        this.svg.setPointerCapture(event.pointerId)
+        event.preventDefault()
+        return
+      }
+      if (event.shiftKey) {
+        editor.selectShapes([hit.id], 'toggle')
+      } else if (!editor.selectedShapeIds.includes(hit.id)) {
+        editor.selectShapes([hit.id], 'replace')
+      }
+      if (layer && !layer.locked && editor.selectedShapeIds.includes(hit.id)) {
+        const drag = this.newDrag('move', point)
+        for (const shape of content) {
+          if (editor.selectedShapeIds.includes(shape.id)) {
+            drag.origins.set(shape.id, { ...shape.center })
+          }
+        }
+        this.drag = drag
         this.svg.setPointerCapture(event.pointerId)
       }
-    } else if (layer && !layer.locked && layer.visible) {
-      this.drag = {
-        mode: 'create',
-        kind: editor.tool,
-        start: point,
-        last: point,
-        origin: { ...point },
-        preview: null
-      }
-      this.svg.setPointerCapture(event.pointerId)
-    } else {
+      event.preventDefault()
       return
     }
-    event.preventDefault()
+
+    if (
+      (editor.tool === 'rect' || editor.tool === 'ellipse') &&
+      layer &&
+      !layer.locked &&
+      layer.visible
+    ) {
+      this.drag = this.newDrag('create', point, editor.tool)
+      this.svg.setPointerCapture(event.pointerId)
+      event.preventDefault()
+    }
+  }
+
+  private newDrag(mode: DragState['mode'], point: Vec2, kind: 'rect' | 'ellipse' = 'rect'): DragState {
+    return {
+      mode,
+      kind,
+      start: point,
+      last: point,
+      additive: false,
+      moveStarted: false,
+      origins: new Map(),
+      startView: { ...this.view },
+      preview: null
+    }
   }
 
   private onPointerMove(event: PointerEvent): void {
@@ -88,15 +220,39 @@ export class StageView {
     drag.last = this.toStagePoint(event)
     if (drag.mode === 'create') {
       this.updatePreview(drag)
+    } else if (drag.mode === 'move') {
+      this.updateMove(drag)
+    } else if (drag.mode === 'marquee') {
+      this.updateMarquee(drag)
     } else {
       const dx = drag.last.x - drag.start.x
       const dy = drag.last.y - drag.start.y
-      this.editor.updateSelectedShape((shape) => {
-        shape.center.x = drag.origin.x + dx
-        shape.center.y = drag.origin.y + dy
-      })
+      this.view = panView(drag.startView, -dx, -dy)
+      this.applyView()
     }
     event.preventDefault()
+  }
+
+  private updateMove(drag: DragState): void {
+    if (!drag.moveStarted) {
+      if (this.dragDistance(drag) < MIN_DRAG / this.view.scale) return
+      drag.moveStarted = true
+      // One history entry for the whole drag, including its auto-key.
+      this.editor.beginInteraction()
+      this.editor.ensureSelectedShapesKeyframes()
+    }
+    const dx = drag.last.x - drag.start.x
+    const dy = drag.last.y - drag.start.y
+    this.editor.updateSelectedShapes((shape) => {
+      const origin = drag.origins.get(shape.id)
+      if (!origin) return
+      shape.center.x = origin.x + dx
+      shape.center.y = origin.y + dy
+    })
+  }
+
+  private dragDistance(drag: DragState): number {
+    return Math.max(Math.abs(drag.last.x - drag.start.x), Math.abs(drag.last.y - drag.start.y))
   }
 
   private onPointerUp(event: PointerEvent): void {
@@ -105,38 +261,74 @@ export class StageView {
     this.drag = null
     if (drag.mode === 'create') {
       drag.preview?.remove()
-      let width = Math.abs(drag.last.x - drag.start.x)
-      let height = Math.abs(drag.last.y - drag.start.y)
-      let center = {
-        x: (drag.start.x + drag.last.x) / 2,
-        y: (drag.start.y + drag.last.y) / 2
-      }
-      if (width < MIN_DRAG && height < MIN_DRAG) {
-        // A click without a real drag produces a default-size shape.
-        width = 120
-        height = 90
-        center = { ...drag.start }
-      }
-      const shape: Shape = {
-        id: createId('shape'),
-        kind: drag.kind,
-        center,
-        width: Math.max(2, width),
-        height: Math.max(2, height),
-        rotation: 0,
-        fill: DEFAULT_FILL,
-        opacity: 1
-      }
-      this.editor.addShape(shape)
+      this.finishCreate(drag)
+    } else if (drag.mode === 'move') {
+      if (drag.moveStarted) this.editor.endInteraction()
+    } else if (drag.mode === 'marquee') {
+      drag.preview?.remove()
+      this.applyMarquee(drag)
     }
+    this.updateCursor()
     if (this.svg.hasPointerCapture(event.pointerId)) {
       this.svg.releasePointerCapture(event.pointerId)
     }
   }
 
+  private finishCreate(drag: DragState): void {
+    let width = Math.abs(drag.last.x - drag.start.x)
+    let height = Math.abs(drag.last.y - drag.start.y)
+    let center = {
+      x: (drag.start.x + drag.last.x) / 2,
+      y: (drag.start.y + drag.last.y) / 2
+    }
+    const minSize = MIN_DRAG / this.view.scale
+    if (width < minSize && height < minSize) {
+      // A click without a real drag produces a default-size shape; the sizes
+      // are divided by the scale so they land at a constant size on screen.
+      width = DEFAULT_CREATE_WIDTH / this.view.scale
+      height = DEFAULT_CREATE_HEIGHT / this.view.scale
+      center = { ...drag.start }
+    }
+    const shape: Shape = {
+      id: createId('shape'),
+      kind: drag.kind,
+      center,
+      width: Math.max(2, width),
+      height: Math.max(2, height),
+      rotation: 0,
+      fill: DEFAULT_FILL,
+      opacity: 1
+    }
+    this.editor.addShape(shape)
+  }
+
+  private applyMarquee(drag: DragState): void {
+    const width = Math.abs(drag.last.x - drag.start.x)
+    const height = Math.abs(drag.last.y - drag.start.y)
+    const minSize = MIN_DRAG / this.view.scale
+    if (width < minSize && height < minSize) return
+    const editor = this.editor
+    const layer = editor.currentLayer
+    if (!layer || !layer.visible) return
+    const marquee: Rect = {
+      x: Math.min(drag.start.x, drag.last.x),
+      y: Math.min(drag.start.y, drag.last.y),
+      width,
+      height
+    }
+    const ids = evaluateLayerAtFrame(layer, editor.currentFrame)
+      .filter((shape) => rectIntersectsRect(shapeBounds(shape), marquee))
+      .map((shape) => shape.id)
+    editor.selectShapes(ids, drag.additive ? 'add' : 'replace')
+  }
+
   private cancelDrag(): void {
-    if (this.drag?.preview) this.drag.preview.remove()
+    const drag = this.drag
+    if (!drag) return
     this.drag = null
+    if (drag.mode === 'move' && drag.moveStarted) this.editor.endInteraction()
+    drag.preview?.remove()
+    this.updateCursor()
   }
 
   private updatePreview(drag: DragState): void {
@@ -146,6 +338,7 @@ export class StageView {
       preview.setAttribute('fill', 'rgba(56, 189, 248, 0.2)')
       preview.setAttribute('stroke', DEFAULT_FILL)
       preview.setAttribute('stroke-width', '1')
+      preview.setAttribute('vector-effect', 'non-scaling-stroke')
       this.svg.appendChild(preview)
       drag.preview = preview
     }
@@ -166,10 +359,25 @@ export class StageView {
     }
   }
 
+  private updateMarquee(drag: DragState): void {
+    let marquee = drag.preview as SVGRectElement | null
+    if (!marquee) {
+      marquee = document.createElementNS(SVG_NS, 'rect')
+      marquee.classList.add('stage__marquee')
+      marquee.setAttribute('vector-effect', 'non-scaling-stroke')
+      this.svg.appendChild(marquee)
+      drag.preview = marquee
+    }
+    marquee.setAttribute('x', String(Math.min(drag.start.x, drag.last.x)))
+    marquee.setAttribute('y', String(Math.min(drag.start.y, drag.last.y)))
+    marquee.setAttribute('width', String(Math.abs(drag.last.x - drag.start.x)))
+    marquee.setAttribute('height', String(Math.abs(drag.last.y - drag.start.y)))
+  }
+
   render(): void {
     const editor = this.editor
     const doc = editor.document
-    this.svg.setAttribute('viewBox', `0 0 ${doc.width} ${doc.height}`)
+    this.applyView()
     while (this.svg.firstChild) this.svg.removeChild(this.svg.firstChild)
 
     const backdrop = document.createElementNS(SVG_NS, 'rect')
@@ -188,75 +396,37 @@ export class StageView {
         if (frame < 0 || frame >= editor.duration) continue
         const group = document.createElementNS(SVG_NS, 'g')
         group.setAttribute('opacity', String(0.24 / Math.abs(offset)))
-        for (const layer of [...doc.layers].reverse()) {
-          if (!layer.visible) continue
-          for (const shape of evaluateLayerAtFrame(layer, frame)) {
-            group.appendChild(createShapeElement(shape))
-          }
-        }
+        group.innerHTML = renderLayersToSvgMarkup(evaluateDocumentAtFrame(doc, frame))
         ghosts.appendChild(group)
       }
       this.svg.appendChild(ghosts)
     }
 
     const stageContent = document.createElementNS(SVG_NS, 'g')
-    for (const layer of [...doc.layers].reverse()) {
-      if (!layer.visible) continue
-      for (const shape of evaluateLayerAtFrame(layer, editor.currentFrame)) {
-        stageContent.appendChild(createShapeElement(shape))
-      }
-    }
+    stageContent.innerHTML = renderLayersToSvgMarkup(
+      evaluateDocumentAtFrame(doc, editor.currentFrame)
+    )
     this.svg.appendChild(stageContent)
 
-    const selected = this.getSelectedShape()
-    if (selected) {
-      const overlay = document.createElementNS(SVG_NS, 'rect')
-      overlay.classList.add('stage__selection')
-      overlay.setAttribute('x', String(-selected.width / 2))
-      overlay.setAttribute('y', String(-selected.height / 2))
-      overlay.setAttribute('width', String(selected.width))
-      overlay.setAttribute('height', String(selected.height))
-      overlay.setAttribute(
-        'transform',
-        `translate(${selected.center.x} ${selected.center.y}) rotate(${selected.rotation})`
-      )
-      this.svg.appendChild(overlay)
-    }
-  }
-
-  private getSelectedShape(): Shape | undefined {
-    const editor = this.editor
-    if (!editor.selectedShapeId) return undefined
+    // One selection box per selected shape of the current layer's content.
     const layer = editor.currentLayer
-    if (!layer || !layer.visible) return undefined
-    return evaluateLayerAtFrame(layer, editor.currentFrame).find(
-      (shape) => shape.id === editor.selectedShapeId
-    )
+    if (layer && layer.visible) {
+      for (const shape of evaluateLayerAtFrame(layer, editor.currentFrame)) {
+        if (!editor.selectedShapeIds.includes(shape.id)) continue
+        const overlay = document.createElementNS(SVG_NS, 'rect')
+        overlay.classList.add('stage__selection')
+        overlay.setAttribute('x', String(-shape.width / 2))
+        overlay.setAttribute('y', String(-shape.height / 2))
+        overlay.setAttribute('width', String(shape.width))
+        overlay.setAttribute('height', String(shape.height))
+        overlay.setAttribute(
+          'transform',
+          `translate(${shape.center.x} ${shape.center.y}) rotate(${shape.rotation})`
+        )
+        overlay.setAttribute('vector-effect', 'non-scaling-stroke')
+        this.svg.appendChild(overlay)
+      }
+    }
+    this.updateCursor()
   }
-}
-
-function createShapeElement(shape: Shape): SVGElement {
-  let element: SVGElement
-  if (shape.kind === 'ellipse') {
-    const ellipse = document.createElementNS(SVG_NS, 'ellipse')
-    ellipse.setAttribute('rx', String(shape.width / 2))
-    ellipse.setAttribute('ry', String(shape.height / 2))
-    element = ellipse
-  } else {
-    const rect = document.createElementNS(SVG_NS, 'rect')
-    rect.setAttribute('x', String(-shape.width / 2))
-    rect.setAttribute('y', String(-shape.height / 2))
-    rect.setAttribute('width', String(shape.width))
-    rect.setAttribute('height', String(shape.height))
-    element = rect
-  }
-  element.setAttribute('fill', shape.fill)
-  if (shape.stroke) element.setAttribute('stroke', shape.stroke)
-  if (shape.strokeWidth !== undefined) element.setAttribute('stroke-width', String(shape.strokeWidth))
-  element.setAttribute(
-    'transform',
-    `translate(${shape.center.x} ${shape.center.y}) rotate(${shape.rotation})`
-  )
-  element.setAttribute('opacity', String(shape.opacity))
-  return element
 }

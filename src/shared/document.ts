@@ -337,7 +337,7 @@ export function removeLayer(document: AnimatorDocument, layerId: string): boolea
 }
 
 export function cloneDocument(document: AnimatorDocument): AnimatorDocument {
-  return JSON.parse(JSON.stringify(document)) as AnimatorDocument
+  return structuredClone(document)
 }
 
 /** Structural validation for documents restored from persistence. Accepts

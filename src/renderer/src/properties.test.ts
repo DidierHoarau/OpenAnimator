@@ -48,7 +48,7 @@ describe('PropertiesView sections', () => {
     editor.addShape(rect('a', 10, 10))
     expect(shapeSection.classList.contains('hidden')).toBe(false)
 
-    editor.selectShape(null)
+    editor.selectShapes([], 'replace')
     expect(shapeSection.classList.contains('hidden')).toBe(true)
   })
 

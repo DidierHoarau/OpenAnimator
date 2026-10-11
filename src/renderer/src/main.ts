@@ -17,6 +17,7 @@ function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
   const tools = el('div', 'group')
   const toolButtons: Array<[Tool, string, string]> = [
     ['select', 'Select', 'Select and move shapes (V)'],
+    ['hand', 'Hand', 'Pan the stage view (H, or hold Space and drag)'],
     ['rect', 'Rectangle', 'Draw a rectangle (R)'],
     ['ellipse', 'Ellipse', 'Draw an ellipse (O)']
   ]
@@ -74,26 +75,34 @@ function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
   return toolbar
 }
 
-function buildStatusbar(editor: Editor): HTMLElement {
+function buildStatusbar(editor: Editor, stageView: StageView): HTMLElement {
   const statusbar = el('footer', 'statusbar')
   const frameInfo = el('span')
   const layerInfo = el('span')
   const toolInfo = el('span')
+  const zoomInfo = el('span')
   const fileInfo = el('span')
   const messageInfo = el('span')
   messageInfo.classList.add('statusbar-message')
   const versionInfo = el('span')
-  statusbar.append(frameInfo, layerInfo, toolInfo, fileInfo, messageInfo, versionInfo)
+  statusbar.append(frameInfo, layerInfo, toolInfo, zoomInfo, fileInfo, messageInfo, versionInfo)
 
   const update = (): void => {
     frameInfo.textContent = `frame ${editor.currentFrame + 1} / ${editor.duration}`
     layerInfo.textContent = `layer: ${editor.currentLayer?.name ?? '-'}`
-    toolInfo.textContent = `tool: ${editor.tool}${editor.selectedShapeId ? ' \u00b7 selected' : ''}`
+    const selection = editor.selectedShapeIds.length
+    toolInfo.textContent = `tool: ${editor.tool}${
+      selection > 0 ? ` \u00b7 ${selection > 1 ? `${selection} ` : ''}selected` : ''
+    }`
     fileInfo.textContent = `file: ${fileLabel(editor)}`
   }
   editor.onFrameChange(update)
   editor.onDocChange(update)
   editor.onUiChange(update)
+  zoomInfo.textContent = '100%'
+  stageView.onViewChange = (scale) => {
+    zoomInfo.textContent = `${Math.round(scale * 100)}%`
+  }
   update()
 
   // Transient status-bar messages (e.g. auto-keyframe notification).
@@ -118,8 +127,10 @@ function buildStatusbar(editor: Editor): HTMLElement {
   return statusbar
 }
 
-function registerKeyboard(editor: Editor): void {
+function registerKeyboard(editor: Editor, stageView: StageView): void {
   window.addEventListener('keydown', (event) => {
+    const target = event.target as HTMLElement | null
+    const inTextField = target instanceof HTMLInputElement || target instanceof HTMLSelectElement
     if (event.ctrlKey || event.metaKey) {
       const key = event.key.toLowerCase()
       if (key === 's') {
@@ -128,15 +139,31 @@ function registerKeyboard(editor: Editor): void {
       } else if (key === 'o') {
         event.preventDefault()
         void openDocument(editor)
+      } else if (inTextField) {
+        // Let native text undo/redo keep working inside fields.
+        return
+      } else if (key === 'z') {
+        event.preventDefault()
+        if (event.shiftKey) editor.redo()
+        else editor.undo()
+      } else if (key === 'y') {
+        event.preventDefault()
+        editor.redo()
+      } else if (key === '0') {
+        event.preventDefault()
+        stageView.resetView()
       }
       return
     }
-    const target = event.target as HTMLElement | null
-    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return
+    if (inTextField) return
     switch (event.key) {
       case 'v':
       case 'V':
         editor.setTool('select')
+        break
+      case 'h':
+      case 'H':
+        editor.setTool('hand')
         break
       case 'r':
       case 'R':
@@ -146,9 +173,18 @@ function registerKeyboard(editor: Editor): void {
       case 'O':
         editor.setTool('ellipse')
         break
+      case '+':
+      case '=':
+        event.preventDefault()
+        stageView.zoomIn()
+        break
+      case '-':
+        event.preventDefault()
+        stageView.zoomOut()
+        break
       case ' ':
         event.preventDefault()
-        editor.togglePlay()
+        stageView.setSpacePressed(true)
         break
       case 'Escape':
         editor.stopPlayback()
@@ -186,6 +222,15 @@ function registerKeyboard(editor: Editor): void {
         break
     }
   })
+  window.addEventListener('keyup', (event) => {
+    if (event.key !== ' ') return
+    const target = event.target as HTMLElement | null
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement) return
+    stageView.setSpacePressed(false)
+    // A plain Space tap keeps toggling playback; Space consumed by a pan
+    // drag does not.
+    if (!stageView.spaceUsed) editor.togglePlay()
+  })
 }
 
 async function bootstrap(): Promise<void> {
@@ -198,19 +243,19 @@ async function bootstrap(): Promise<void> {
   const workspace = el('main', 'workspace')
   const timelineHost = el('section', 'timeline')
   const propertiesHost = el('aside', 'properties-panel')
+  const stageView = new StageView(editor, workspace)
   layout.append(
     buildToolbar(editor, layout),
     workspace,
     propertiesHost,
     timelineHost,
-    buildStatusbar(editor)
+    buildStatusbar(editor, stageView)
   )
   root.appendChild(layout)
 
-  new StageView(editor, workspace)
   new TimelineView(editor, timelineHost)
   new PropertiesView(editor, propertiesHost)
-  registerKeyboard(editor)
+  registerKeyboard(editor, stageView)
   showStartupDialog(editor)
 
   // Debounced autosave to the project file on every document change.
