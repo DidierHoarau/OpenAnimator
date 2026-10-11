@@ -1,6 +1,9 @@
 /** IPC channel used by the renderer to fetch application information. */
 export const APP_API_CHANNEL = 'openanimator:app-info'
 
+/** IPC channel used by the application menu to dispatch editor commands. */
+export const APP_MENU_COMMAND_CHANNEL = 'openanimator:menu-command'
+
 import type { AnimatorDocument, Asset } from './model'
 
 export const DOCUMENT_SAVE_AS_CHANNEL = 'openanimator:document-save-as'
@@ -82,6 +85,9 @@ export interface ExportPathRequest {
 
 export type ExportWriteResult = { ok: true } | { ok: false; error: string }
 
+/** Commands the application menu dispatches into the renderer. */
+export type MenuCommand = 'undo' | 'redo'
+
 /** API exposed to the renderer through the preload script. */
 export interface OpenAnimatorApi {
   versions(): Promise<AppVersions>
@@ -103,4 +109,6 @@ export interface OpenAnimatorApi {
   pickExportPath(request: ExportPathRequest): Promise<SaveAsResult>
   /** Writes rendered export bytes to the chosen destination. */
   writeExportFile(path: string, bytes: Uint8Array): Promise<ExportWriteResult>
+  /** Listens for application-menu commands; returns an unsubscribe function. */
+  onMenuCommand(listener: (command: MenuCommand) => void): () => void
 }

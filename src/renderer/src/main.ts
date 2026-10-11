@@ -50,6 +50,24 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
 
   toolbar.appendChild(el('span', 'sep'))
 
+  const history = el('div', 'group')
+  const undoButton = el('button', undefined, 'Undo')
+  undoButton.title = 'Undo the last change (Ctrl+Z)'
+  undoButton.addEventListener('click', () => editor.undo())
+  const redoButton = el('button', undefined, 'Redo')
+  redoButton.title = 'Redo the last undone change (Ctrl+Shift+Z or Ctrl+Y)'
+  redoButton.addEventListener('click', () => editor.redo())
+  history.append(undoButton, redoButton)
+  toolbar.appendChild(history)
+  const syncHistory = (): void => {
+    undoButton.disabled = !editor.canUndo
+    redoButton.disabled = !editor.canRedo
+  }
+  editor.onDocChange(syncHistory)
+  syncHistory()
+
+  toolbar.appendChild(el('span', 'sep'))
+
   const docs = el('div', 'group')
   const importButton = el('button', undefined, 'Import Image…')
   importButton.title = 'Import an image onto the stage (Ctrl+I)'
@@ -379,6 +397,22 @@ async function bootstrap(): Promise<void> {
   registerKeyboard(editor, stageView)
   registerFileDrop(editor, workspace, stageView)
   registerErrorSurfacing(editor)
+  // Menu accelerators are consumed by the native menu before the page sees
+  // them; the Edit menu routes Undo/Redo here. Inside form fields the DOM
+  // editing history is replayed instead of touching the document.
+  window.api.onMenuCommand((command) => {
+    const target = document.activeElement
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLTextAreaElement
+    ) {
+      document.execCommand(command)
+      return
+    }
+    if (command === 'undo') editor.undo()
+    else editor.redo()
+  })
   showStartupDialog(editor)
 
   // Warm the image cache for every drawing cell when playback starts so the
