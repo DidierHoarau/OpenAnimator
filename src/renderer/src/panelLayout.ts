@@ -85,24 +85,30 @@ export function attachPanelSplitters(layout: HTMLElement, storage?: SizeStorage)
   const definitions: Array<{
     key: PanelKey
     className: string
+    /** Named grid area of the layout template; without it the handles
+     * auto-place into whatever cells remain and resize the wrong thing. */
+    gridArea: string
     title: string
     sizeFor: (event: PointerEvent, rect: DOMRect) => number
   }> = [
     {
       key: 'library',
       className: 'split split-library',
+      gridArea: 'split-l',
       title: 'Drag to resize the library panel',
       sizeFor: (event, rect) => event.clientX - rect.left
     },
     {
       key: 'properties',
       className: 'split split-properties',
+      gridArea: 'split-r',
       title: 'Drag to resize the properties panel',
       sizeFor: (event, rect) => rect.right - event.clientX
     },
     {
       key: 'timeline',
       className: 'split split-timeline',
+      gridArea: 'split-b',
       title: 'Drag to resize the timeline height',
       sizeFor: (event, rect) => rect.bottom - event.clientY
     }
@@ -111,6 +117,7 @@ export function attachPanelSplitters(layout: HTMLElement, storage?: SizeStorage)
   for (const definition of definitions) {
     const handle = document.createElement('div')
     handle.className = definition.className
+    handle.style.gridArea = definition.gridArea
     handle.title = definition.title
     handle.addEventListener('pointerdown', (event) => {
       event.preventDefault()

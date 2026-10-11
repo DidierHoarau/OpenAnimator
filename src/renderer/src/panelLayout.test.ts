@@ -75,6 +75,12 @@ describe('panel splitters', () => {
     expect(layout.querySelector('.split-library')).not.toBeNull()
     expect(layout.querySelector('.split-properties')).not.toBeNull()
     expect(layout.querySelector('.split-timeline')).not.toBeNull()
+    // Each handle sits in its named grid area: without one the bottom
+    // splitter auto-placed into the first free cell and only resized within
+    // the library column.
+    expect(layout.querySelector<HTMLElement>('.split-library')!.style.gridArea).toBe('split-l')
+    expect(layout.querySelector<HTMLElement>('.split-properties')!.style.gridArea).toBe('split-r')
+    expect(layout.querySelector<HTMLElement>('.split-timeline')!.style.gridArea).toBe('split-b')
     expect(layout.style.getPropertyValue('--library-size')).toBe('300px')
     expect(layout.style.getPropertyValue('--properties-size')).toBe('360px')
     expect(layout.style.getPropertyValue('--timeline-size')).toBe('250px')
