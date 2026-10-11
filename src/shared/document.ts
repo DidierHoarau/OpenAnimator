@@ -272,6 +272,85 @@ export function removeCell(layer: DrawingLayer, frame: number): boolean {
   return true
 }
 
+/** Inclusive frame range of one cell: whether it is the layer's last one and
+ * therefore holds to the end of the authored timeline. */
+export interface CellRange {
+  /** Frame the cell starts at. */
+  cellFrame: number
+  /** Inclusive last frame the cell holds. */
+  endFrame: number
+  /** True for the layer's last cell: it holds to the end of the timeline. */
+  lastHolds: boolean
+}
+
+/**
+ * Range of the cell holding `frame`: from its own frame to the frame before
+ * the next cell — the layer's last cell holds to the end of the authored
+ * timeline instead. Returns null when the layer is blank at `frame`.
+ */
+export function cellRangeAtFrame(
+  layer: DrawingLayer,
+  frame: number,
+  totalFrames: number
+): CellRange | null {
+  const index = findCellIndexForFrame(layer, frame)
+  if (index === -1) return null
+  const cell = layer.cells[index]
+  const next = layer.cells[index + 1]
+  if (next) return { cellFrame: cell.frame, endFrame: next.frame - 1, lastHolds: false }
+  return { cellFrame: cell.frame, endFrame: Math.max(cell.frame, totalFrames - 1), lastHolds: true }
+}
+
+/**
+ * Moves the cell at `fromFrame` to `toFrame`, merging over a cell already
+ * there — the moved cell's content wins, mirroring the replace semantics of
+ * `setCellContent`. Returns false when no cell sits at `fromFrame` or the
+ * move is a no-op.
+ */
+export function moveCell(layer: DrawingLayer, fromFrame: number, toFrame: number): boolean {
+  const index = layer.cells.findIndex((cell) => cell.frame === fromFrame)
+  if (index === -1 || fromFrame === toFrame) return false
+  const [moving] = layer.cells.splice(index, 1)
+  for (let i = layer.cells.length - 1; i >= 0; i--) {
+    if (layer.cells[i].frame === toFrame) layer.cells.splice(i, 1)
+  }
+  moving.frame = toFrame
+  layer.cells.push(moving)
+  layer.cells.sort((a, b) => a.frame - b.frame)
+  return true
+}
+
+/**
+ * Sets the end frame of the cell holding `frame`, clamped to the cell's own
+ * frame and the authored timeline. A next cell moves to `end + 1`; shortening
+ * the layer's last cell — which otherwise holds to the timeline end — inserts
+ * a blank cell at `end + 1` from `blankResourceId`. Returns false when
+ * nothing changes or a required blank resource is missing.
+ */
+export function setCellEnd(
+  layer: DrawingLayer,
+  frame: number,
+  newEndFrame: number,
+  totalFrames: number,
+  blankResourceId?: string
+): boolean {
+  const index = findCellIndexForFrame(layer, frame)
+  if (index === -1) return false
+  const cell = layer.cells[index]
+  const end = Math.min(Math.max(Math.floor(newEndFrame), cell.frame), totalFrames - 1)
+  const next = layer.cells[index + 1]
+  if (next) {
+    if (end === next.frame - 1) return false
+    next.frame = end + 1
+    return true
+  }
+  // The last cell holds to the timeline end: shortening it needs a blank
+  // cell right after the new end to stop the hold.
+  if (end >= totalFrames - 1 || !blankResourceId) return false
+  insertCell(layer, end + 1, blankResourceId)
+  return true
+}
+
 /** Sets or clears the tween on the keyframe at `frame`. */
 export function setKeyframeTween(
   layer: ObjectLayer,
@@ -383,6 +462,49 @@ export function renameNodeInLayer(layer: ObjectLayer, nodeId: string, name: stri
     }
   }
   return renamed
+}
+
+/**
+ * Shifts every keyframe holding `nodeId` by `delta` frames, clamped so all of
+ * them stay within `[0, totalFrames − 1]` — the object keeps its motion.
+ * Destination keyframes keep their other objects; a keyframe emptied by the
+ * move is dropped, like `removeNodeFromLayer` does. Returns false when the
+ * node has no keyframe or nothing can move.
+ */
+export function moveNodeKeyframes(
+  layer: ObjectLayer,
+  nodeId: string,
+  delta: number,
+  totalFrames: number
+): boolean {
+  const moved: Array<{ frame: number; node: SceneNode }> = []
+  for (const keyframe of layer.keyframes) {
+    const node = keyframe.nodes.find((candidate) => candidate.id === nodeId)
+    if (node) moved.push({ frame: keyframe.frame, node })
+  }
+  if (moved.length === 0) return false
+  const first = Math.min(...moved.map((entry) => entry.frame))
+  const last = Math.max(...moved.map((entry) => entry.frame))
+  if (last - first > totalFrames - 1) return false
+  const shift = delta > 0 ? Math.min(delta, totalFrames - 1 - last) : Math.max(delta, -first)
+  if (shift === 0) return false
+  // Detach the entries first, dropping the keyframes they alone occupied.
+  for (let i = layer.keyframes.length - 1; i >= 0; i--) {
+    const keyframe = layer.keyframes[i]
+    const index = keyframe.nodes.findIndex((candidate) => candidate.id === nodeId)
+    if (index === -1) continue
+    keyframe.nodes.splice(index, 1)
+    if (keyframe.nodes.length === 0) layer.keyframes.splice(i, 1)
+  }
+  // Re-attach them at the shifted frames, merging into existing keyframes.
+  for (const entry of moved) {
+    const frame = entry.frame + shift
+    const existing = layer.keyframes.find((keyframe) => keyframe.frame === frame)
+    if (existing) existing.nodes.push(entry.node)
+    else layer.keyframes.push({ frame, nodes: [entry.node] })
+  }
+  layer.keyframes.sort((a, b) => a.frame - b.frame)
+  return true
 }
 
 /**
