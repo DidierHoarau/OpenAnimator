@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addLayer,
   addNodeToLayer,
+  cellRangeAtFrame,
   cloneDocument,
   createDocument,
   createDrawingLayer,
@@ -16,6 +17,8 @@ import {
   isAnimatorDocument,
   isAsset,
   isSceneNode,
+  moveCell,
+  moveNodeKeyframes,
   removeCell,
   removeFrame,
   removeKeyframe,
@@ -23,6 +26,7 @@ import {
   removeNodeFromLayer,
   resolveCellAtFrame,
   setCellContent,
+  setCellEnd,
   setKeyframeTween,
   updateNodeInLayer
 } from './document'
@@ -510,6 +514,153 @@ describe('drawing layers and cells', () => {
     expect(removeCell(layer, 0)).toBe(true)
     expect(removeCell(layer, 0)).toBe(false)
     expect(layer.cells).toHaveLength(0)
+  })
+
+  it('cellRangeAtFrame reports the hold of the cell at a frame', () => {
+    const layer = drawingLayer()
+    layer.cells.push(
+      { frame: 2, resourceId: 'res-a' },
+      { frame: 5, resourceId: 'res-b' },
+      { frame: 9, resourceId: 'res-c' }
+    )
+    // Blank before the first cell.
+    expect(cellRangeAtFrame(layer, 0, 20)).toBeNull()
+    // Middle cell: holds to the frame before the next cell.
+    expect(cellRangeAtFrame(layer, 2, 20)).toEqual({ cellFrame: 2, endFrame: 4, lastHolds: false })
+    expect(cellRangeAtFrame(layer, 4, 20)).toEqual({ cellFrame: 2, endFrame: 4, lastHolds: false })
+    // The last cell holds to the end of the authored timeline.
+    expect(cellRangeAtFrame(layer, 5, 20)).toEqual({ cellFrame: 5, endFrame: 8, lastHolds: false })
+    expect(cellRangeAtFrame(layer, 15, 20)).toEqual({ cellFrame: 9, endFrame: 19, lastHolds: true })
+    expect(cellRangeAtFrame(layer, 19, 20)).toEqual({ cellFrame: 9, endFrame: 19, lastHolds: true })
+  })
+
+  it('cellRangeAtFrame handles a single cell holding to the end', () => {
+    const layer = drawingLayer()
+    layer.cells.push({ frame: 0, resourceId: 'res-a' })
+    expect(cellRangeAtFrame(layer, 12, 8)).toEqual({ cellFrame: 0, endFrame: 7, lastHolds: true })
+  })
+
+  it('moveCell relocates a cell, and the moved cell wins over an occupied target', () => {
+    const layer = drawingLayer()
+    layer.cells.push(
+      { frame: 1, resourceId: 'res-a' },
+      { frame: 4, resourceId: 'res-b' },
+      { frame: 7, resourceId: 'res-c' }
+    )
+    expect(moveCell(layer, 1, 5)).toBe(true)
+    expect(layer.cells.map((cell) => cell.frame)).toEqual([4, 5, 7])
+    expect(layer.cells.find((cell) => cell.frame === 5)?.resourceId).toBe('res-a')
+
+    // Merging onto the occupied frame 7: the moved cell replaces the target.
+    expect(moveCell(layer, 5, 7)).toBe(true)
+    expect(layer.cells.map((cell) => cell.frame)).toEqual([4, 7])
+    expect(layer.cells.find((cell) => cell.frame === 7)?.resourceId).toBe('res-a')
+  })
+
+  it('moveCell is a no-op for a missing source or an identical target', () => {
+    const layer = drawingLayer()
+    layer.cells.push({ frame: 2, resourceId: 'res-a' })
+    expect(moveCell(layer, 0, 3)).toBe(false)
+    expect(moveCell(layer, 2, 2)).toBe(false)
+    expect(layer.cells.map((cell) => cell.frame)).toEqual([2])
+  })
+
+  it('setCellEnd moves the next cell right after the new end', () => {
+    const layer = drawingLayer()
+    layer.cells.push(
+      { frame: 2, resourceId: 'res-a' },
+      { frame: 6, resourceId: 'res-b' }
+    )
+    expect(setCellEnd(layer, 2, 8, 20)).toBe(true)
+    expect(layer.cells.map((cell) => cell.frame)).toEqual([2, 9])
+
+    // Shrinking below the start clamps to the cell's own frame.
+    expect(setCellEnd(layer, 2, 1, 20)).toBe(true)
+    expect(layer.cells.map((cell) => cell.frame)).toEqual([2, 3])
+
+    // Unchanged end: no-op.
+    expect(setCellEnd(layer, 2, 2, 20)).toBe(false)
+    // No cell holds the frame: no-op.
+    expect(setCellEnd(layer, 15, 18, 20)).toBe(false)
+  })
+
+  it('setCellEnd shortens the last cell with a blank cell after the new end', () => {
+    const layer = drawingLayer()
+    layer.cells.push({ frame: 2, resourceId: 'res-a' })
+    // The last cell holds to the timeline end (19): shortening inserts a
+    // blank cell at end + 1.
+    expect(setCellEnd(layer, 2, 9, 20, 'res-blank')).toBe(true)
+    expect(layer.cells).toEqual([
+      { frame: 2, resourceId: 'res-a' },
+      { frame: 10, resourceId: 'res-blank' }
+    ])
+    // Extending to the timeline end stays impossible; without a blank
+    // resource the insertion is refused.
+    const single = drawingLayer()
+    single.cells.push({ frame: 0, resourceId: 'res-a' })
+    expect(setCellEnd(single, 0, 9, 10)).toBe(false)
+    expect(setCellEnd(single, 0, 5, 10)).toBe(false)
+    expect(single.cells.map((cell) => cell.frame)).toEqual([0])
+  })
+
+  it('moveNodeKeyframes shifts every keyframe of the node and merges at the destination', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    insertKeyframe(layer, 2)
+    addNodeToLayer(layer, 2, rect('a', 10, 0))
+    addNodeToLayer(layer, 2, rect('b', 20, 0))
+    // Keyframe 5 copies { a, b }: drop 'b' and add 'c' for a distinct pose.
+    insertKeyframe(layer, 5)
+    removeNodeFromLayer(layer, 5, 'b')
+    addNodeToLayer(layer, 5, rect('c', 40, 0))
+
+    // Shift the two 'a' entries by +2: 2 → 4, 5 → 7.
+    expect(moveNodeKeyframes(layer, 'a', 2, 20)).toBe(true)
+    const framesOf = (id: string): number[] =>
+      layer.keyframes.filter((kf) => kf.nodes.some((node) => node.id === id)).map((kf) => kf.frame)
+    expect(framesOf('a')).toEqual([4, 7])
+    expect(framesOf('b')).toEqual([2])
+    expect(framesOf('c')).toEqual([5])
+
+    // Merging: move 'b' (frame 2) onto frame 4 where 'a' already sits.
+    expect(moveNodeKeyframes(layer, 'b', 2, 20)).toBe(true)
+    const merged = layer.keyframes.find((keyframe) => keyframe.frame === 4)!
+    expect(merged.nodes.map((node) => node.id).sort()).toEqual(['a', 'b'])
+  })
+
+  it('moveNodeKeyframes clamps the shift so the whole span stays in the timeline', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    addNodeToLayer(layer, 0, rect('a', 0, 0))
+    // Keyframe 5 copies 'a': the node spans frames 0..5.
+    insertKeyframe(layer, 5)
+
+    // Timeline of 10 frames (0..9): the span shifts right by 4 exactly onto
+    // the timeline end.
+    expect(moveNodeKeyframes(layer, 'a', 4, 10)).toBe(true)
+    const framesOf = (): number[] =>
+      layer.keyframes
+        .filter((keyframe) => keyframe.nodes.some((node) => node.id === 'a'))
+        .map((keyframe) => keyframe.frame)
+    expect(framesOf()).toEqual([4, 9])
+    // The span now touches the end: any further right shift is blocked.
+    expect(moveNodeKeyframes(layer, 'a', 3, 10)).toBe(false)
+    expect(framesOf()).toEqual([4, 9])
+    // Moving left clamps to frame 0.
+    expect(moveNodeKeyframes(layer, 'a', -99, 10)).toBe(true)
+    expect(framesOf()).toEqual([0, 5])
+  })
+
+  it('moveNodeKeyframes drops keyframes emptied by the move and refuses unknown nodes', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    addNodeToLayer(layer, 0, rect('a', 0, 0))
+    // The only keyframe holds exactly 'a': moving it away drops the keyframe.
+    expect(moveNodeKeyframes(layer, 'a', 3, 10)).toBe(true)
+    expect(layer.keyframes).toEqual([{ frame: 3, nodes: [expect.objectContaining({ id: 'a' })] }])
+
+    expect(moveNodeKeyframes(layer, 'ghost', 1, 10)).toBe(false)
+    expect(moveNodeKeyframes(layer, 'a', 0, 10)).toBe(false)
   })
 
   it('insertFrame shifts cells later and removeFrame shifts them back', () => {

@@ -1,6 +1,7 @@
 import {
   addLayer as addLayerOp,
   addNodeToLayer,
+  cellRangeAtFrame,
   cloneDocument,
   createDocument,
   createLayer,
@@ -16,7 +17,9 @@ import {
   insertBlankKeyframe,
   insertCell as insertCellOp,
   insertFrame,
+  moveCell as moveCellOp,
   moveLayer as moveLayerOp,
+  moveNodeKeyframes,
   removeCell as removeCellOp,
   removeFrame,
   removeLayer as removeLayerOp,
@@ -26,6 +29,7 @@ import {
   renameNodeInLayer,
   resolveCellAtFrame,
   setCellContent as setCellContentOp,
+  setCellEnd as setCellEndOp,
   setKeyframeTween,
   updateNodeInLayer
 } from '@shared/document'
@@ -1231,6 +1235,121 @@ export class Editor {
     if (!Number.isInteger(frame) || frame < 0 || !this.resources.getUrl(resourceId)) return false
     this.pushHistory()
     setCellContentOp(layer, frame, resourceId)
+    this.docChanged()
+    return true
+  }
+
+  /**
+   * Moves the cell that covers `fromFrame` so it starts at `toFrame`. The
+   * target is clamped to the authored timeline; a cell already at the target
+   * is replaced by the moved one. One undo step.
+   */
+  moveCellToFrame(fromFrame: number, toFrame: number): boolean {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return false
+    if (!Number.isFinite(fromFrame) || !Number.isFinite(toFrame)) return false
+    const source = Math.floor(fromFrame)
+    const target = Math.min(Math.max(0, Math.floor(toFrame)), Math.max(0, this.duration - 1))
+    if (target === source || !findCellAtFrame(layer, source)) return false
+    this.pushHistory()
+    moveCellOp(layer, source, target)
+    this.docChanged()
+    this.showMessage(`Cell moved to frame ${target + 1}`)
+    return true
+  }
+
+  /** Moves a cell by its start frame — the same operation as `moveCellToFrame`. */
+  setCellStartFrame(frame: number, newStart: number): boolean {
+    return this.moveCellToFrame(frame, newStart)
+  }
+
+  /**
+   * Sets the visible end of the cell covering `frame`. A followed cell moves
+   * to keep the hold contiguous; shrinking the last cell (which otherwise
+   * holds to the timeline end) inserts a transparent cell right after the new
+   * end. One undo step.
+   */
+  async setCellEndFrame(frame: number, newEndFrame: number): Promise<boolean> {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return false
+    if (!Number.isFinite(newEndFrame)) return false
+    const total = this.duration
+    const source = Math.floor(frame)
+    const range = cellRangeAtFrame(layer, source, total)
+    if (!range) return false
+    const end = Math.min(Math.max(Math.floor(newEndFrame), range.cellFrame), Math.max(0, total - 1))
+    if (end === range.endFrame) return false
+    let blankResourceId: string | undefined
+    if (range.lastHolds) {
+      const seed = await this.cellSeedResource(layer, false)
+      if (!seed) return false
+      blankResourceId = seed
+    }
+    this.pushHistory()
+    setCellEndOp(layer, source, end, total, blankResourceId)
+    this.docChanged()
+    this.showMessage('Cell end frame updated')
+    return true
+  }
+
+  /**
+   * Moves every keyframe of one node so its first keyframe lands on
+   * `targetFrame`, preserving the relative timing (a held object moves
+   * without stretching). Clamped so the whole span stays on the timeline;
+   * a collapsed move is refused with a status message. One undo step.
+   */
+  moveNodeToFrame(nodeId: string, targetFrame: number): boolean {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
+    if (!Number.isFinite(targetFrame)) return false
+    const frames = layer.keyframes
+      .filter((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))
+      .map((keyframe) => keyframe.frame)
+    if (frames.length === 0) return false
+    const first = Math.min(...frames)
+    const last = Math.max(...frames)
+    const total = this.duration
+    const target = Math.min(Math.max(0, Math.floor(targetFrame)), Math.max(0, total - 1))
+    const delta = target - first
+    if (delta === 0) return false
+    const shift = delta > 0 ? Math.min(delta, total - 1 - last) : Math.max(delta, -first)
+    if (shift === 0) {
+      this.showMessage('The move would leave the timeline')
+      return false
+    }
+    this.pushHistory()
+    moveNodeKeyframes(layer, nodeId, shift, total)
+    this.docChanged()
+    return true
+  }
+
+  /**
+   * `moveNodeToFrame` for the whole selection: every selected node's span
+   * shifts so its first keyframe lands on `targetFrame` (each clamped to the
+   * timeline). Exactly one undo step, and none when nothing moves.
+   */
+  moveSelectedNodesToFrame(targetFrame: number): boolean {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
+    if (!Number.isFinite(targetFrame)) return false
+    const total = this.duration
+    const target = Math.min(Math.max(0, Math.floor(targetFrame)), Math.max(0, total - 1))
+    const shifts = new Map<string, number>()
+    for (const nodeId of this.selectedNodeIds) {
+      const frames = layer.keyframes
+        .filter((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))
+        .map((keyframe) => keyframe.frame)
+      if (frames.length === 0) continue
+      const first = Math.min(...frames)
+      const last = Math.max(...frames)
+      const delta = target - first
+      if (delta === 0) continue
+      const shift = delta > 0 ? Math.min(delta, total - 1 - last) : Math.max(delta, -first)
+      if (shift !== 0) shifts.set(nodeId, shift)
+    }
+    if (shifts.size === 0) return false
+    this.pushHistory()
+    for (const [nodeId, shift] of shifts) moveNodeKeyframes(layer, nodeId, shift, total)
     this.docChanged()
     return true
   }

@@ -1,4 +1,5 @@
 import {
+  cellRangeAtFrame,
   findKeyframeAtFrame,
   findNearestNodeKeyframeIndex,
   getLayer,
@@ -102,11 +103,15 @@ export class TimelineView {
   private readonly menuCellButtons: HTMLButtonElement[]
   private readonly menuResolutionRow: HTMLDivElement
   private readonly menuResolutionInput: HTMLInputElement
+  private readonly menuMoveRow: HTMLDivElement
+  private readonly menuMoveInput: HTMLInputElement
   private readonly expandedLayers = new Set<string>()
   private nodeKeyframeButtons: HTMLButtonElement[] = []
   private nodeTweenButtons: HTMLButtonElement[] = []
   private menuTarget: MenuTarget | null = null
   private draggedLayerId: string | null = null
+  private draggedCell: { layerId: string; frame: number } | null = null
+  private draggedNode: { layerId: string; nodeId: string } | null = null
 
   constructor(
     private readonly editor: Editor,
@@ -194,8 +199,37 @@ export class TimelineView {
       }
     })
     this.menuResolutionRow.appendChild(this.menuResolutionInput)
+    // "Move to frame": objects move their whole span, drawing layers move the
+    // cell at the playhead.
+    this.menuMoveRow = el('div', 'tl-context-item tl-context-move')
+    this.menuMoveRow.appendChild(el('span', undefined, 'Move to frame'))
+    this.menuMoveInput = el('input', 'tl-number') as HTMLInputElement
+    this.menuMoveInput.type = 'number'
+    this.menuMoveInput.min = '1'
+    this.menuMoveInput.title = 'Frame (1-based) to move the target to'
+    this.menuMoveInput.addEventListener('change', () => {
+      const target = this.menuTarget
+      const value = Number(this.menuMoveInput.value)
+      if (!target || !Number.isFinite(value)) return
+      const frame = Math.floor(value) - 1
+      this.editor.setCurrentLayer(target.layerId)
+      let moved = false
+      if (target.nodeId) {
+        moved = this.editor.moveNodeToFrame(target.nodeId, frame)
+        if (moved) this.editor.selectNodes([target.nodeId], 'replace')
+      } else {
+        const layer = getLayer(this.editor.document, target.layerId)
+        const range = layer && isDrawingLayer(layer)
+          ? cellRangeAtFrame(layer, this.editor.currentFrame, this.editor.duration)
+          : null
+        if (range) moved = this.editor.moveCellToFrame(range.cellFrame, frame)
+      }
+      if (moved) this.closeContextMenu()
+    })
+    this.menuMoveRow.appendChild(this.menuMoveInput)
     this.menu.append(
       this.menuRenameButton,
+      this.menuMoveRow,
       ...this.menuCellButtons,
       this.menuResolutionRow,
       this.menuDeleteButton
@@ -422,7 +456,9 @@ export class TimelineView {
     })
     row.addEventListener('dragend', () => this.clearDragState())
 
-    row.appendChild(this.buildBarTrack(null, null, frames))
+    const track = this.buildBarTrack(null, null, frames)
+    this.wireDropTarget(track, layer.id)
+    row.appendChild(track)
     return row
   }
 
@@ -470,8 +506,24 @@ export class TimelineView {
       } else {
         cell.classList.add('tl-cell-blank')
       }
+      // A held span starts exactly on its cell's frame: dragging it moves
+      // that cell to the drop frame.
+      if (span.resourceId) {
+        cell.setAttribute('draggable', 'true')
+        cell.title = `Cell starting at frame ${span.start + 1} — drag to a frame to move it`
+        cell.addEventListener('dragstart', (event) => {
+          this.draggedCell = { layerId: layer.id, frame: span.start }
+          if (event.dataTransfer) {
+            event.dataTransfer.setData('text/plain', `${layer.id}:${span.start}`)
+            event.dataTransfer.effectAllowed = 'move'
+          }
+          cell.classList.add('dragging')
+        })
+        cell.addEventListener('dragend', () => this.clearDragState())
+      }
       track.appendChild(cell)
     }
+    this.wireDropTarget(track, layer.id)
     row.appendChild(track)
     return row
   }
@@ -562,6 +614,22 @@ export class TimelineView {
       frames,
       nodeColor(node)
     )
+    this.wireDropTarget(track, layer.id)
+    // The span bar drags the object: dropping on a frame moves every
+    // keyframe of this object so its first keyframe lands there.
+    const bar = track.querySelector<HTMLElement>('.tl-shape-span')
+    if (bar) {
+      bar.setAttribute('draggable', 'true')
+      bar.addEventListener('dragstart', (event) => {
+        this.draggedNode = { layerId: layer.id, nodeId: node.id }
+        if (event.dataTransfer) {
+          event.dataTransfer.setData('text/plain', `${layer.id}:${node.id}`)
+          event.dataTransfer.effectAllowed = 'move'
+        }
+        bar.classList.add('dragging')
+      })
+      bar.addEventListener('dragend', () => this.clearDragState())
+    }
     const sorted = [...layer.keyframes].sort((a, b) => a.frame - b.frame)
     for (let i = 0; i < sorted.length; i++) {
       const keyframe = sorted[i]
@@ -659,6 +727,26 @@ export class TimelineView {
     for (const button of this.menuCellButtons) button.classList.toggle('hidden', !drawing)
     this.menuResolutionRow.classList.toggle('hidden', !drawing)
     if (drawing) this.menuResolutionInput.value = String(layer.resolutionScale)
+    // "Move to frame" applies to object rows and to drawing layers (their
+    // cell at the playhead); plain object-layer rows have nothing to move.
+    const movable = target.nodeId !== null || drawing
+    this.menuMoveRow.classList.toggle('hidden', !movable)
+    if (movable) {
+      let position: number | null = null
+      if (target.nodeId !== null) {
+        if (isObjectLayer(layer)) {
+          const frames = layer.keyframes
+            .filter((keyframe) => keyframe.nodes.some((node) => node.id === target.nodeId))
+            .map((keyframe) => keyframe.frame)
+          if (frames.length > 0) position = Math.min(...frames)
+        }
+      } else if (isDrawingLayer(layer)) {
+        const range = cellRangeAtFrame(layer, this.editor.currentFrame, this.editor.duration)
+        if (range) position = range.cellFrame
+      }
+      this.menuMoveInput.value = position === null ? '' : String(position + 1)
+      this.menuMoveInput.disabled = position === null
+    }
     this.menuDeleteButton.disabled =
       target.nodeId === null && this.editor.document.layers.length <= 1
     this.menu.classList.remove('hidden')
@@ -736,8 +824,49 @@ export class TimelineView {
     return event.clientY > bounds.top + bounds.height / 2
   }
 
+  /**
+   * Drop target for a track: while a cell or span bar of this layer is being
+   * dragged over it, dropping moves the dragged item to the frame under the
+   * pointer.
+   */
+  private wireDropTarget(track: HTMLDivElement, layerId: string): void {
+    const active = (): boolean =>
+      this.draggedCell?.layerId === layerId || this.draggedNode?.layerId === layerId
+    track.addEventListener('dragover', (event) => {
+      if (!active()) return
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+    })
+    track.addEventListener('drop', (event) => {
+      const cell = this.draggedCell
+      const node = this.draggedNode
+      if (!active()) return
+      event.preventDefault()
+      this.clearDragState()
+      const frame = this.frameFromDragEvent(event, track)
+      if (frame === null) return
+      this.editor.setCurrentLayer(layerId)
+      if (cell && cell.layerId === layerId) {
+        this.editor.moveCellToFrame(cell.frame, frame)
+      } else if (node && node.layerId === layerId) {
+        this.editor.moveNodeToFrame(node.nodeId, frame)
+      }
+    })
+  }
+
+  /** Frame under a drag event, derived from pointer geometry. */
+  private frameFromDragEvent(event: DragEvent, track: HTMLElement): number | null {
+    const frames = Number(track.dataset.frames)
+    if (!Number.isFinite(frames) || frames <= 0) return null
+    const rect = track.getBoundingClientRect()
+    const offset = event.clientX - rect.left
+    return Math.max(0, Math.min(frames - 1, Math.floor(offset / FRAME_WIDTH)))
+  }
+
   private clearDragState(): void {
     this.draggedLayerId = null
+    this.draggedCell = null
+    this.draggedNode = null
     for (const row of this.rowsHost.querySelectorAll('.dragging, .drop-before, .drop-after')) {
       row.classList.remove('dragging', 'drop-before', 'drop-after')
     }

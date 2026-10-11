@@ -1,7 +1,9 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { IpcRendererEvent } from 'electron'
 
 import {
   APP_API_CHANNEL,
+  APP_MENU_COMMAND_CHANNEL,
   DOCUMENT_OPEN_DIALOG_CHANNEL,
   DOCUMENT_READ_CHANNEL,
   DOCUMENT_SAVE_AS_CHANNEL,
@@ -19,7 +21,7 @@ import {
   RESOURCE_PURGE_CHANNEL,
   RESOURCE_RESET_CHANNEL
 } from '../shared/api'
-import type { OpenAnimatorApi } from '../shared/api'
+import type { MenuCommand, OpenAnimatorApi } from '../shared/api'
 
 const api: OpenAnimatorApi = {
   versions: () => ipcRenderer.invoke(APP_API_CHANNEL),
@@ -39,7 +41,14 @@ const api: OpenAnimatorApi = {
   removeLibraryAsset: (id) => ipcRenderer.invoke(LIBRARY_REMOVE_CHANNEL, id),
   renameLibraryAsset: (id, name) => ipcRenderer.invoke(LIBRARY_RENAME_CHANNEL, id, name),
   pickExportPath: (request) => ipcRenderer.invoke(EXPORT_PICK_PATH_CHANNEL, request),
-  writeExportFile: (path, bytes) => ipcRenderer.invoke(EXPORT_WRITE_CHANNEL, path, bytes)
+  writeExportFile: (path, bytes) => ipcRenderer.invoke(EXPORT_WRITE_CHANNEL, path, bytes),
+  onMenuCommand: (listener) => {
+    const handler = (_event: IpcRendererEvent, command: MenuCommand): void => listener(command)
+    ipcRenderer.on(APP_MENU_COMMAND_CHANNEL, handler)
+    return () => {
+      ipcRenderer.removeListener(APP_MENU_COMMAND_CHANNEL, handler)
+    }
+  }
 }
 
 if (process.contextIsolated) {

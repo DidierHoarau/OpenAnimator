@@ -120,6 +120,18 @@ describe('importImageBytes', () => {
     expect(node.resourceId).toBe('hash-1')
   })
 
+  it('registers the bytes in the renderer cache so the import renders immediately', async () => {
+    const addResource = vi.fn(() => Promise.resolve({ resourceId: 'hash-cache', deduped: false }))
+    fakeApi(addResource)
+    const ok = await importImageBytes(editor, 'fresh.png', PNG_BYTES, undefined, deps())
+    expect(ok).toBe(true)
+    // Before the fix the renderer cache stayed empty and every view rendered
+    // the placeholder until the document was reloaded.
+    expect(editor.resources.getUrl('hash-cache')).not.toBeNull()
+    expect(editor.resources.getBlob('hash-cache')).not.toBeNull()
+    expect(editor.resources.isCorrupt('hash-cache')).toBe(false)
+  })
+
   it('re-encodes GIFs to a PNG of their first frame at natural size', async () => {
     const addResource = vi.fn(() => Promise.resolve({ resourceId: 'hash-gif', deduped: false }))
     fakeApi(addResource)

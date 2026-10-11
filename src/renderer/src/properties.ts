@@ -1,11 +1,13 @@
 import { formatHexColor, parseHexColor } from '@shared/color'
 import {
+  cellRangeAtFrame,
   findKeyframeAtFrame,
   findKeyframeIndexForFrame,
   findNearestNodeKeyframeIndex,
   findNextCellFrame,
   findPreviousCellFrame
 } from '@shared/document'
+import type { CellRange } from '@shared/document'
 import type { EasingName } from '@shared/easing'
 import { isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { ImageNode, SceneNode } from '@shared/model'
@@ -93,6 +95,7 @@ export class PropertiesView {
   private readonly removeKeyframeButton: HTMLButtonElement
   private readonly tweenButton: HTMLButtonElement
   private readonly easingSelect: HTMLSelectElement
+  private readonly moveNodeInput: HTMLInputElement
 
   /** Shared transform rows, parked in whichever node section is visible. */
   private readonly transformRows: HTMLDivElement
@@ -123,6 +126,10 @@ export class PropertiesView {
   private readonly duplicateCellButton: HTMLButtonElement
   private readonly clearCellButton: HTMLButtonElement
   private readonly nextCellButton: HTMLButtonElement
+  private readonly cellRangeLabel: HTMLElement
+  private readonly cellStartInput: HTMLInputElement
+  private readonly cellEndInput: HTMLInputElement
+  private readonly cellMoveInput: HTMLInputElement
   private readonly pathStrokeToggle: HTMLInputElement
   private readonly pathStrokeColor: HTMLInputElement
   private readonly pathStrokeWidth: HTMLInputElement
@@ -183,6 +190,17 @@ export class PropertiesView {
     const tweenRow = el('div', 'panel-buttons')
     tweenRow.append(this.tweenButton, this.easingSelect)
     layer.content.append(layerButtons, tweenRow)
+    // Moves the whole selection so its first keyframe lands on this frame
+    // (1-based), keeping each object's relative timing.
+    this.moveNodeInput = this.numberInput(layer.content, 'Move to', 'f', () => {
+      const value = Number(this.moveNodeInput.value)
+      if (!Number.isFinite(value) || !editor.moveSelectedNodesToFrame(Math.floor(value) - 1)) {
+        this.render()
+      }
+    })
+    this.moveNodeInput.min = '1'
+    this.moveNodeInput.title =
+      'Move the selected objects so their first keyframes land on this frame (1-based), keeping their timing'
 
     // Shared transform inputs of the selected node (shape or group).
     this.transformRows = el('div', 'panel-rows')
@@ -632,6 +650,73 @@ export class PropertiesView {
     cellActions.append(this.prevCellButton, this.duplicateCellButton, this.clearCellButton, this.nextCellButton)
     draw.content.append(cellActions)
 
+    // Cell framing, visible while a drawing layer is active: the visible
+    // span of the cell at the playhead, adjustable numerically.
+    const cell = this.createSection('cell', 'Cell')
+    const rangeRow = this.row(cell.content, 'Range')
+    this.cellRangeLabel = el('span', 'panel-suffix', '')
+    rangeRow.appendChild(this.cellRangeLabel)
+
+    const cellStartRow = this.row(cell.content, 'Start')
+    cellStartRow.appendChild(el('span', 'panel-suffix', 'f'))
+    this.cellStartInput = el('input') as HTMLInputElement
+    this.cellStartInput.type = 'number'
+    this.cellStartInput.min = '1'
+    this.cellStartInput.title =
+      'Frame the cell at the playhead starts on (1-based); changing it moves the cell'
+    this.cellStartInput.addEventListener('change', () => {
+      const range = this.currentCellRange()
+      const value = Number(this.cellStartInput.value)
+      if (!range || !Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      const target = this.clampFrame(Math.floor(value) - 1)
+      if (editor.moveCellToFrame(range.cellFrame, target)) editor.setFrame(target)
+      else this.render()
+    })
+    cellStartRow.appendChild(this.cellStartInput)
+
+    const cellEndRow = this.row(cell.content, 'End')
+    cellEndRow.appendChild(el('span', 'panel-suffix', 'f'))
+    this.cellEndInput = el('input') as HTMLInputElement
+    this.cellEndInput.type = 'number'
+    this.cellEndInput.min = '1'
+    this.cellEndInput.title =
+      'Last frame the cell at the playhead stays visible on (1-based); the following cell shifts with it'
+    this.cellEndInput.addEventListener('change', () => {
+      const range = this.currentCellRange()
+      const value = Number(this.cellEndInput.value)
+      if (!range || !Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      void editor.setCellEndFrame(range.cellFrame, Math.floor(value) - 1).then((changed) => {
+        if (!changed) this.render()
+      })
+    })
+    cellEndRow.appendChild(this.cellEndInput)
+
+    const cellMoveRow = this.row(cell.content, 'Move to')
+    cellMoveRow.appendChild(el('span', 'panel-suffix', 'f'))
+    this.cellMoveInput = el('input') as HTMLInputElement
+    this.cellMoveInput.type = 'number'
+    this.cellMoveInput.min = '1'
+    this.cellMoveInput.title =
+      'Move the cell at the playhead so it starts on this frame (1-based)'
+    this.cellMoveInput.addEventListener('change', () => {
+      const range = this.currentCellRange()
+      const value = Number(this.cellMoveInput.value)
+      if (!range || !Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      const target = this.clampFrame(Math.floor(value) - 1)
+      if (editor.moveCellToFrame(range.cellFrame, target)) editor.setFrame(target)
+      else this.render()
+    })
+    cellMoveRow.appendChild(this.cellMoveInput)
+
     scroll.append(
       layer.root,
       shape.root,
@@ -640,7 +725,8 @@ export class PropertiesView {
       image.root,
       group.root,
       symbol.root,
-      draw.root
+      draw.root,
+      cell.root
     )
     container.appendChild(scroll)
 
@@ -750,6 +836,7 @@ export class PropertiesView {
     this.renderLayerSection()
     this.renderNodeSection()
     this.renderDrawSection()
+    this.renderCellSection()
   }
 
   private renderLayerSection(): void {
@@ -772,6 +859,20 @@ export class PropertiesView {
     this.tweenButton.classList.toggle('active', ownsKeyframe && keyframe?.tween !== undefined)
     this.easingSelect.disabled = !ownsKeyframe || keyframe?.tween === undefined
     if (keyframe?.tween) this.easingSelect.value = keyframe.tween.easing
+
+    // "Move to" shows the primary object's first keyframe; a whole selection
+    // moves relative to the target of its primary.
+    let firstFrame: number | null = null
+    if (selected !== null && layer !== undefined && isObjectLayer(layer)) {
+      const frames = layer.keyframes
+        .filter((keyframe) => keyframe.nodes.some((node) => node.id === selected))
+        .map((keyframe) => keyframe.frame)
+      if (frames.length > 0) firstFrame = Math.min(...frames)
+    }
+    if (document.activeElement !== this.moveNodeInput) {
+      this.moveNodeInput.value = firstFrame === null ? '' : String(firstFrame + 1)
+    }
+    this.moveNodeInput.disabled = !editable || firstFrame === null
   }
 
   private renderNodeSection(): void {
@@ -908,6 +1009,49 @@ export class PropertiesView {
     this.onionToggle.checked = editor.onionSkin
     this.prevCellButton.disabled = findPreviousCellFrame(layer, editor.currentFrame) === null
     this.nextCellButton.disabled = findNextCellFrame(layer, editor.currentFrame) === null
+  }
+
+  /**
+   * Cell section: the visible span of the cell at the playhead with numeric
+   * start/end/move controls. The handlers resolve the current cell on every
+   * change, so the inputs always act on the cell actually under the playhead.
+   */
+  private renderCellSection(): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    const isDrawing = layer !== undefined && isDrawingLayer(layer)
+    this.sections.get('cell')?.setVisible(isDrawing)
+    if (!layer || !isDrawingLayer(layer)) return
+
+    const keep = (input: HTMLInputElement): boolean => document.activeElement === input
+    const range = this.currentCellRange()
+    const inputs = [this.cellStartInput, this.cellEndInput, this.cellMoveInput]
+    if (!range) {
+      this.cellRangeLabel.textContent = 'no cell here'
+      for (const input of inputs) {
+        if (!keep(input)) input.value = ''
+        input.disabled = true
+      }
+      return
+    }
+    this.cellRangeLabel.textContent = range.lastHolds
+      ? `frames ${range.cellFrame + 1}\u2013end`
+      : `frames ${range.cellFrame + 1}\u2013${range.endFrame + 1}`
+    if (!keep(this.cellStartInput)) this.cellStartInput.value = String(range.cellFrame + 1)
+    if (!keep(this.cellEndInput)) this.cellEndInput.value = String(range.endFrame + 1)
+    if (!keep(this.cellMoveInput)) this.cellMoveInput.value = String(range.cellFrame + 1)
+    for (const input of inputs) input.disabled = layer.locked
+  }
+
+  /** Span of the cell covering the playhead of the active drawing layer. */
+  private currentCellRange(): CellRange | null {
+    const layer = this.editor.currentLayer
+    if (!layer || !isDrawingLayer(layer)) return null
+    return cellRangeAtFrame(layer, this.editor.currentFrame, this.editor.duration)
+  }
+
+  private clampFrame(frame: number): number {
+    return Math.min(Math.max(0, frame), Math.max(0, this.editor.duration - 1))
   }
 
   /**

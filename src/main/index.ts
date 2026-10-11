@@ -1,12 +1,61 @@
 import { join } from 'node:path'
 
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
+import type { MenuItemConstructorOptions } from 'electron'
 
-import { APP_API_CHANNEL } from '../shared/api'
-import type { AppVersions } from '../shared/api'
+import { APP_API_CHANNEL, APP_MENU_COMMAND_CHANNEL } from '../shared/api'
+import type { AppVersions, MenuCommand } from '../shared/api'
 import { registerExportHandlers } from './exports'
 import { registerLibraryHandlers } from './library'
 import { registerProjectHandlers } from './projects'
+
+/** Routes a menu command to the focused renderer. */
+function sendMenuCommand(command: MenuCommand): void {
+  const target = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  target?.webContents.send(APP_MENU_COMMAND_CHANNEL, command)
+}
+
+/**
+ * Explicit application menu. The default menu's role items swallow the
+ * Ctrl+Z / Ctrl+Shift+Z accelerators as web-page edits, so the Edit menu
+ * routes Undo/Redo into the renderer's document history instead. The View
+ * menu omits the browser zoom roles: Ctrl+0 and Ctrl+-/Ctrl++ belong to the
+ * stage view.
+ */
+function installApplicationMenu(): void {
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [{ role: 'quit' }]
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => sendMenuCommand('undo') },
+        { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', click: () => sendMenuCommand('redo') },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [{ role: 'minimize' }, { role: 'close' }]
+    }
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -43,6 +92,7 @@ app.whenReady().then(() => {
   registerProjectHandlers()
   registerLibraryHandlers()
   registerExportHandlers()
+  installApplicationMenu()
 
   ipcMain.handle(APP_API_CHANNEL, (): AppVersions => ({
     app: app.getVersion(),

@@ -173,10 +173,25 @@ describe('LibraryView — document tab', () => {
     expect(view.isVisible).toBe(false)
     expect(container.classList.contains('hidden')).toBe(true)
 
+    const openings: boolean[] = []
+    view.onVisibilityChanged((visible) => openings.push(visible))
     editor.addNode(rect('a'))
     editor.saveSelectionAsSymbol()
     expect(view.isVisible).toBe(true)
     expect(container.classList.contains('hidden')).toBe(false)
+    // The auto-open notifies like any explicit toggle: the layout drops or
+    // restores the library column through the same path.
+    expect(openings).toEqual([true])
+  })
+
+  it('notifies visibility changes exactly once per actual change', () => {
+    const { view } = setup()
+    const seen: boolean[] = []
+    view.onVisibilityChanged((visible) => seen.push(visible))
+    view.setVisible(true)
+    view.setVisible(true)
+    view.setVisible(false)
+    expect(seen).toEqual([true, false])
   })
 
   it('places a document asset at center via the context menu', () => {

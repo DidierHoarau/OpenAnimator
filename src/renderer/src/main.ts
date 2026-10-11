@@ -32,11 +32,16 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   const library = el('button', undefined, 'Library')
   library.title = 'Toggle the asset library panel'
   library.classList.add('toggle')
-  library.classList.toggle('active', libraryView.isVisible)
-  library.addEventListener('click', () => {
-    libraryView.setVisible(!libraryView.isVisible)
+  // The layout must drop the library column with the panel, or hiding the
+  // library would leave its reserved grid space on the screen. Auto-open
+  // (first asset) and persistence flow through the same notification.
+  const syncLibraryLayout = (): void => {
+    layout.classList.toggle('library-hidden', !libraryView.isVisible)
     library.classList.toggle('active', libraryView.isVisible)
-  })
+  }
+  library.addEventListener('click', () => libraryView.setVisible(!libraryView.isVisible))
+  libraryView.onVisibilityChanged(syncLibraryLayout)
+  syncLibraryLayout()
   const properties = el('button', undefined, 'Properties')
   properties.title = 'Toggle the properties panel'
   properties.classList.add('toggle')
@@ -47,6 +52,24 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   })
   view.append(onion, library, properties)
   toolbar.appendChild(view)
+
+  toolbar.appendChild(el('span', 'sep'))
+
+  const history = el('div', 'group')
+  const undoButton = el('button', undefined, 'Undo')
+  undoButton.title = 'Undo the last change (Ctrl+Z)'
+  undoButton.addEventListener('click', () => editor.undo())
+  const redoButton = el('button', undefined, 'Redo')
+  redoButton.title = 'Redo the last undone change (Ctrl+Shift+Z or Ctrl+Y)'
+  redoButton.addEventListener('click', () => editor.redo())
+  history.append(undoButton, redoButton)
+  toolbar.appendChild(history)
+  const syncHistory = (): void => {
+    undoButton.disabled = !editor.canUndo
+    redoButton.disabled = !editor.canRedo
+  }
+  editor.onDocChange(syncHistory)
+  syncHistory()
 
   toolbar.appendChild(el('span', 'sep'))
 
@@ -379,6 +402,22 @@ async function bootstrap(): Promise<void> {
   registerKeyboard(editor, stageView)
   registerFileDrop(editor, workspace, stageView)
   registerErrorSurfacing(editor)
+  // Menu accelerators are consumed by the native menu before the page sees
+  // them; the Edit menu routes Undo/Redo here. Inside form fields the DOM
+  // editing history is replayed instead of touching the document.
+  window.api.onMenuCommand((command) => {
+    const target = document.activeElement
+    if (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLSelectElement ||
+      target instanceof HTMLTextAreaElement
+    ) {
+      document.execCommand(command)
+      return
+    }
+    if (command === 'undo') editor.undo()
+    else editor.redo()
+  })
   showStartupDialog(editor)
 
   // Warm the image cache for every drawing cell when playback starts so the
