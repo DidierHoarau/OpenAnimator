@@ -44,9 +44,14 @@ async function loadProjectFromPath(
 
 /**
  * Saves the document: to the current file when one is known (unless `as`),
- * through a Save As dialog otherwise.
+ * through a Save As dialog otherwise. Saving is blocked while a symbol is
+ * being edited in isolation — the scratch document must never reach disk.
  */
 export async function saveDocument(editor: Editor, options: { as: boolean }): Promise<boolean> {
+  if (editor.editingAssetId) {
+    editor.showMessage('Finish editing the symbol before saving')
+    return false
+  }
   if (!options.as && editor.filePath) {
     const result = await window.api.saveProjectTo(editor.filePath, editor.document)
     if (!result.ok) {

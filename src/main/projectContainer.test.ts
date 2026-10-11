@@ -123,6 +123,34 @@ describe('packProject / parseProject — round trip', () => {
     expect(parsed.resources.size).toBe(1)
     expect(parsed.resources.has('c'.repeat(64))).toBe(false)
   })
+
+  it('keeps resources referenced only by document assets', () => {
+    // Regression: the refcount walk must include document.assets, or the
+    // resources behind library-only symbol content would be dropped on save.
+    const document = documentWithNodes([])
+    document.assets = [
+      {
+        id: 'a',
+        name: 'badge',
+        kind: 'symbol',
+        content: {
+          type: 'group',
+          id: 'content',
+          center: { x: 0, y: 0 },
+          width: 10,
+          height: 10,
+          rotation: 0,
+          opacity: 1,
+          children: [imageNode('inner', 'c'.repeat(64))]
+        },
+        createdAt: 1
+      }
+    ]
+    const parsed = parseProject(
+      packProject(document, resources([['c'.repeat(64), JPG_BYTES, 'jpg']]))
+    )
+    expect(parsed.resources.get('c'.repeat(64))).toEqual({ bytes: JPG_BYTES, ext: 'jpg' })
+  })
 })
 
 describe('parseProject — error handling', () => {
@@ -163,6 +191,7 @@ describe('parseProject — error handling', () => {
       height: 100,
       fps: 24,
       background: '#000000',
+      assets: [],
       layers: [
         {
           id: 'l1',

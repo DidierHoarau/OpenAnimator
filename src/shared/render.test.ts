@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import { evaluateDocumentAtFrame } from './render'
-import type { AnimatorDocument, Layer, PrimitiveNode } from './model'
+import type { AnimatorDocument, Asset, GroupNode, Layer, PrimitiveNode, SceneNode, SymbolNode } from './model'
 
-function rect(id: string, x: number, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
+function rect(id: string, x = 0, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
   return {
     type: 'primitive',
     primitive: 'rect',
@@ -38,6 +38,7 @@ describe('evaluateDocumentAtFrame', () => {
       height: 100,
       fps: 24,
       background: '#000',
+      assets: [],
       layers: [
         layer('top', { keyframes: [{ frame: 0, nodes: [rect('a', 0)] }] }),
         layer('mid', { keyframes: [{ frame: 0, nodes: [rect('b', 1)] }] }),
@@ -65,6 +66,7 @@ describe('evaluateDocumentAtFrame', () => {
       height: 100,
       fps: 24,
       background: '#000',
+      assets: [],
       layers: [
         layer('visible-empty', {}),
         layer('hidden', { visible: false, keyframes: [{ frame: 0, nodes: [rect('a', 0)] }] })
@@ -85,6 +87,7 @@ describe('evaluateDocumentAtFrame', () => {
       height: 100,
       fps: 24,
       background: '#000',
+      assets: [],
       layers: [
         layer('l', {
           keyframes: [
@@ -109,6 +112,7 @@ describe('evaluateDocumentAtFrame', () => {
       height: 100,
       fps: 24,
       background: '#000',
+      assets: [],
       layers: [
         layer('l', {
           keyframes: [
@@ -135,8 +139,181 @@ describe('evaluateDocumentAtFrame', () => {
       height: 100,
       fps: 24,
       background: '#000',
+      assets: [],
       layers: []
     }
     expect(evaluateDocumentAtFrame(doc, 0)).toEqual([])
+  })
+
+  it('resolves symbol instances into groups carrying the asset content', () => {
+    const asset: Asset = {
+      id: 'asset-1',
+      name: 'Rocket',
+      kind: 'symbol',
+      content: {
+        type: 'group',
+        id: 'content',
+        center: { x: 0, y: 0 },
+        width: 100,
+        height: 50,
+        rotation: 0,
+        opacity: 1,
+        children: [rect('leaf', 10)]
+      },
+      createdAt: 1
+    }
+    const instance: SymbolNode = {
+      id: 's',
+      type: 'symbol',
+      assetId: 'asset-1',
+      center: { x: 40, y: 30 },
+      width: 200,
+      height: 100,
+      rotation: 15,
+      opacity: 0.75
+    }
+    const doc: AnimatorDocument = {
+      schemaVersion: 2,
+      name: 't',
+      width: 100,
+      height: 100,
+      fps: 24,
+      background: '#000',
+      assets: [asset],
+      layers: [layer('l', { keyframes: [{ frame: 0, nodes: [instance] }] })]
+    }
+    const nodes = evaluateDocumentAtFrame(doc, 0)[0].nodes
+    expect(nodes).toHaveLength(1)
+    const group = nodes[0] as GroupNode
+    expect(group.type).toBe('group')
+    expect(group.id).toBe('s')
+    expect(group.center).toEqual({ x: 40, y: 30 })
+    expect(group.width).toBe(200)
+    expect(group.rotation).toBe(15)
+    expect(group.children[0].id).toBe('leaf')
+  })
+
+  it('leaves unresolvable symbol instances in place (dashed placeholders)', () => {
+    const instance: SceneNode = {
+      id: 's',
+      type: 'symbol',
+      assetId: 'gone',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1
+    }
+    const doc: AnimatorDocument = {
+      schemaVersion: 2,
+      name: 't',
+      width: 100,
+      height: 100,
+      fps: 24,
+      background: '#000',
+      assets: [],
+      layers: [layer('l', { keyframes: [{ frame: 0, nodes: [instance] }] })]
+    }
+    expect(evaluateDocumentAtFrame(doc, 0)[0].nodes).toEqual([instance])
+  })
+
+  it('resolves nested symbol instances recursively', () => {
+    const inner: Asset = {
+      id: 'inner',
+      name: 'inner',
+      kind: 'symbol',
+      content: {
+        type: 'group',
+        id: 'c1',
+        center: { x: 0, y: 0 },
+        width: 10,
+        height: 10,
+        rotation: 0,
+        opacity: 1,
+        children: [rect('leaf')]
+      },
+      createdAt: 1
+    }
+    const outer: Asset = {
+      id: 'outer',
+      name: 'outer',
+      kind: 'symbol',
+      content: {
+        type: 'group',
+        id: 'c2',
+        center: { x: 0, y: 0 },
+        width: 10,
+        height: 10,
+        rotation: 0,
+        opacity: 1,
+        children: [{ id: 's', type: 'symbol', assetId: 'inner', center: { x: 0, y: 0 }, width: 10, height: 10, rotation: 0, opacity: 1 }]
+      },
+      createdAt: 1
+    }
+    const doc: AnimatorDocument = {
+      schemaVersion: 2,
+      name: 't',
+      width: 100,
+      height: 100,
+      fps: 24,
+      background: '#000',
+      assets: [inner, outer],
+      layers: [
+        layer('l', {
+          keyframes: [
+            {
+              frame: 0,
+              nodes: [{ id: 's', type: 'symbol', assetId: 'outer', center: { x: 0, y: 0 }, width: 10, height: 10, rotation: 0, opacity: 1 }]
+            }
+          ]
+        })
+      ]
+    }
+    const group = evaluateDocumentAtFrame(doc, 0)[0].nodes[0] as GroupNode
+    expect(group.children[0].type).toBe('group')
+    expect(((group.children[0] as GroupNode).children[0] as PrimitiveNode).id).toBe('leaf')
+  })
+
+  it('still tweens resolved symbol content inside groups', () => {
+    // The instance's own transform tweens; resolution preserves the tweened pose.
+    const asset: Asset = {
+      id: 'asset-1',
+      name: 'Rocket',
+      kind: 'symbol',
+      content: {
+        type: 'group',
+        id: 'content',
+        center: { x: 0, y: 0 },
+        width: 10,
+        height: 10,
+        rotation: 0,
+        opacity: 1,
+        children: [rect('leaf')]
+      },
+      createdAt: 1
+    }
+    const doc: AnimatorDocument = {
+      schemaVersion: 2,
+      name: 't',
+      width: 100,
+      height: 100,
+      fps: 24,
+      background: '#000',
+      assets: [asset],
+      layers: [
+        layer('l', {
+          keyframes: [
+            {
+              frame: 0,
+              nodes: [{ id: 's', type: 'symbol', assetId: 'asset-1', center: { x: 0, y: 0 }, width: 10, height: 10, rotation: 0, opacity: 1 }],
+              tween: { easing: 'linear' }
+            },
+            { frame: 10, nodes: [{ id: 's', type: 'symbol', assetId: 'asset-1', center: { x: 100, y: 0 }, width: 10, height: 10, rotation: 0, opacity: 1 }] }
+          ]
+        })
+      ]
+    }
+    const group = evaluateDocumentAtFrame(doc, 5)[0].nodes[0] as GroupNode
+    expect(group.center.x).toBeCloseTo(50)
   })
 })

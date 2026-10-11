@@ -79,6 +79,11 @@ export class StageView {
     this.updateCursor()
   }
 
+  /** The stage SVG element — drop target for library drags. */
+  get element(): SVGSVGElement {
+    return this.svg
+  }
+
   /** True when the Space press was consumed by a pan drag (no play toggle). */
   get spaceUsed(): boolean {
     return this.spaceUsedForPan

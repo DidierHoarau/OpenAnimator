@@ -184,23 +184,32 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
     fps: document.fps,
     background: document.background,
     layers: document.layers.map(validateLegacyLayer),
-    ...(document.frames !== undefined ? { frames: document.frames as number } : {})
+    ...(document.frames !== undefined ? { frames: document.frames as number } : {}),
+    assets: []
   }
 }
 
 /**
  * Normalizes a parsed project file to the current schema: v2 documents are
- * deep-validated and returned detached from the parsed input, v1 documents
- * are migrated (each legacy `Shape` becomes a `PrimitiveNode` with
- * `kind` → `primitive`). Invalid content raises `MigrationError`. The input
- * is never mutated.
+ * deep-validated and returned detached from the parsed input (documents
+ * saved before the asset library existed are normalized to `assets: []`),
+ * v1 documents are migrated (each legacy `Shape` becomes a `PrimitiveNode`
+ * with `kind` → `primitive`). Invalid content raises `MigrationError`. The
+ * input is never mutated.
  */
 export function migrateDocument(raw: unknown): AnimatorDocument {
   if (typeof raw === 'object' && raw !== null && (raw as { schemaVersion?: unknown }).schemaVersion === 2) {
-    if (!isAnimatorDocument(raw)) {
+    const source = raw as Record<string, unknown>
+    if (source.assets !== undefined && !Array.isArray(source.assets)) {
+      throw new MigrationError('invalid document: "assets" must be an array')
+    }
+    // Additive normalization: inject the (possibly missing) assets field
+    // before deep validation so pre-library v2 files keep opening.
+    const candidate = { ...source, assets: (source.assets as unknown[] | undefined) ?? [] }
+    if (!isAnimatorDocument(candidate)) {
       throw new MigrationError('This file is not a valid OpenAnimator project.')
     }
-    return structuredClone(raw)
+    return structuredClone(candidate)
   }
   return validateLegacyDocument(raw)
 }

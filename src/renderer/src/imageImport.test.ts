@@ -152,6 +152,20 @@ describe('importImageBytes', () => {
     expect(node.height).toBe(60)
   })
 
+  it('registers the imported image as a document asset', async () => {
+    const addResource = vi.fn(() => Promise.resolve({ resourceId: 'hash-asset', deduped: false }))
+    fakeApi(addResource)
+    const ok = await importImageBytes(editor, 'asset.png', PNG_BYTES, undefined, deps())
+    expect(ok).toBe(true)
+    expect(editor.document.assets).toHaveLength(1)
+    const asset = editor.document.assets[0]
+    expect(asset.kind).toBe('image')
+    expect(asset.resourceId).toBe('hash-asset')
+    expect(asset.name).toBe('asset.png')
+    expect(asset.naturalWidth).toBe(640)
+    expect(asset.naturalHeight).toBe(480)
+  })
+
   it('is a no-op with a status message when the current layer is locked', async () => {
     const addResource = vi.fn()
     fakeApi(addResource)

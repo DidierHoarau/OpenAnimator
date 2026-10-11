@@ -4,7 +4,7 @@ OpenAnimator is an open-source, vector-based animation tool built as an Electron
 
 ## Status
 
-The application now provides a working authoring core: layers with keyframes, a frame timeline, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, raster image import, basic vector drawing and selection tools, onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
+The application now provides a working authoring core: layers with keyframes, a frame timeline, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, a reusable asset library with document and persistent global collections, symbol instances with isolated editing, raster image import, basic vector drawing and selection tools, onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
 
 ## Tech stack
 
@@ -24,6 +24,7 @@ The application now provides a working authoring core: layers with keyframes, a 
 - **Classic tweening**: a tween on a keyframe interpolates matching nodes (matched by id) toward the next keyframe — position, size, rotation and opacity for every node kind, plus fill and outline for primitives — with named easing curves (linear, ease-in, ease-out, ease-in-out) plus a cubic-bezier easing solver. Identity fields (image resource, group children, symbol asset) never interpolate; mismatched kinds snap.
 - **Drawing tools**: rectangle and ellipse creation by drag (click for a default-size shape), selection with rotation-aware hit testing, move, nudge (arrow keys) and delete.
 - **Groups**: `Ctrl+G` folds the selection of the active keyframe into one group (children re-expressed in group-local coordinates, z-order preserved) and `Ctrl+Shift+G` dissolves groups back into the layer space with an exact round-trip. Group transforms compose onto the children on ungroup; grouping and ungrouping are each a single undo step.
+- **Asset library & symbols**: `F8` (or `Save as Symbol…`) saves the selection as a reusable symbol asset and replaces it on stage with one instance; every instance references the asset, so `Edit Symbol` opens the artwork in an isolated scratch editor and commits the change back to all instances in one undo step, and `Break Apart` decouples an instance into an editable group. The left **Library panel** shows the document's assets and the persistent global **My Library** (stored in the Electron user-data folder) as searchable 72 px thumbnails with a context menu (place at center, rename, duplicate, delete with instance-count warning, save to My Library) and a pointer-based drag onto the stage that places an instance at the drop point; global assets are imported on use (resources are content-addressed, so re-use is cheap). Imported images are registered as image assets automatically. Symbol graphs may nest up to 16 levels; cycles and over-deep graphs never hang the renderer — unresolvable instances render as dashed placeholders and the problem is reported on load.
 - **Undo/redo**: snapshot history capped at 100 entries; a continuous drag or a color-swatch drag is a single undo step. `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` with statusbar feedback; history resets when a new or opened document replaces the current one.
 - **Stage zoom & pan**: wheel zooms to the cursor (10%–800%), middle-drag, Space-hold-drag and the Hand tool (`H`) pan, `Ctrl+0` resets to the 1:1 fit, `+`/`-` zoom around the view center. Creation thresholds, default sizes and selection overlays stay correct and crisp at every zoom.
 - **Multi-select**: the selection is a set — shift-click adds or toggles, rubber-band on empty stage area with the Select tool selects (shift unions). Move, nudge and delete apply to the whole selection; the properties panel edits the primary (last-selected) node.
@@ -31,7 +32,8 @@ The application now provides a working authoring core: layers with keyframes, a 
   - **Layer**: keyframe operations on the selected object — insert/remove keyframe, classic tween toggle with easing. Controls enable and disable according to the current layer, playhead and tween state.
   - **Shape**: edits the selected primitive — position, size, rotation, opacity, fill color (swatch or hex) and outline (color + width).
   - **Image**: the same transform inputs for a selected image, the read-only source file name, a `Native size` reset and `Replace source…` (re-points the image at another file while keeping the placed size).
-  - **Group**: the same transform inputs for a selected group, plus `Ungroup` and a disabled `Save as Symbol…` placeholder for the upcoming asset library.
+  - **Group**: the same transform inputs for a selected group, plus `Ungroup` and `Save as Symbol… (F8)`.
+  - **Symbol**: the same transform inputs for a selected symbol instance, the read-only asset name, `Edit Symbol` (isolated editing) and `Break Apart` (decouple into an editable group).
 - **Timeline panel**: frame ruler, expandable layer rows with per-row visibility/lock toggles, one object row per node (groups included) carrying its frame-span bar, keyframe markers and tween spans, and the playhead.
 - **Playback**: play/pause/stop, optional looping, frame-stepping at the document fps.
 - **Onion skinning**: ghosted neighboring frames while paused.
@@ -48,11 +50,14 @@ The application now provides a working authoring core: layers with keyframes, a 
 │   ├── main/              # Electron main process (window, IPC, project files)
 │   │   ├── projectContainer.ts # ZIP .oanim v2 codec (pack/parse, magic sniffing)
 │   │   ├── resources.ts   # Content-addressed session resource store (SHA-256)
+│   │   ├── library.ts     # Persistent global "My Library" store and IPC handlers
 │   │   └── projects.ts    # Project file IO, resource/image IPC handlers
 │   ├── preload/           # Preload scripts (contextBridge API)
 │   ├── shared/            # Pure TypeScript document model + unit tests
 │   │   ├── api.ts         # IPC contract between main and renderer
-│   │   ├── model.ts       # Document / layer / keyframe / scene-node types
+│   │   ├── model.ts       # Document / layer / keyframe / scene-node / asset types
+│   │   ├── assets.ts      # Pure asset helpers (create/duplicate/instance ops)
+│   │   ├── symbols.ts     # Symbol resolution (cycle/depth guarded) + graph validation
 │   │   ├── groups.ts      # Group/ungroup pure functions (group-local coords)
 │   │   ├── migrate.ts     # v1 → v2 document migration and validation
 │   │   ├── resources.ts   # Resource refcount walk over the document
@@ -75,7 +80,8 @@ The application now provides a working authoring core: layers with keyframes, a 
 │           ├── stage.ts   # SVG stage: rendering, drawing, selection
 │           ├── resourceCache.ts # Blob/object-URL cache with decode validation
 │           ├── imageImport.ts   # Image import (dialog, drag-drop) and replace-source
-│           ├── properties.ts # Right panel: layer / shape / image / group sections
+│           ├── library.ts # Left panel: document + global asset library, drag to stage
+│           ├── properties.ts # Right panel: layer / shape / image / group / symbol sections
 │           ├── sectionState.ts # Panel-section collapse state persistence
 │           ├── projects.ts   # Save / open / startup dialog orchestration
 │           ├── timeline.ts # Timeline panel (ruler, rows, playhead)
@@ -118,6 +124,7 @@ npm run dev        # start the app with hot reload
 | `Ctrl+Shift+Z` / `Ctrl+Y` | Redo                              |
 | `Ctrl+G`            | Group the selected objects              |
 | `Ctrl+Shift+G`      | Ungroup the selected groups             |
+| `F8`                | Save the selection as a reusable symbol |
 | `Ctrl+0`            | Reset the stage view to the 1:1 fit     |
 | `+` / `-`           | Zoom the stage in / out                 |
 | Mouse wheel         | Zoom the stage to the cursor            |

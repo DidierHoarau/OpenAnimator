@@ -50,6 +50,20 @@ export interface SymbolNode extends NodeBase {
 
 export type SceneNode = PrimitiveNode | ImageNode | GroupNode | SymbolNode
 
+/** Reusable artwork: a symbol (group content) or an image (resource reference). */
+export interface Asset {
+  id: string
+  name: string
+  kind: 'symbol' | 'image'
+  /** Symbol: artwork in local coordinates, origin = content bbox center. */
+  content?: GroupNode
+  /** Image: content-addressed resource id. */
+  resourceId?: string
+  naturalWidth?: number
+  naturalHeight?: number
+  createdAt: number
+}
+
 /** Classic tween attached to a keyframe: interpolates toward the next keyframe. */
 export interface KeyframeTween {
   easing: EasingName
@@ -85,6 +99,8 @@ export interface AnimatorDocument {
    * this field existed; when absent the duration is derived from keyframes.
    */
   frames?: number
+  /** Document asset library (symbols and images); empty in migrated documents. */
+  assets: Asset[]
 }
 
 /** Independent copy of a node, including nested objects like `center` and

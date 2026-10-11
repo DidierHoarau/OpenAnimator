@@ -35,6 +35,7 @@ function expectedTweenedStrokesDocument(): AnimatorDocument {
     height: 540,
     fps: 24,
     background: '#10151b',
+    assets: [],
     layers: [
       {
         id: 'layer-hero',
@@ -143,6 +144,7 @@ describe('migrateDocument — v1 fixtures', () => {
       height: 540,
       fps: 24,
       background: '#10151b',
+      assets: [],
       layers: [
         {
           id: 'layer-1',
@@ -303,5 +305,88 @@ describe('migrateDocument — invalid content', () => {
       ]
     }
     expect(() => migrateDocument(raw)).toThrow(/layer 2, keyframe 2, node 1/)
+  })
+})
+
+describe('migrateDocument — assets', () => {
+  const base = {
+    schemaVersion: 2,
+    name: 'x',
+    width: 100,
+    height: 100,
+    fps: 24,
+    background: '#000000',
+    layers: [{ id: 'l', name: 'L', visible: true, locked: false, keyframes: [{ frame: 0, nodes: [] }] }]
+  }
+
+  it('normalizes a v2 document without assets to an empty asset list', () => {
+    const migrated = migrateDocument(JSON.parse(JSON.stringify(base)))
+    expect(migrated.assets).toEqual([])
+    expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+
+  it('keeps valid assets through the migration', () => {
+    const withAssets = {
+      ...JSON.parse(JSON.stringify(base)),
+      assets: [
+        {
+          id: 'a',
+          name: 'Rocket',
+          kind: 'symbol',
+          content: {
+            type: 'group',
+            id: 'content',
+            center: { x: 0, y: 0 },
+            width: 100,
+            height: 50,
+            rotation: 0,
+            opacity: 1,
+            children: []
+          },
+          createdAt: 1
+        }
+      ]
+    }
+    const migrated = migrateDocument(withAssets)
+    expect(migrated.assets).toHaveLength(1)
+    expect(migrated.assets[0].id).toBe('a')
+    expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+
+  it('rejects a malformed assets array', () => {
+    expect(() => migrateDocument({ ...base, assets: 'nope' })).toThrow(/"assets" must be an array/)
+  })
+
+  it('rejects a malformed asset entry', () => {
+    expect(() => migrateDocument({ ...base, assets: [{ garbage: true }] })).toThrow(MigrationError)
+  })
+
+  it('loads a cyclic-but-structurally-valid asset graph (rendered as placeholders)', () => {
+    const cyclic = {
+      ...JSON.parse(JSON.stringify(base)),
+      assets: [
+        {
+          id: 'a',
+          name: 'Loop',
+          kind: 'symbol',
+          content: {
+            type: 'group',
+            id: 'content',
+            center: { x: 0, y: 0 },
+            width: 100,
+            height: 50,
+            rotation: 0,
+            opacity: 1,
+            children: [
+              { id: 'self', type: 'symbol', assetId: 'a', center: { x: 0, y: 0 }, width: 10, height: 10, rotation: 0, opacity: 1 }
+            ]
+          },
+          createdAt: 1
+        }
+      ]
+    }
+    const migrated = migrateDocument(cyclic)
+    expect(migrated.assets).toHaveLength(1)
+    expect(isAnimatorDocument(migrated)).toBe(true)
   })
 })

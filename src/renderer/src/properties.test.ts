@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
-import type { ImageNode, PrimitiveNode } from '@shared/model'
+import type { Asset, ImageNode, PrimitiveNode, SymbolNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { PropertiesView } from './properties'
@@ -39,6 +39,25 @@ function image(id: string, resourceId = 'hash-1'): ImageNode {
   }
 }
 
+function symbolAsset(id: string, name: string): Asset {
+  return {
+    id,
+    name,
+    kind: 'symbol',
+    content: {
+      type: 'group',
+      id: 'content',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      children: []
+    },
+    createdAt: 1
+  }
+}
+
 function sectionByTitle(container: HTMLElement, title: string): HTMLElement {
   const section = [...container.querySelectorAll('.panel-section')].find(
     (candidate) => candidate.querySelector('.panel-section-title')?.textContent?.trim() === title
@@ -60,41 +79,47 @@ describe('PropertiesView sections', () => {
     new PropertiesView(editor, container)
   })
 
-  it('renders the layer, shape, image and group sections', () => {
+  it('renders the layer, shape, image, group and symbol sections', () => {
     const titles = [...container.querySelectorAll('.panel-section-title')].map((node) =>
       node.textContent?.trim()
     )
-    expect(titles).toEqual(['Layer', 'Shape', 'Image', 'Group'])
+    expect(titles).toEqual(['Layer', 'Shape', 'Image', 'Group', 'Symbol'])
   })
 
   it('shows the shape section for primitives, the image section for images and the group section for groups', () => {
     const shapeSection = sectionByTitle(container, 'Shape')
     const imageSection = sectionByTitle(container, 'Image')
     const groupSection = sectionByTitle(container, 'Group')
+    const symbolSection = sectionByTitle(container, 'Symbol')
     expect(shapeSection.classList.contains('hidden')).toBe(true)
     expect(imageSection.classList.contains('hidden')).toBe(true)
     expect(groupSection.classList.contains('hidden')).toBe(true)
+    expect(symbolSection.classList.contains('hidden')).toBe(true)
 
     editor.addNode(rect('a', 10, 10))
     expect(shapeSection.classList.contains('hidden')).toBe(false)
     expect(imageSection.classList.contains('hidden')).toBe(true)
     expect(groupSection.classList.contains('hidden')).toBe(true)
+    expect(symbolSection.classList.contains('hidden')).toBe(true)
 
     editor.addNode(image('i1'))
     expect(shapeSection.classList.contains('hidden')).toBe(true)
     expect(imageSection.classList.contains('hidden')).toBe(false)
     expect(groupSection.classList.contains('hidden')).toBe(true)
+    expect(symbolSection.classList.contains('hidden')).toBe(true)
 
     editor.selectNodes([], 'replace')
     expect(shapeSection.classList.contains('hidden')).toBe(true)
     expect(imageSection.classList.contains('hidden')).toBe(true)
     expect(groupSection.classList.contains('hidden')).toBe(true)
+    expect(symbolSection.classList.contains('hidden')).toBe(true)
 
     editor.selectNodes(['a'], 'replace')
     editor.groupSelection()
     expect(shapeSection.classList.contains('hidden')).toBe(true)
     expect(imageSection.classList.contains('hidden')).toBe(true)
     expect(groupSection.classList.contains('hidden')).toBe(false)
+    expect(symbolSection.classList.contains('hidden')).toBe(true)
   })
 
   it('edits the group transform through the shared inputs', () => {
@@ -116,7 +141,7 @@ describe('PropertiesView sections', () => {
     expect(group.center.x).toBe(25)
   })
 
-  it('offers ungroup and a disabled save-as-symbol in the group section', () => {
+  it('offers ungroup and save-as-symbol in the group section', () => {
     editor.addNode(rect('a', 10, 10))
     editor.selectNodes(['a'], 'replace')
     editor.groupSelection()
@@ -127,11 +152,55 @@ describe('PropertiesView sections', () => {
     const symbol = buttons.find((button) => button.textContent === 'Save as Symbol… (F8)')!
     expect(ungroup.disabled).toBe(false)
     expect(ungroup.title).toBe('Ungroup (Ctrl+Shift+G)')
-    expect(symbol.disabled).toBe(true)
-    expect(symbol.title).toBe('Symbols arrive in a later update')
+    expect(symbol.disabled).toBe(false)
+    expect(symbol.title).toContain('F8')
 
-    ungroup.click()
-    expect(editor.selectedNodeIds).toEqual(['a'])
+    symbol.click()
+    expect(editor.document.assets).toHaveLength(1)
+    expect(editor.document.assets[0].kind).toBe('symbol')
+    // The stage content was replaced by one instance of the new asset.
+    const placed = editor.document.layers[0].keyframes[0].nodes[0] as SymbolNode
+    expect(placed.type).toBe('symbol')
+    expect(placed.assetId).toBe(editor.document.assets[0].id)
+  })
+
+  it('shows the symbol section for instances with edit and break-apart actions', () => {
+    editor.document.assets = [symbolAsset('s', 'Rocket')]
+    editor.placeAsset('s')
+    const symbolNode = editor.document.layers[0].keyframes[0].nodes[0] as SymbolNode
+    expect(symbolNode.type).toBe('symbol')
+
+    const symbolSection = sectionByTitle(container, 'Symbol')
+    expect(symbolSection.classList.contains('hidden')).toBe(false)
+    expect(symbolSection.querySelector('.panel-file-name')?.textContent).toBe('Rocket')
+    const buttons = [...symbolSection.querySelectorAll('button')]
+    const edit = buttons.find((button) => button.textContent === 'Edit Symbol')!
+    const breakApart = buttons.find((button) => button.textContent === 'Break Apart')!
+    expect(edit.disabled).toBe(false)
+    expect(breakApart.disabled).toBe(false)
+
+    breakApart.click()
+    expect(editor.document.layers[0].keyframes[0].nodes[0].type).toBe('group')
+  })
+
+  it('disables editing for an instance whose asset is missing', () => {
+    editor.document.assets = []
+    editor.addNode({
+      id: 'inst',
+      type: 'symbol',
+      assetId: 'gone',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1
+    })
+    const symbolSection = sectionByTitle(container, 'Symbol')
+    expect(symbolSection.querySelector('.panel-file-name')?.textContent).toBe('(missing asset)')
+    const edit = [...symbolSection.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Edit Symbol'
+    )!
+    expect(edit.disabled).toBe(true)
   })
 
   it('shows the read-only source file name in the image section', () => {

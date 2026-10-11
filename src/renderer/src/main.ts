@@ -6,12 +6,13 @@ import { el } from './dom'
 import { Editor } from './editor'
 import type { Tool } from './editor'
 import { importImageBytes, importImageViaDialog } from './imageImport'
+import { LibraryView } from './library'
 import { PropertiesView } from './properties'
 import { fileLabel, newDocument, openDocument, saveDocument, showStartupDialog } from './projects'
 import { StageView } from './stage'
 import { TimelineView } from './timeline'
 
-function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
+function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryView): HTMLElement {
   const toolbar = el('header', 'toolbar')
   toolbar.appendChild(el('span', 'title', 'OpenAnimator'))
 
@@ -38,6 +39,14 @@ function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
   onion.title = 'Toggle onion skinning of neighbouring frames'
   onion.classList.add('toggle')
   onion.addEventListener('click', () => editor.toggleOnionSkin())
+  const library = el('button', undefined, 'Library')
+  library.title = 'Toggle the asset library panel'
+  library.classList.add('toggle')
+  library.classList.toggle('active', libraryView.isVisible)
+  library.addEventListener('click', () => {
+    libraryView.setVisible(!libraryView.isVisible)
+    library.classList.toggle('active', libraryView.isVisible)
+  })
   const properties = el('button', undefined, 'Properties')
   properties.title = 'Toggle the properties panel'
   properties.classList.add('toggle')
@@ -46,7 +55,7 @@ function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
     layout.classList.toggle('properties-hidden')
     properties.classList.toggle('active', !layout.classList.contains('properties-hidden'))
   })
-  view.append(onion, properties)
+  view.append(onion, library, properties)
   toolbar.appendChild(view)
 
   toolbar.appendChild(el('span', 'sep'))
@@ -217,6 +226,10 @@ function registerKeyboard(editor: Editor, stageView: StageView): void {
         event.preventDefault()
         editor.insertKeyframeHere()
         break
+      case 'F8':
+        event.preventDefault()
+        editor.saveSelectionAsSymbol()
+        break
       case 'Delete':
       case 'Backspace':
         event.preventDefault()
@@ -276,12 +289,18 @@ async function bootstrap(): Promise<void> {
   const editor = new Editor(createStarterDocument())
 
   const layout = el('div', 'layout')
+  const libraryHost = el('aside', 'library-panel')
   const workspace = el('main', 'workspace')
   const timelineHost = el('section', 'timeline')
   const propertiesHost = el('aside', 'properties-panel')
   const stageView = new StageView(editor, workspace)
+  const libraryView = new LibraryView(editor, libraryHost, {
+    api: window.api,
+    dropTarget: { element: stageView.element, toStagePoint: (event) => stageView.toStagePoint(event) }
+  })
   layout.append(
-    buildToolbar(editor, layout),
+    buildToolbar(editor, layout, libraryView),
+    libraryHost,
     workspace,
     propertiesHost,
     timelineHost,
@@ -295,11 +314,13 @@ async function bootstrap(): Promise<void> {
   registerFileDrop(editor, workspace, stageView)
   showStartupDialog(editor)
 
-  // Debounced autosave to the project file on every document change.
+  // Debounced autosave to the project file on every document change; the
+  // scratch document of a symbol edit session is never autosaved.
   let saveTimer: number | undefined
   editor.onDocChange(() => {
     window.clearTimeout(saveTimer)
     saveTimer = window.setTimeout(() => {
+      if (editor.editingAssetId) return
       if (editor.filePath && editor.dirty) void saveDocument(editor, { as: false })
     }, 400)
   })

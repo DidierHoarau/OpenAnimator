@@ -118,4 +118,46 @@ describe('ResourceCache', () => {
     )
     expect(cache.getUrl('hashA')).toBe('blob:mock')
   })
+
+  it('put() registers a new resource without touching the others', () => {
+    const mocks = deps()
+    const cache = new ResourceCache(
+      { hashA: PNG_BYTES },
+      { createUrl: mocks.createUrl, revokeUrl: mocks.revokeUrl, decode: null }
+    )
+    cache.put('hashB', JPG_BYTES)
+    expect(cache.size).toBe(2)
+    expect(cache.getUrl('hashB')).toBe('blob:mock-2')
+    expect(mocks.revoked).toEqual([])
+  })
+
+  it('put() replaces an existing entry and revokes its old URL', () => {
+    const mocks = deps()
+    const cache = new ResourceCache(
+      { hashA: PNG_BYTES },
+      { createUrl: mocks.createUrl, revokeUrl: mocks.revokeUrl, decode: null }
+    )
+    cache.put('hashA', JPG_BYTES)
+    expect(cache.size).toBe(1)
+    expect(mocks.revoked).toEqual(['blob:mock-1'])
+    expect(cache.getUrl('hashA')).toBe('blob:mock-2')
+  })
+
+  it('put() recovers a corrupt resource by re-validating only that entry', async () => {
+    let shouldFail = true
+    let created = 0
+    const cache = new ResourceCache(
+      { hashA: PNG_BYTES },
+      {
+        createUrl: () => `blob:mock-${++created}`,
+        revokeUrl: () => undefined,
+        decode: () => (shouldFail ? Promise.reject(new Error('nope')) : Promise.resolve({ width: 1, height: 1 }))
+      }
+    )
+    await vi.waitFor(() => expect(cache.isCorrupt('hashA')).toBe(true))
+    shouldFail = false
+    cache.put('hashA', PNG_BYTES)
+    await vi.waitFor(() => expect(cache.isCorrupt('hashA')).toBe(false))
+    expect(cache.getUrl('hashA')).not.toBeNull()
+  })
 })

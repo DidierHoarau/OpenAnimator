@@ -104,6 +104,9 @@ export class PropertiesView {
   private readonly imageFileLabel: HTMLElement
   private readonly nativeSizeButton: HTMLButtonElement
   private readonly replaceSourceButton: HTMLButtonElement
+  private readonly symbolNameLabel: HTMLElement
+  private readonly editSymbolButton: HTMLButtonElement
+  private readonly breakApartButton: HTMLButtonElement
   private readonly imageImportDeps: ImageImportDeps
   private lastNodeId: string | null = null
 
@@ -248,11 +251,36 @@ export class PropertiesView {
     this.ungroupButton = this.button('Ungroup', 'Ungroup (Ctrl+Shift+G)', () =>
       editor.ungroupSelection()
     )
-    const symbolButton = el('button', undefined, 'Save as Symbol… (F8)')
-    symbolButton.title = 'Symbols arrive in a later update'
-    symbolButton.disabled = true
+    const symbolButton = this.button(
+      'Save as Symbol… (F8)',
+      'Save the selection as a reusable symbol and replace it with an instance (F8)',
+      () => editor.saveSelectionAsSymbol()
+    )
     groupActions.append(this.ungroupButton, symbolButton)
     group.content.append(groupActions)
+
+    // Symbol properties, visible only while a symbol instance is selected.
+    const symbol = this.createSection('symbol', 'Symbol')
+    const symbolNameRow = this.row(symbol.content, 'Asset')
+    this.symbolNameLabel = el('span', 'panel-file-name')
+    this.symbolNameLabel.title = 'Asset the instance references'
+    symbolNameRow.appendChild(this.symbolNameLabel)
+    const symbolActions = el('div', 'panel-buttons')
+    this.editSymbolButton = this.button(
+      'Edit Symbol',
+      'Edit the symbol asset in isolation — every instance updates when finished',
+      () => {
+        const current = this.selectedNodePose()
+        if (current?.type === 'symbol') editor.beginSymbolEdit(current.assetId)
+      }
+    )
+    this.breakApartButton = this.button(
+      'Break Apart',
+      'Replace the instance with an editable, decoupled copy of the artwork',
+      () => editor.breakApartSelection()
+    )
+    symbolActions.append(this.editSymbolButton, this.breakApartButton)
+    symbol.content.append(symbolActions)
 
     // Image properties, visible only while an image node is selected.
     const image = this.createSection('image', 'Image')
@@ -280,7 +308,7 @@ export class PropertiesView {
     imageActions.append(this.nativeSizeButton, this.replaceSourceButton)
     image.content.append(imageActions)
 
-    scroll.append(layer.root, shape.root, image.root, group.root)
+    scroll.append(layer.root, shape.root, image.root, group.root, symbol.root)
     container.appendChild(scroll)
 
     editor.onDocChange(() => this.render())
@@ -417,10 +445,12 @@ export class PropertiesView {
     const isPrimitive = node?.type === 'primitive'
     const isImage = node?.type === 'image'
     const isGroup = node?.type === 'group'
+    const isSymbol = node?.type === 'symbol'
     // Mutually exclusive: the section matches the primary selected node kind.
     this.sections.get('shape')?.setVisible(isPrimitive)
     this.sections.get('image')?.setVisible(isImage)
     this.sections.get('group')?.setVisible(isGroup)
+    this.sections.get('symbol')?.setVisible(isSymbol)
     if (!node) {
       this.lastNodeId = null
       return
@@ -430,9 +460,11 @@ export class PropertiesView {
     // one that is currently visible.
     const host = isGroup
       ? this.sections.get('group')!.content
-      : isImage
-        ? this.sections.get('image')!.content
-        : this.sections.get('shape')!.content
+      : isSymbol
+        ? this.sections.get('symbol')!.content
+        : isImage
+          ? this.sections.get('image')!.content
+          : this.sections.get('shape')!.content
     if (this.transformRows.parentElement !== host) {
       host.insertBefore(this.transformRows, host.firstChild)
     }
@@ -453,6 +485,12 @@ export class PropertiesView {
 
     this.ungroupButton.disabled = !editable
 
+    if (node.type === 'symbol') {
+      const asset = this.editor.document.assets.find((entry) => entry.id === node.assetId)
+      this.symbolNameLabel.textContent = asset?.name ?? '(missing asset)'
+      this.editSymbolButton.disabled = !asset || asset.kind !== 'symbol' || !asset.content
+      this.breakApartButton.disabled = !editable
+    }
     if (node.type === 'image') {
       this.imageFileLabel.textContent = node.name ?? '(unnamed image)'
       this.nativeSizeButton.disabled = !editable

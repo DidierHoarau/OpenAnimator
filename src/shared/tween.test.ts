@@ -289,12 +289,14 @@ describe('document validation', () => {
       height: 100,
       fps: 24,
       background: '#000000',
-      layers: [{ id: 'l', name: 'L', visible: true, locked: false, keyframes: [] as never[] }]
+      layers: [{ id: 'l', name: 'L', visible: true, locked: false, keyframes: [] as never[] }],
+      assets: []
     }
     expect(isAnimatorDocument(valid)).toBe(true)
     expect(isAnimatorDocument({})).toBe(false)
     expect(isAnimatorDocument(null)).toBe(false)
     expect(isAnimatorDocument({ ...valid, fps: 0 })).toBe(false)
     expect(isAnimatorDocument({ ...valid, layers: 'nope' })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, assets: 'nope' })).toBe(false)
   })
 })

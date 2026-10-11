@@ -3,6 +3,7 @@ import {
   addNodeToLayer,
   cloneDocument,
   createDocument,
+  createLayer,
   documentDuration,
   evaluateLayerAtFrame,
   findKeyframeAtFrame,
@@ -21,12 +22,23 @@ import {
   setKeyframeTween,
   updateNodeInLayer
 } from '@shared/document'
+import {
+  assetNaturalSize,
+  countAssetInstances as countAssetInstancesOp,
+  createDocumentAsset,
+  duplicateAsset as duplicateAssetOp,
+  instanceToGroup,
+  symbolContentFromGroup
+} from '@shared/assets'
 import type { EasingName } from '@shared/easing'
+import { fitImagePlacement } from '@shared/imagePlacement'
 import { nodeBounds } from '@shared/hitTesting'
 import type { Rect } from '@shared/hitTesting'
-import { groupNodes, ungroupNode } from '@shared/groups'
+import { groupNaturalSize, groupNodes, ungroupNode } from '@shared/groups'
+import type { Vec2 } from '@shared/geometry'
 import { cloneNode } from '@shared/model'
-import type { AnimatorDocument, GroupNode, Layer, SceneNode } from '@shared/model'
+import type { AnimatorDocument, Asset, GroupNode, ImageNode, Layer, SceneNode, SymbolNode } from '@shared/model'
+import { validateAssetGraph } from '@shared/symbols'
 import { createId } from '@shared/document'
 import { ResourceCache } from './resourceCache'
 
@@ -59,11 +71,15 @@ export class Editor {
   /** Path of the project file the document was loaded from / saved to. */
   filePath: string | null = null
   dirty = false
+  /** Asset currently being edited in the isolated scratch document, if any. */
+  editingAssetId: string | null = null
 
   private readonly undoStack: AnimatorDocument[] = []
   private readonly redoStack: AnimatorDocument[] = []
   /** Depth of the coalesced interaction currently open (drags push once). */
   private interactionDepth = 0
+  /** Real document parked while a symbol is being edited in isolation. */
+  private savedDocument: AnimatorDocument | null = null
 
   private readonly docListeners = new Set<() => void>()
   private readonly frameListeners = new Set<() => void>()
@@ -201,6 +217,8 @@ export class Editor {
   setDocument(document: AnimatorDocument, resources: Record<string, Uint8Array> = {}): void {
     this.pause()
     this.document = document
+    this.editingAssetId = null
+    this.savedDocument = null
     this.resources.reset(resources)
     this.currentLayerId = document.layers[0]?.id ?? ''
     this.currentFrame = 0
@@ -210,6 +228,10 @@ export class Editor {
     this.interactionDepth = 0
     this.docChanged()
     this.uiChanged()
+    // A cyclic or over-deep asset graph must never hang the renderer: the
+    // resolution guard keeps it renderable, and the problem is reported here.
+    const symbolProblem = validateAssetGraph(document.assets)
+    if (symbolProblem) this.showMessage(symbolProblem)
   }
 
   newDocument(): void {
@@ -368,6 +390,32 @@ export class Editor {
     const layer = this.currentLayer
     if (!layer || layer.locked || !layer.visible) return
     this.pushHistory()
+    this.insertNode(node)
+  }
+
+  /** Adds an image node and registers it as a document image asset in one
+   * undo step (import keeps the library and the stage consistent). */
+  addImageWithAsset(node: ImageNode): void {
+    const layer = this.currentLayer
+    if (!layer || layer.locked || !layer.visible) return
+    this.pushHistory()
+    this.insertNode(node)
+    this.document.assets.push(
+      createDocumentAsset({
+        name: node.name ?? 'Image',
+        kind: 'image',
+        resourceId: node.resourceId,
+        naturalWidth: node.naturalWidth,
+        naturalHeight: node.naturalHeight
+      })
+    )
+    this.docChanged()
+  }
+
+  /** Body of addNode without its own history entry (callers push first). */
+  private insertNode(node: SceneNode): void {
+    const layer = this.currentLayer
+    if (!layer) return
     // Auto-key: the new node gets its own pose at the current frame instead
     // of bleeding into an earlier keyframe's hold; other objects hold through.
     if (!findKeyframeAtFrame(layer, this.currentFrame)) {
@@ -612,6 +660,312 @@ export class Editor {
     this.docChanged()
     this.uiChanged()
     return true
+  }
+
+  /**
+   * Saves the selected nodes of the current layer as a reusable symbol (F8):
+   * the selection is grouped exactly like Ctrl+G, the group becomes a
+   * document asset and the stage content is replaced by one symbol instance
+   * at the group's transform. Mirrors groupSelection: operates on the nodes
+   * present in the keyframe at the current frame, one undo step, z-order
+   * preserved. Returns true when a symbol was created.
+   */
+  saveSelectionAsSymbol(): boolean {
+    const layer = this.currentLayer
+    if (!layer || layer.locked) return false
+    const keyable = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
+    this.pushHistory()
+    for (const id of keyable) {
+      this.ensureNodeKeyframeMutation(layer, id)
+    }
+    const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe) {
+      this.showMessage('Select objects on the stage to save them as a symbol')
+      return false
+    }
+    const selected = new Set(this.selectedNodeIds)
+    let topmostIndex = -1
+    const members: SceneNode[] = []
+    keyframe.nodes.forEach((node, index) => {
+      if (selected.has(node.id)) {
+        members.push(node)
+        topmostIndex = index
+      }
+    })
+    if (members.length === 0) {
+      this.showMessage('Select objects on the stage to save them as a symbol')
+      return false
+    }
+    const group = groupNodes(members, createId('node'))
+    const asset = createDocumentAsset({
+      name: `Symbol ${this.document.assets.filter((entry) => entry.kind === 'symbol').length + 1}`,
+      kind: 'symbol',
+      content: symbolContentFromGroup(group)
+    })
+    const instance: SymbolNode = {
+      id: createId('node'),
+      type: 'symbol',
+      name: asset.name,
+      assetId: asset.id,
+      center: { ...group.center },
+      width: group.width,
+      height: group.height,
+      rotation: 0,
+      opacity: 1
+    }
+    // Remove the members highest-index first so earlier indexes stay valid,
+    // then place the instance where its topmost child was (z-order preserved).
+    for (let index = keyframe.nodes.length - 1; index >= 0; index--) {
+      if (selected.has(keyframe.nodes[index].id)) keyframe.nodes.splice(index, 1)
+    }
+    keyframe.nodes.splice(topmostIndex - members.length + 1, 0, instance)
+    this.document.assets.push(asset)
+    this.selectedNodeIds = [instance.id]
+    this.docChanged()
+    this.uiChanged()
+    return true
+  }
+
+  /**
+   * Places a copy of a document asset on the current layer (library "place
+   * at center", library drag, …): symbols become symbol instances sized to
+   * the asset's natural content size (capped to the stage like images),
+   * images become image nodes. The placed node is auto-selected.
+   */
+  placeAsset(assetId: string, at?: Vec2): boolean {
+    const asset = this.document.assets.find((entry) => entry.id === assetId)
+    if (!asset) return false
+    const layer = this.currentLayer
+    if (!layer || layer.locked || !layer.visible) {
+      this.showMessage('Select a visible, unlocked layer to place the asset on')
+      return false
+    }
+    const natural = assetNaturalSize(asset)
+    const placement = fitImagePlacement(natural, this.document, at)
+    if (asset.kind === 'image' && asset.resourceId) {
+      this.addNode({
+        id: createId('node'),
+        type: 'image',
+        name: asset.name,
+        resourceId: asset.resourceId,
+        center: placement.center,
+        width: placement.width,
+        height: placement.height,
+        rotation: 0,
+        opacity: 1,
+        naturalWidth: Math.max(1, natural.width),
+        naturalHeight: Math.max(1, natural.height),
+        smoothing: true
+      })
+    } else {
+      this.addNode({
+        id: createId('node'),
+        type: 'symbol',
+        name: asset.name,
+        assetId: asset.id,
+        center: placement.center,
+        width: placement.width,
+        height: placement.height,
+        rotation: 0,
+        opacity: 1
+      })
+    }
+    return true
+  }
+
+  /**
+   * Imports an asset from the global library into this document and places
+   * it: the asset entry is registered (when not already present) and each
+   * given resource is registered in the session cache — one undo step for
+   * the whole operation. The caller is responsible for having copied the
+   * resource bytes into the main-process session store.
+   */
+  importAndPlaceAsset(
+    asset: Asset,
+    resources: Record<string, Uint8Array> = {},
+    at?: Vec2
+  ): boolean {
+    const layer = this.currentLayer
+    if (!layer || layer.locked || !layer.visible) {
+      this.showMessage('Select a visible, unlocked layer to place the asset on')
+      return false
+    }
+    for (const [resourceId, bytes] of Object.entries(resources)) {
+      this.resources.put(resourceId, bytes)
+    }
+    const known = this.document.assets.some((entry) => entry.id === asset.id)
+    this.beginInteraction()
+    try {
+      if (!known) this.document.assets.push(structuredClone(asset))
+      const placed = this.placeAsset(asset.id, at)
+      if (!placed && !known) this.document.assets.pop()
+      return placed
+    } finally {
+      this.endInteraction()
+    }
+  }
+
+  /** Registers an image resource as a document image asset. Returns its id. */
+  registerImageAsset(
+    resourceId: string,
+    natural: { width: number; height: number },
+    name: string
+  ): string {
+    const asset = createDocumentAsset({
+      name,
+      kind: 'image',
+      resourceId,
+      naturalWidth: Math.max(1, natural.width),
+      naturalHeight: Math.max(1, natural.height)
+    })
+    this.pushHistory()
+    this.document.assets.push(asset)
+    this.docChanged()
+    return asset.id
+  }
+
+  /** Duplicates a document asset (deep content copy). Returns the new id. */
+  duplicateAsset(id: string): string | null {
+    const asset = this.document.assets.find((entry) => entry.id === id)
+    if (!asset) return null
+    const copy = duplicateAssetOp(asset, createId('asset'), `${asset.name} copy`)
+    this.pushHistory()
+    this.document.assets.push(copy)
+    this.docChanged()
+    return copy.id
+  }
+
+  /** Renames a document asset. */
+  renameAsset(id: string, name: string): void {
+    const asset = this.document.assets.find((entry) => entry.id === id)
+    if (!asset) return
+    this.pushHistory()
+    asset.name = name
+    this.docChanged()
+  }
+
+  /** Instances of the asset currently on stage (drives the delete warning). */
+  countAssetInstances(assetId: string): number {
+    return countAssetInstancesOp(this.document, assetId)
+  }
+
+  /**
+   * Removes a document asset. Instances keep their place and render as
+   * placeholders; the return value is how many instances existed when the
+   * asset was removed.
+   */
+  deleteAsset(id: string): number {
+    const index = this.document.assets.findIndex((entry) => entry.id === id)
+    if (index === -1) return 0
+    const instances = countAssetInstancesOp(this.document, id)
+    this.pushHistory()
+    this.document.assets.splice(index, 1)
+    this.docChanged()
+    return instances
+  }
+
+  /**
+   * Breaks every selected symbol instance apart (properties panel): each
+   * instance is replaced by an equivalent standalone group — instance
+   * transform, deep-cloned content — fully editable and decoupled from the
+   * asset. One undo step for the whole set.
+   */
+  breakApartSelection(): boolean {
+    const layer = this.currentLayer
+    if (!layer || layer.locked) return false
+    const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe) return false
+    const instances = keyframe.nodes.filter(
+      (node): node is SymbolNode => node.type === 'symbol' && this.selectedNodeIds.includes(node.id)
+    )
+    if (instances.length === 0) return false
+    this.pushHistory()
+    const newIds: string[] = []
+    for (const instance of instances) {
+      const asset = this.document.assets.find((entry) => entry.id === instance.assetId)
+      if (!asset || asset.kind !== 'symbol' || !asset.content) {
+        this.showMessage('The symbol asset is missing — instance left in place')
+        continue
+      }
+      const group = instanceToGroup(instance, asset.content, createId('node'))
+      keyframe.nodes.splice(keyframe.nodes.indexOf(instance), 1, group)
+      newIds.push(group.id)
+    }
+    if (newIds.length === 0) return false
+    this.selectedNodeIds = newIds
+    this.docChanged()
+    this.uiChanged()
+    return true
+  }
+
+  /**
+   * Edits a symbol asset in isolation: the real document is parked and the
+   * editor works on a scratch document whose single layer holds clones of
+   * the asset's content children (asset-local coordinates). Normal tools and
+   * undo work inside; `endSymbolEdit(true)` writes the edited children back
+   * into the asset as one history entry, so every instance reflects the
+   * change on its next evaluation. Save/autosave are blocked while editing.
+   */
+  beginSymbolEdit(assetId: string): boolean {
+    if (this.editingAssetId) return false
+    const asset = this.document.assets.find((entry) => entry.id === assetId)
+    if (!asset || asset.kind !== 'symbol' || !asset.content) return false
+    const scratch = createDocument(asset.name, this.document.width, this.document.height, this.document.fps)
+    scratch.background = this.document.background
+    scratch.assets = structuredClone(this.document.assets)
+    const layer = createLayer(asset.name)
+    layer.keyframes.push({ frame: 0, nodes: asset.content.children.map(cloneNode) })
+    scratch.layers = [layer]
+    this.pause()
+    this.savedDocument = this.document
+    this.document = scratch
+    this.currentLayerId = layer.id
+    this.currentFrame = 0
+    this.selectedNodeIds = []
+    this.undoStack.length = 0
+    this.redoStack.length = 0
+    this.editingAssetId = assetId
+    this.docChanged()
+    this.uiChanged()
+    this.showMessage(`Editing symbol "${asset.name}"`)
+    return true
+  }
+
+  /** Leaves symbol edit mode: commits the frame-0 content back into the
+   * asset (one undo entry) or discards it, and restores the real document. */
+  endSymbolEdit(commit: boolean): void {
+    if (!this.editingAssetId) return
+    const assetId = this.editingAssetId
+    const realDocument = this.savedDocument
+    const scratch = this.document
+    this.editingAssetId = null
+    this.savedDocument = null
+    if (!realDocument) return
+    this.document = realDocument
+    this.currentLayerId = realDocument.layers[0]?.id ?? ''
+    this.currentFrame = 0
+    this.selectedNodeIds = []
+    this.undoStack.length = 0
+    this.redoStack.length = 0
+    if (commit) {
+      const asset = realDocument.assets.find((entry) => entry.id === assetId)
+      const keyframe = scratch.layers[0]?.keyframes.find((entry) => entry.frame === 0)
+      if (asset && asset.kind === 'symbol' && asset.content && keyframe) {
+        const children = keyframe.nodes.map(cloneNode)
+        const natural = groupNaturalSize(children)
+        this.pushHistory()
+        asset.content = {
+          ...asset.content,
+          width: natural.width,
+          height: natural.height,
+          children
+        }
+        this.docChanged()
+        this.showMessage('Symbol updated')
+      }
+    }
+    this.docChanged()
+    this.uiChanged()
   }
 
   insertFrameHere(): void {

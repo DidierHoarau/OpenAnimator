@@ -69,6 +69,7 @@ export function createStarterDocument(): AnimatorDocument {
     background: '#0b0e12',
     // Topmost layer first.
     layers: [demoLayer, backgroundLayer],
-    frames: 25
+    frames: 25,
+    assets: []
   }
 }

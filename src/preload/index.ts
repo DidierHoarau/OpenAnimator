@@ -7,6 +7,10 @@ import {
   DOCUMENT_SAVE_AS_CHANNEL,
   DOCUMENT_SAVE_TO_CHANNEL,
   IMAGE_PICK_CHANNEL,
+  LIBRARY_ADD_CHANNEL,
+  LIBRARY_LIST_CHANNEL,
+  LIBRARY_REMOVE_CHANNEL,
+  LIBRARY_RENAME_CHANNEL,
   RECENT_ADD_CHANNEL,
   RECENT_LIST_CHANNEL,
   RESOURCE_ADD_CHANNEL,
@@ -26,7 +30,12 @@ const api: OpenAnimatorApi = {
   pickImageFile: (title) => ipcRenderer.invoke(IMAGE_PICK_CHANNEL, title),
   addResource: (bytes, fileName) => ipcRenderer.invoke(RESOURCE_ADD_CHANNEL, bytes, fileName),
   purgeUnusedResources: (document) => ipcRenderer.invoke(RESOURCE_PURGE_CHANNEL, document),
-  resetResourceStore: () => ipcRenderer.invoke(RESOURCE_RESET_CHANNEL)
+  resetResourceStore: () => ipcRenderer.invoke(RESOURCE_RESET_CHANNEL),
+  listLibrary: () => ipcRenderer.invoke(LIBRARY_LIST_CHANNEL),
+  addLibraryAsset: (asset, contextAssets) =>
+    ipcRenderer.invoke(LIBRARY_ADD_CHANNEL, asset, contextAssets),
+  removeLibraryAsset: (id) => ipcRenderer.invoke(LIBRARY_REMOVE_CHANNEL, id),
+  renameLibraryAsset: (id, name) => ipcRenderer.invoke(LIBRARY_RENAME_CHANNEL, id, name)
 }
 
 if (process.contextIsolated) {
