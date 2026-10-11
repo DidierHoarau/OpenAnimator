@@ -1,0 +1,48 @@
+{
+  "name": "Old save",
+  "width": 480,
+  "height": 320,
+  "fps": 30,
+  "background": "#ffffff",
+  "layers": [
+    {
+      "id": "layer-1",
+      "name": "Layer 1",
+      "visible": true,
+      "locked": false,
+      "keyframes": [
+        {
+          "frame": 0,
+          "shapes": [
+            {
+              "id": "dot",
+              "kind": "ellipse",
+              "center": { "x": 240, "y": 160 },
+              "width": 50,
+              "height": 50,
+              "rotation": 0,
+              "fill": "#8b5cf6",
+              "opacity": 1
+            }
+          ]
+        },
+        {
+          "frame": 4,
+          "shapes": [
+            {
+              "id": "dot",
+              "kind": "ellipse",
+              "center": { "x": 300, "y": 160 },
+              "width": 50,
+              "height": 50,
+              "rotation": 0,
+              "fill": "#8b5cf6",
+              "opacity": 1
+            }
+          ],
+          "tween": { "easing": "ease-out" }
+        }
+      ]
+    }
+  ]
+}

@@ -1,11 +1,12 @@
 import { evaluateEasing } from './easing'
-import type { AnimatorDocument, Keyframe, Layer, Shape } from './model'
-import { cloneShape } from './model'
-import { tweenShape } from './tween'
+import type { EasingName } from './easing'
+import type { AnimatorDocument, Keyframe, Layer, SceneNode } from './model'
+import { cloneNode } from './model'
+import { tweenNode } from './tween'
 
 let idCounter = 0
 
-/** Generates a reasonably unique, readable id for documents, layers and shapes. */
+/** Generates a reasonably unique, readable id for documents, layers and nodes. */
 export function createId(prefix: string): string {
   idCounter = (idCounter + 1) % Number.MAX_SAFE_INTEGER
   return `${prefix}-${idCounter.toString(36)}-${Math.random().toString(36).slice(2, 8)}`
@@ -23,8 +24,9 @@ export function createLayer(name: string): Layer {
 
 export function createDocument(name: string, width: number, height: number, fps: number): AnimatorDocument {
   const layer = createLayer('Layer 1')
-  layer.keyframes.push({ frame: 0, shapes: [] })
+  layer.keyframes.push({ frame: 0, nodes: [] })
   return {
+    schemaVersion: 2,
     name,
     width,
     height,
@@ -66,16 +68,16 @@ export function findKeyframeAtFrame(layer: Layer, frame: number): Keyframe | und
 }
 
 /**
- * Index of the keyframe holding the most recent pose of `shapeId` at or
- * before `frame`. When the shape only appears later on the layer, the
+ * Index of the keyframe holding the most recent pose of `nodeId` at or
+ * before `frame`. When the node only appears later on the layer, the
  * earliest keyframe containing it is returned instead, so callers can always
- * copy an existing pose forward. Returns -1 when the shape never appears.
+ * copy an existing pose forward. Returns -1 when the node never appears.
  */
-export function findNearestShapeKeyframeIndex(layer: Layer, shapeId: string, frame: number): number {
+export function findNearestNodeKeyframeIndex(layer: Layer, nodeId: string, frame: number): number {
   let latest = -1
   let earliest = -1
   for (let i = 0; i < layer.keyframes.length; i++) {
-    if (!layer.keyframes[i].shapes.some((shape) => shape.id === shapeId)) continue
+    if (!layer.keyframes[i].nodes.some((node) => node.id === nodeId)) continue
     if (earliest === -1) earliest = i
     if (layer.keyframes[i].frame <= frame) latest = i
   }
@@ -83,32 +85,32 @@ export function findNearestShapeKeyframeIndex(layer: Layer, shapeId: string, fra
 }
 
 /**
- * Object-level content of a layer at a given frame: every shape exists only
+ * Object-level content of a layer at a given frame: every node exists only
  * within its own span — from its first keyframe to its last keyframe — and
  * keeps the pose from its latest keyframe at or before `frame`, interpolated
- * toward that shape's own next keyframe when the owning keyframe carries a
+ * toward that node's own next keyframe when the owning keyframe carries a
  * tween.
  */
-export function evaluateLayerAtFrame(layer: Layer, frame: number): Shape[] {
+export function evaluateLayerAtFrame(layer: Layer, frame: number): SceneNode[] {
   const last = new Map<string, number>()
   for (let i = 0; i < layer.keyframes.length; i++) {
-    for (const shape of layer.keyframes[i].shapes) {
-      last.set(shape.id, i)
+    for (const node of layer.keyframes[i].nodes) {
+      last.set(node.id, i)
     }
   }
 
   const order: string[] = []
-  const latest = new Map<string, { index: number; shape: Shape }>()
+  const latest = new Map<string, { index: number; node: SceneNode }>()
   for (let i = 0; i < layer.keyframes.length; i++) {
     const keyframe = layer.keyframes[i]
     if (keyframe.frame > frame) break
-    for (const shape of keyframe.shapes) {
-      if (!latest.has(shape.id)) order.push(shape.id)
-      latest.set(shape.id, { index: i, shape })
+    for (const node of keyframe.nodes) {
+      if (!latest.has(node.id)) order.push(node.id)
+      latest.set(node.id, { index: i, node })
     }
   }
 
-  const result: Shape[] = []
+  const result: SceneNode[] = []
   for (const id of order) {
     const entry = latest.get(id)
     if (!entry) continue
@@ -120,23 +122,23 @@ export function evaluateLayerAtFrame(layer: Layer, frame: number): Shape[] {
     if (source.tween) {
       let nextIndex = -1
       for (let i = entry.index + 1; i < layer.keyframes.length; i++) {
-        if (layer.keyframes[i].shapes.some((shape) => shape.id === id)) {
+        if (layer.keyframes[i].nodes.some((node) => node.id === id)) {
           nextIndex = i
           break
         }
       }
       if (nextIndex !== -1) {
         const next = layer.keyframes[nextIndex]
-        const target = next.shapes.find((shape) => shape.id === id)
+        const target = next.nodes.find((node) => node.id === id)
         if (target) {
           const progress = (frame - source.frame) / (next.frame - source.frame)
           const eased = evaluateEasing(source.tween.easing, progress)
-          result.push(tweenShape(entry.shape, target, eased))
+          result.push(tweenNode(entry.node, target, eased))
           continue
         }
       }
     }
-    result.push(entry.shape)
+    result.push(entry.node)
   }
   return result
 }
@@ -148,8 +150,8 @@ export function evaluateLayerAtFrame(layer: Layer, frame: number): Shape[] {
 export function insertKeyframe(layer: Layer, frame: number): Keyframe | null {
   if (findKeyframeAtFrame(layer, frame)) return null
   const previous = findKeyframeIndexForFrame(layer, frame)
-  const shapes = previous === -1 ? [] : layer.keyframes[previous].shapes.map(cloneShape)
-  const keyframe: Keyframe = { frame, shapes }
+  const nodes = previous === -1 ? [] : layer.keyframes[previous].nodes.map(cloneNode)
+  const keyframe: Keyframe = { frame, nodes }
   layer.keyframes.push(keyframe)
   layer.keyframes.sort((a, b) => a.frame - b.frame)
   return keyframe
@@ -158,7 +160,7 @@ export function insertKeyframe(layer: Layer, frame: number): Keyframe | null {
 /** Inserts a blank (empty) keyframe at `frame`. Returns null if one exists. */
 export function insertBlankKeyframe(layer: Layer, frame: number): Keyframe | null {
   if (findKeyframeAtFrame(layer, frame)) return null
-  const keyframe: Keyframe = { frame, shapes: [] }
+  const keyframe: Keyframe = { frame, nodes: [] }
   layer.keyframes.push(keyframe)
   layer.keyframes.sort((a, b) => a.frame - b.frame)
   return keyframe
@@ -200,79 +202,79 @@ export function insertFrame(document: AnimatorDocument, layerId: string, frame: 
   document.frames = Math.max(document.frames ?? 0, frame + 2)
 }
 
-/** Adds a shape to the keyframe content active at `frame`, creating a blank
+/** Adds a node to the keyframe content active at `frame`, creating a blank
  * keyframe first when the frame sits before the first keyframe. */
-export function addShapeToLayer(layer: Layer, frame: number, shape: Shape): void {
+export function addNodeToLayer(layer: Layer, frame: number, node: SceneNode): void {
   let keyframe = findKeyframeAtFrame(layer, frame)
   if (!keyframe) {
     const index = findKeyframeIndexForFrame(layer, frame)
     if (index === -1) {
-      keyframe = { frame, shapes: [] }
+      keyframe = { frame, nodes: [] }
       layer.keyframes.push(keyframe)
       layer.keyframes.sort((a, b) => a.frame - b.frame)
     } else {
       keyframe = layer.keyframes[index]
     }
   }
-  keyframe.shapes.push(shape)
+  keyframe.nodes.push(node)
 }
 
 /**
- * Removes a shape from the keyframe content active at `frame`. When the
+ * Removes a node from the keyframe content active at `frame`. When the
  * keyframe becomes empty it is removed as well: the timeline has no blank
  * keyframes, so content before the frame holds through it.
  */
-export function removeShapeFromLayer(layer: Layer, frame: number, shapeId: string): boolean {
+export function removeNodeFromLayer(layer: Layer, frame: number, nodeId: string): boolean {
   const index = findKeyframeIndexForFrame(layer, frame)
   if (index === -1) return false
   const keyframe = layer.keyframes[index]
-  const shapeIndex = keyframe.shapes.findIndex((shape) => shape.id === shapeId)
-  if (shapeIndex === -1) return false
-  keyframe.shapes.splice(shapeIndex, 1)
-  if (keyframe.shapes.length === 0) removeKeyframe(layer, keyframe.frame)
+  const nodeIndex = keyframe.nodes.findIndex((node) => node.id === nodeId)
+  if (nodeIndex === -1) return false
+  keyframe.nodes.splice(nodeIndex, 1)
+  if (keyframe.nodes.length === 0) removeKeyframe(layer, keyframe.frame)
   return true
 }
 
-/** Updates a shape inside the keyframe content active at `frame`. */
-export function updateShapeInLayer(
+/** Updates a node inside the keyframe content active at `frame`. */
+export function updateNodeInLayer(
   layer: Layer,
   frame: number,
-  shapeId: string,
-  update: (shape: Shape) => void
+  nodeId: string,
+  update: (node: SceneNode) => void
 ): boolean {
   const index = findKeyframeIndexForFrame(layer, frame)
   if (index === -1) return false
-  const shape = layer.keyframes[index].shapes.find((candidate) => candidate.id === shapeId)
-  if (!shape) return false
-  update(shape)
+  const node = layer.keyframes[index].nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return false
+  update(node)
   return true
 }
 
 /**
- * Removes every occurrence of a shape across all keyframes of a layer.
+ * Removes every occurrence of a node across all keyframes of a layer.
  * Keyframes emptied by the removal are dropped. Returns how many keyframes
- * contained the shape.
+ * contained the node.
  */
-export function removeShapeFromAllKeyframes(layer: Layer, shapeId: string): number {
+export function removeNodeFromAllKeyframes(layer: Layer, nodeId: string): number {
   let removed = 0
   for (let i = layer.keyframes.length - 1; i >= 0; i--) {
     const keyframe = layer.keyframes[i]
-    const shapeIndex = keyframe.shapes.findIndex((shape) => shape.id === shapeId)
-    if (shapeIndex === -1) continue
-    keyframe.shapes.splice(shapeIndex, 1)
+    const nodeIndex = keyframe.nodes.findIndex((node) => node.id === nodeId)
+    if (nodeIndex === -1) continue
+    keyframe.nodes.splice(nodeIndex, 1)
     removed += 1
-    if (keyframe.shapes.length === 0) layer.keyframes.splice(i, 1)
+    if (keyframe.nodes.length === 0) layer.keyframes.splice(i, 1)
   }
   return removed
 }
 
-/** Sets the display name of a shape in every keyframe that contains it. */
-export function renameShapeInLayer(layer: Layer, shapeId: string, name: string): boolean {
+/** Sets the display name of a node in every keyframe that contains it. */
+export function renameNodeInLayer(layer: Layer, nodeId: string, name: string): boolean {
   let renamed = false
   for (const keyframe of layer.keyframes) {
-    const shape = keyframe.shapes.find((candidate) => candidate.id === shapeId)
-    if (shape) {
-      shape.name = name
+    const node = keyframe.nodes.find((candidate) => candidate.id === nodeId)
+    if (node) {
+      node.name = name
       renamed = true
     }
   }
@@ -322,7 +324,7 @@ export function addLayer(
   position: 'top' | 'bottom' = 'top'
 ): Layer {
   const layer = createLayer(name)
-  layer.keyframes.push({ frame: 0, shapes: [] })
+  layer.keyframes.push({ frame: 0, nodes: [] })
   // New layers go on top unless explicitly appended at the bottom.
   if (position === 'bottom') document.layers.push(layer)
   else document.layers.unshift(layer)
@@ -340,8 +342,80 @@ export function cloneDocument(document: AnimatorDocument): AnimatorDocument {
   return structuredClone(document)
 }
 
-/** Structural validation for documents restored from persistence. Accepts
- * documents without `frames` (older save format) but rejects invalid values. */
+const EASING_NAMES: EasingName[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out']
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+/** Structural validation for one scene node, keyed on the `type`
+ * discriminant; recursive for groups. */
+export function isSceneNode(value: unknown): value is SceneNode {
+  if (typeof value !== 'object' || value === null) return false
+  const node = value as Record<string, unknown> & Partial<SceneNode>
+  if (typeof node.id !== 'string') return false
+  if (node.name !== undefined && typeof node.name !== 'string') return false
+  if (
+    typeof node.center !== 'object' ||
+    node.center === null ||
+    !isFiniteNumber((node.center as { x?: unknown }).x) ||
+    !isFiniteNumber((node.center as { y?: unknown }).y)
+  ) {
+    return false
+  }
+  if (!isFiniteNumber(node.width) || !isFiniteNumber(node.height)) return false
+  if (!isFiniteNumber(node.rotation)) return false
+  if (!isFiniteNumber(node.opacity)) return false
+  switch (node.type) {
+    case 'primitive':
+      return (
+        (node.primitive === 'rect' || node.primitive === 'ellipse') &&
+        typeof node.fill === 'string' &&
+        (node.stroke === undefined || typeof node.stroke === 'string') &&
+        (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth))
+      )
+    case 'image':
+      return (
+        typeof node.resourceId === 'string' &&
+        isFiniteNumber(node.naturalWidth) &&
+        isFiniteNumber(node.naturalHeight) &&
+        typeof node.smoothing === 'boolean'
+      )
+    case 'group':
+      return Array.isArray(node.children) && node.children.every(isSceneNode)
+    case 'symbol':
+      return typeof node.assetId === 'string'
+    default:
+      return false
+  }
+}
+
+function isKeyframe(value: unknown): value is Keyframe {
+  if (typeof value !== 'object' || value === null) return false
+  const keyframe = value as Record<string, unknown> & Partial<Keyframe>
+  if (!Number.isInteger(keyframe.frame) || (keyframe.frame as number) < 0) return false
+  if (!Array.isArray(keyframe.nodes) || !keyframe.nodes.every(isSceneNode)) return false
+  if (keyframe.tween === undefined) return true
+  if (typeof keyframe.tween !== 'object' || keyframe.tween === null) return false
+  return EASING_NAMES.includes((keyframe.tween as { easing?: unknown }).easing as EasingName)
+}
+
+function isLayer(value: unknown): value is Layer {
+  if (typeof value !== 'object' || value === null) return false
+  const layer = value as Record<string, unknown> & Partial<Layer>
+  return (
+    typeof layer.id === 'string' &&
+    typeof layer.name === 'string' &&
+    typeof layer.visible === 'boolean' &&
+    typeof layer.locked === 'boolean' &&
+    Array.isArray(layer.keyframes) &&
+    layer.keyframes.every(isKeyframe)
+  )
+}
+
+/** Deep structural validation for documents restored from persistence.
+ * Requires `schemaVersion: 2` and fully typed content; older documents go
+ * through `migrateDocument` first. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as Partial<AnimatorDocument>
@@ -349,6 +423,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     candidate.frames === undefined ||
     (typeof candidate.frames === 'number' && Number.isInteger(candidate.frames) && candidate.frames >= 1)
   return (
+    candidate.schemaVersion === 2 &&
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
     typeof candidate.height === 'number' &&
@@ -357,13 +432,6 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     typeof candidate.background === 'string' &&
     framesValid &&
     Array.isArray(candidate.layers) &&
-    candidate.layers.every(
-      (layer) =>
-        typeof layer === 'object' &&
-        layer !== null &&
-        typeof (layer as Layer).id === 'string' &&
-        typeof (layer as Layer).name === 'string' &&
-        Array.isArray((layer as Layer).keyframes)
-    )
+    candidate.layers.every(isLayer)
   )
 }

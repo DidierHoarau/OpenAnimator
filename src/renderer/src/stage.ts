@@ -1,10 +1,10 @@
 import { createId, evaluateLayerAtFrame } from '@shared/document'
 import type { Vec2 } from '@shared/geometry'
-import { hitTestShapes, rectIntersectsRect, shapeBounds } from '@shared/hitTesting'
+import { hitTestNodes, nodeBounds, rectIntersectsRect } from '@shared/hitTesting'
 import type { Rect } from '@shared/hitTesting'
 import { evaluateDocumentAtFrame } from '@shared/render'
 import { renderLayersToSvgMarkup } from '@shared/renderSvg'
-import type { Shape } from '@shared/model'
+import type { PrimitiveNode } from '@shared/model'
 import { identityView, panView, zoomAtView } from '@shared/viewTransform'
 import type { ViewTransform } from '@shared/viewTransform'
 import type { Editor } from './editor'
@@ -158,10 +158,10 @@ export class StageView {
 
     if (editor.tool === 'select') {
       const content = layer ? evaluateLayerAtFrame(layer, editor.currentFrame) : []
-      const hit = layer && layer.visible ? hitTestShapes(content, point) : undefined
+      const hit = layer && layer.visible ? hitTestNodes(content, point) : undefined
       if (!hit) {
         // Rubber-band selection from empty stage area; Shift unions.
-        if (!event.shiftKey) editor.selectShapes([], 'replace')
+        if (!event.shiftKey) editor.selectNodes([], 'replace')
         const drag = this.newDrag('marquee', point)
         drag.additive = event.shiftKey
         this.drag = drag
@@ -170,15 +170,15 @@ export class StageView {
         return
       }
       if (event.shiftKey) {
-        editor.selectShapes([hit.id], 'toggle')
-      } else if (!editor.selectedShapeIds.includes(hit.id)) {
-        editor.selectShapes([hit.id], 'replace')
+        editor.selectNodes([hit.id], 'toggle')
+      } else if (!editor.selectedNodeIds.includes(hit.id)) {
+        editor.selectNodes([hit.id], 'replace')
       }
-      if (layer && !layer.locked && editor.selectedShapeIds.includes(hit.id)) {
+      if (layer && !layer.locked && editor.selectedNodeIds.includes(hit.id)) {
         const drag = this.newDrag('move', point)
-        for (const shape of content) {
-          if (editor.selectedShapeIds.includes(shape.id)) {
-            drag.origins.set(shape.id, { ...shape.center })
+        for (const node of content) {
+          if (editor.selectedNodeIds.includes(node.id)) {
+            drag.origins.set(node.id, { ...node.center })
           }
         }
         this.drag = drag
@@ -239,15 +239,15 @@ export class StageView {
       drag.moveStarted = true
       // One history entry for the whole drag, including its auto-key.
       this.editor.beginInteraction()
-      this.editor.ensureSelectedShapesKeyframes()
+      this.editor.ensureSelectedNodesKeyframes()
     }
     const dx = drag.last.x - drag.start.x
     const dy = drag.last.y - drag.start.y
-    this.editor.updateSelectedShapes((shape) => {
-      const origin = drag.origins.get(shape.id)
+    this.editor.updateSelectedNodes((node) => {
+      const origin = drag.origins.get(node.id)
       if (!origin) return
-      shape.center.x = origin.x + dx
-      shape.center.y = origin.y + dy
+      node.center.x = origin.x + dx
+      node.center.y = origin.y + dy
     })
   }
 
@@ -289,9 +289,10 @@ export class StageView {
       height = DEFAULT_CREATE_HEIGHT / this.view.scale
       center = { ...drag.start }
     }
-    const shape: Shape = {
-      id: createId('shape'),
-      kind: drag.kind,
+    const node: PrimitiveNode = {
+      id: createId('node'),
+      type: 'primitive',
+      primitive: drag.kind,
       center,
       width: Math.max(2, width),
       height: Math.max(2, height),
@@ -299,7 +300,7 @@ export class StageView {
       fill: DEFAULT_FILL,
       opacity: 1
     }
-    this.editor.addShape(shape)
+    this.editor.addNode(node)
   }
 
   private applyMarquee(drag: DragState): void {
@@ -317,9 +318,9 @@ export class StageView {
       height
     }
     const ids = evaluateLayerAtFrame(layer, editor.currentFrame)
-      .filter((shape) => rectIntersectsRect(shapeBounds(shape), marquee))
-      .map((shape) => shape.id)
-    editor.selectShapes(ids, drag.additive ? 'add' : 'replace')
+      .filter((node) => rectIntersectsRect(nodeBounds(node), marquee))
+      .map((node) => node.id)
+    editor.selectNodes(ids, drag.additive ? 'add' : 'replace')
   }
 
   private cancelDrag(): void {
@@ -408,20 +409,20 @@ export class StageView {
     )
     this.svg.appendChild(stageContent)
 
-    // One selection box per selected shape of the current layer's content.
+    // One selection box per selected node of the current layer's content.
     const layer = editor.currentLayer
     if (layer && layer.visible) {
-      for (const shape of evaluateLayerAtFrame(layer, editor.currentFrame)) {
-        if (!editor.selectedShapeIds.includes(shape.id)) continue
+      for (const node of evaluateLayerAtFrame(layer, editor.currentFrame)) {
+        if (!editor.selectedNodeIds.includes(node.id)) continue
         const overlay = document.createElementNS(SVG_NS, 'rect')
         overlay.classList.add('stage__selection')
-        overlay.setAttribute('x', String(-shape.width / 2))
-        overlay.setAttribute('y', String(-shape.height / 2))
-        overlay.setAttribute('width', String(shape.width))
-        overlay.setAttribute('height', String(shape.height))
+        overlay.setAttribute('x', String(-node.width / 2))
+        overlay.setAttribute('y', String(-node.height / 2))
+        overlay.setAttribute('width', String(node.width))
+        overlay.setAttribute('height', String(node.height))
         overlay.setAttribute(
           'transform',
-          `translate(${shape.center.x} ${shape.center.y}) rotate(${shape.rotation})`
+          `translate(${node.center.x} ${node.center.y}) rotate(${node.rotation})`
         )
         overlay.setAttribute('vector-effect', 'non-scaling-stroke')
         this.svg.appendChild(overlay)

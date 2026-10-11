@@ -1,0 +1,21 @@
+{
+  "name": "Untitled",
+  "width": 960,
+  "height": 540,
+  "fps": 24,
+  "background": "#10151b",
+  "layers": [
+    {
+      "id": "layer-1",
+      "name": "Layer 1",
+      "visible": true,
+      "locked": false,
+      "keyframes": [
+        {
+          "frame": 0,
+          "shapes": []
+        }
+      ]
+    }
+  ]
+}

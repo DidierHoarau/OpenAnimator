@@ -1,9 +1,9 @@
 import {
   findKeyframeAtFrame,
-  findNearestShapeKeyframeIndex,
+  findNearestNodeKeyframeIndex,
   getLayer
 } from '@shared/document'
-import type { Layer, Shape } from '@shared/model'
+import type { Layer, SceneNode } from '@shared/model'
 
 import type { Editor } from './editor'
 import { el } from './dom'
@@ -12,15 +12,25 @@ const FRAME_WIDTH = 14
 const HEAD_WIDTH = 180
 const MIN_FRAMES = 40
 const ROW_HEIGHT = 28
-const SHAPE_KIND_LABELS: Record<string, string> = {
+const NODE_KIND_LABELS: Record<string, string> = {
   rect: 'Rectangle',
-  ellipse: 'Ellipse'
+  ellipse: 'Ellipse',
+  group: 'Group',
+  image: 'Image',
+  symbol: 'Symbol'
+}
+/** Swatch/span color for node kinds without a fill of their own. */
+const NEUTRAL_COLOR = '#64748b'
+
+function nodeLabel(node: SceneNode): string {
+  const kind = node.type === 'primitive' ? node.primitive : node.type
+  return node.name || NODE_KIND_LABELS[kind] || 'Object'
 }
 
 /** Row targeted by the context menu: a layer row or one of its object rows. */
 interface MenuTarget {
   layerId: string
-  shapeId: string | null
+  nodeId: string | null
 }
 
 /**
@@ -53,8 +63,8 @@ export class TimelineView {
   private readonly menuRenameButton: HTMLButtonElement
   private readonly menuDeleteButton: HTMLButtonElement
   private readonly expandedLayers = new Set<string>()
-  private shapeKeyframeButtons: HTMLButtonElement[] = []
-  private shapeTweenButtons: HTMLButtonElement[] = []
+  private nodeKeyframeButtons: HTMLButtonElement[] = []
+  private nodeTweenButtons: HTMLButtonElement[] = []
   private menuTarget: MenuTarget | null = null
   private draggedLayerId: string | null = null
 
@@ -137,8 +147,8 @@ export class TimelineView {
     editor.onDocChange(() => this.render())
     editor.onFrameChange(() => {
       this.updatePlayhead()
-      this.refreshShapeKeyframeButtons()
-      this.refreshShapeTweenButtons()
+      this.refreshNodeKeyframeButtons()
+      this.refreshNodeTweenButtons()
     })
     editor.onUiChange(() => this.render())
     this.render()
@@ -156,7 +166,7 @@ export class TimelineView {
     const shapeRow = target.closest<HTMLElement>('.tl-shape-row')
     if (shapeRow?.dataset.shapeId) {
       this.editor.setCurrentLayer(shapeRow.dataset.layerId!)
-      this.editor.selectShapes([shapeRow.dataset.shapeId], event.shiftKey ? 'toggle' : 'replace')
+      this.editor.selectNodes([shapeRow.dataset.shapeId], event.shiftKey ? 'toggle' : 'replace')
       return
     }
     const row = target.closest<HTMLElement>('.tl-row')
@@ -183,8 +193,8 @@ export class TimelineView {
       }
     }
 
-    this.shapeKeyframeButtons = []
-    this.shapeTweenButtons = []
+    this.nodeKeyframeButtons = []
+    this.nodeTweenButtons = []
     this.rowsHost.textContent = ''
     for (const layer of doc.layers) {
       this.rowsHost.appendChild(this.buildLayerGroup(layer, frames))
@@ -197,8 +207,8 @@ export class TimelineView {
     this.loopButton.classList.toggle('active', editor.loop)
     if (document.activeElement !== this.fpsInput) this.fpsInput.value = String(doc.fps)
 
-    this.refreshShapeKeyframeButtons()
-    this.refreshShapeTweenButtons()
+    this.refreshNodeKeyframeButtons()
+    this.refreshNodeTweenButtons()
     this.updatePlayhead()
   }
 
@@ -209,14 +219,14 @@ export class TimelineView {
 
     group.appendChild(this.buildLayerRow(layer, expanded, frames))
 
-    // Shape child rows, rendered only while the layer is expanded.
+    // Node child rows, rendered only while the layer is expanded.
     if (expanded) {
-      const shapes = this.collectAllShapes(layer)
-      if (shapes.length === 0) {
-        group.appendChild(this.buildEmptyShapeRow(frames))
+      const nodes = this.collectAllNodes(layer)
+      if (nodes.length === 0) {
+        group.appendChild(this.buildEmptyNodeRow(frames))
       } else {
-        for (const shape of shapes) {
-          group.appendChild(this.buildShapeRow(layer, shape, frames))
+        for (const node of nodes) {
+          group.appendChild(this.buildNodeRow(layer, node, frames))
         }
       }
     }
@@ -262,7 +272,7 @@ export class TimelineView {
     // Right-click: rename or delete the layer.
     row.addEventListener('contextmenu', (event) => {
       event.preventDefault()
-      this.openContextMenu({ layerId: layer.id, shapeId: null }, event)
+      this.openContextMenu({ layerId: layer.id, nodeId: null }, event)
     })
 
     // Drag and drop reorders layers (index 0 = top of the stack).
@@ -312,10 +322,10 @@ export class TimelineView {
     return row
   }
 
-  private buildEmptyShapeRow(frames: number): HTMLDivElement {
+  private buildEmptyNodeRow(frames: number): HTMLDivElement {
     const row = el('div', 'tl-row tl-shape-row')
     const head = el('div', 'tl-head')
-    const label = el('span', 'name', 'no shapes on this layer')
+    const label = el('span', 'name', 'no objects on this layer')
     label.style.fontStyle = 'italic'
     label.style.color = 'var(--muted)'
     head.appendChild(label)
@@ -324,27 +334,27 @@ export class TimelineView {
     return row
   }
 
-  private buildShapeRow(layer: Layer, shape: Shape, frames: number): HTMLDivElement {
+  private buildNodeRow(layer: Layer, node: SceneNode, frames: number): HTMLDivElement {
     const editor = this.editor
     const row = el('div', 'tl-row tl-shape-row')
     row.dataset.layerId = layer.id
-    row.dataset.shapeId = shape.id
-    if (editor.selectedShapeIds.includes(shape.id)) row.classList.add('selected')
+    row.dataset.shapeId = node.id
+    if (editor.selectedNodeIds.includes(node.id)) row.classList.add('selected')
 
     const head = el('div', 'tl-head')
     const swatch = el('span', 'tl-swatch')
-    swatch.style.background = shape.fill
-    const label = el('span', 'name', shape.name || SHAPE_KIND_LABELS[shape.kind] || 'Object')
+    swatch.style.background = node.type === 'primitive' ? node.fill : NEUTRAL_COLOR
+    const label = el('span', 'name', nodeLabel(node))
     label.title = label.textContent ?? ''
-    const span = this.getShapeFrameSpan(layer, shape.id)
+    const span = this.getNodeFrameSpan(layer, node.id)
     const kfLabel = el('span', 'tl-kf-label', span ? `${span.start + 1}\u2013${span.end}` : '')
 
     // Tween toggle: only meaningful when this object owns the keyframe at the
     // current frame and has an earlier keyframe to animate from.
     const tweenButton = el('button', 'tl-icon tl-shape-tween', '\u2248')
     tweenButton.dataset.layerId = layer.id
-    tweenButton.dataset.shapeId = shape.id
-    this.shapeTweenButtons.push(tweenButton)
+    tweenButton.dataset.shapeId = node.id
+    this.nodeTweenButtons.push(tweenButton)
     tweenButton.addEventListener('click', (event) => {
       event.stopPropagation()
       editor.setCurrentLayer(layer.id)
@@ -354,16 +364,16 @@ export class TimelineView {
     // Per-object keyframe button: ◇ adds a keyframe, × deletes it.
     const kfButton = el('button', 'tl-icon tl-shape-kf', '\u25c7')
     kfButton.dataset.layerId = layer.id
-    kfButton.dataset.shapeId = shape.id
-    this.shapeKeyframeButtons.push(kfButton)
+    kfButton.dataset.shapeId = node.id
+    this.nodeKeyframeButtons.push(kfButton)
     kfButton.addEventListener('click', (event) => {
       event.stopPropagation()
       editor.setCurrentLayer(layer.id)
-      editor.selectShapes([shape.id], 'replace')
-      if (editor.hasShapeKeyframeAt(layer.id, shape.id, editor.currentFrame)) {
-        editor.removeShapeKeyframe(shape.id)
+      editor.selectNodes([node.id], 'replace')
+      if (editor.hasNodeKeyframeAt(layer.id, node.id, editor.currentFrame)) {
+        editor.removeNodeKeyframe(node.id)
       } else {
-        editor.ensureShapeKeyframe(shape.id)
+        editor.ensureNodeKeyframe(node.id)
       }
     })
 
@@ -371,17 +381,17 @@ export class TimelineView {
     head.addEventListener('click', (event) => {
       if (event.target instanceof HTMLInputElement) return
       editor.setCurrentLayer(layer.id)
-      editor.selectShapes([shape.id], event.shiftKey ? 'toggle' : 'replace')
+      editor.selectNodes([node.id], event.shiftKey ? 'toggle' : 'replace')
     })
     row.appendChild(head)
 
     // Right-click: rename or delete the object.
     row.addEventListener('contextmenu', (event) => {
       event.preventDefault()
-      this.openContextMenu({ layerId: layer.id, shapeId: shape.id }, event)
+      this.openContextMenu({ layerId: layer.id, nodeId: node.id }, event)
     })
 
-    row.appendChild(this.buildShapeTrack(layer, shape, frames))
+    row.appendChild(this.buildNodeTrack(layer, node, frames))
     return row
   }
 
@@ -390,21 +400,21 @@ export class TimelineView {
    * that holds the object and a tween span running to the object's next
    * keyframe. Layer rows intentionally carry no keyframe markers.
    */
-  private buildShapeTrack(layer: Layer, shape: Shape, frames: number): HTMLDivElement {
-    const span = this.getShapeFrameSpan(layer, shape.id)
+  private buildNodeTrack(layer: Layer, node: SceneNode, frames: number): HTMLDivElement {
+    const span = this.getNodeFrameSpan(layer, node.id)
     const track = this.buildBarTrack(
       span ? span.start : null,
       span ? span.end : null,
       frames,
-      shape.fill
+      node.type === 'primitive' ? node.fill : NEUTRAL_COLOR
     )
     const sorted = [...layer.keyframes].sort((a, b) => a.frame - b.frame)
     for (let i = 0; i < sorted.length; i++) {
       const keyframe = sorted[i]
-      if (!keyframe.shapes.some((candidate) => candidate.id === shape.id)) continue
+      if (!keyframe.nodes.some((candidate) => candidate.id === node.id)) continue
       const next = sorted
         .slice(i + 1)
-        .find((candidate) => candidate.shapes.some((s) => s.id === shape.id))
+        .find((candidate) => candidate.nodes.some((s) => s.id === node.id))
       if (keyframe.tween && next) {
         const tweenSpan = el('div', 'tl-tween')
         tweenSpan.style.left = `${keyframe.frame * FRAME_WIDTH}px`
@@ -452,13 +462,13 @@ export class TimelineView {
    * ◇ (add) or × (delete) depending on whether ITS shape owns a keyframe at
    * the current frame. Avoids a full re-render during playback.
    */
-  private refreshShapeKeyframeButtons(): void {
+  private refreshNodeKeyframeButtons(): void {
     const editor = this.editor
-    for (const button of this.shapeKeyframeButtons) {
+    for (const button of this.nodeKeyframeButtons) {
       const layerId = button.dataset.layerId
-      const shapeId = button.dataset.shapeId
-      if (!layerId || !shapeId) continue
-      const keyed = editor.hasShapeKeyframeAt(layerId, shapeId, editor.currentFrame)
+      const nodeId = button.dataset.shapeId
+      if (!layerId || !nodeId) continue
+      const keyed = editor.hasNodeKeyframeAt(layerId, nodeId, editor.currentFrame)
       button.textContent = keyed ? '\u00d7' : '\u25c7'
       button.title = keyed
         ? `Remove the keyframe of this object at frame ${editor.currentFrame + 1}`
@@ -467,17 +477,17 @@ export class TimelineView {
   }
 
   /** Refreshes the per-object tween toggles after a seek. */
-  private refreshShapeTweenButtons(): void {
+  private refreshNodeTweenButtons(): void {
     const editor = this.editor
-    for (const button of this.shapeTweenButtons) {
+    for (const button of this.nodeTweenButtons) {
       const layerId = button.dataset.layerId
-      const shapeId = button.dataset.shapeId
-      if (!layerId || !shapeId) continue
+      const nodeId = button.dataset.shapeId
+      if (!layerId || !nodeId) continue
       const layer = getLayer(editor.document, layerId)
       if (!layer) continue
       const keyframe = findKeyframeAtFrame(layer, editor.currentFrame)
-      const keyed = keyframe?.shapes.some((shape) => shape.id === shapeId) ?? false
-      const previousIndex = findNearestShapeKeyframeIndex(layer, shapeId, editor.currentFrame - 1)
+      const keyed = keyframe?.nodes.some((node) => node.id === nodeId) ?? false
+      const previousIndex = findNearestNodeKeyframeIndex(layer, nodeId, editor.currentFrame - 1)
       const hasPrevious =
         previousIndex !== -1 && layer.keyframes[previousIndex].frame < editor.currentFrame
       button.disabled = !keyed || !hasPrevious
@@ -497,7 +507,7 @@ export class TimelineView {
     if (!layer) return
     this.menuTarget = target
     this.menuDeleteButton.disabled =
-      target.shapeId === null && this.editor.document.layers.length <= 1
+      target.nodeId === null && this.editor.document.layers.length <= 1
     this.menu.classList.remove('hidden')
     const x = Math.min(event.clientX, window.innerWidth - 170)
     const y = Math.min(event.clientY, window.innerHeight - 84)
@@ -518,10 +528,10 @@ export class TimelineView {
     const label = row?.querySelector<HTMLElement>('.name')
     if (!row || !label) return
     let currentName = layer.name
-    if (target.shapeId) {
-      const shape = this.collectAllShapes(layer).find((candidate) => candidate.id === target.shapeId)
-      if (!shape) return
-      currentName = shape.name || SHAPE_KIND_LABELS[shape.kind] || 'Object'
+    if (target.nodeId) {
+      const node = this.collectAllNodes(layer).find((candidate) => candidate.id === target.nodeId)
+      if (!node) return
+      currentName = nodeLabel(node)
     }
 
     const input = document.createElement('input')
@@ -539,7 +549,7 @@ export class TimelineView {
       finished = true
       const value = input.value.trim()
       if (commit && value && value !== currentName) {
-        if (target.shapeId) this.editor.renameShape(target.layerId, target.shapeId, value)
+        if (target.nodeId) this.editor.renameNode(target.layerId, target.nodeId, value)
         else this.editor.renameLayer(target.layerId, value)
       } else {
         this.render()
@@ -556,14 +566,14 @@ export class TimelineView {
   private findRow(target: MenuTarget): HTMLElement | null {
     for (const row of this.rowsHost.querySelectorAll<HTMLElement>('.tl-row')) {
       if (row.dataset.layerId !== target.layerId) continue
-      const shapeId = row.dataset.shapeId ?? null
-      if (shapeId === target.shapeId) return row
+      const nodeId = row.dataset.shapeId ?? null
+      if (nodeId === target.nodeId) return row
     }
     return null
   }
 
   private deleteTarget(target: MenuTarget): void {
-    if (target.shapeId) this.editor.deleteShape(target.layerId, target.shapeId)
+    if (target.nodeId) this.editor.deleteNode(target.layerId, target.nodeId)
     else this.editor.removeLayer(target.layerId)
   }
 
@@ -585,16 +595,16 @@ export class TimelineView {
     this.render()
   }
 
-  /** Returns the frame range [start, end) where a shape is continuously active. */
-  private getShapeFrameSpan(
+  /** Returns the frame range [start, end) where a node is continuously active. */
+  private getNodeFrameSpan(
     layer: Layer,
-    shapeId: string
+    nodeId: string
   ): { start: number; end: number } | null {
     // Object-level span: the object is on stage exactly from its first
     // keyframe to its last keyframe (inclusive) and is invisible after.
     const containing = [...layer.keyframes]
       .sort((a, b) => a.frame - b.frame)
-      .filter((keyframe) => keyframe.shapes.some((s) => s.id === shapeId))
+      .filter((keyframe) => keyframe.nodes.some((s) => s.id === nodeId))
     if (containing.length === 0) return null
     return {
       start: containing[0].frame,
@@ -602,15 +612,15 @@ export class TimelineView {
     }
   }
 
-  /** Collects all unique shapes across every keyframe of a layer. */
-  private collectAllShapes(layer: Layer): Shape[] {
+  /** Collects all unique nodes across every keyframe of a layer. */
+  private collectAllNodes(layer: Layer): SceneNode[] {
     const seen = new Set<string>()
-    const result: Shape[] = []
+    const result: SceneNode[] = []
     for (const keyframe of layer.keyframes) {
-      for (const shape of keyframe.shapes) {
-        if (!seen.has(shape.id)) {
-          seen.add(shape.id)
-          result.push(shape)
+      for (const node of keyframe.nodes) {
+        if (!seen.has(node.id)) {
+          seen.add(node.id)
+          result.push(node)
         }
       }
     }

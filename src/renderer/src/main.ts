@@ -90,7 +90,7 @@ function buildStatusbar(editor: Editor, stageView: StageView): HTMLElement {
   const update = (): void => {
     frameInfo.textContent = `frame ${editor.currentFrame + 1} / ${editor.duration}`
     layerInfo.textContent = `layer: ${editor.currentLayer?.name ?? '-'}`
-    const selection = editor.selectedShapeIds.length
+    const selection = editor.selectedNodeIds.length
     toolInfo.textContent = `tool: ${editor.tool}${
       selection > 0 ? ` \u00b7 ${selection > 1 ? `${selection} ` : ''}selected` : ''
     }`
@@ -149,6 +149,10 @@ function registerKeyboard(editor: Editor, stageView: StageView): void {
       } else if (key === 'y') {
         event.preventDefault()
         editor.redo()
+      } else if (key === 'g' && !inTextField) {
+        event.preventDefault()
+        if (event.shiftKey) editor.ungroupSelection()
+        else editor.groupSelection()
       } else if (key === '0') {
         event.preventDefault()
         stageView.resetView()

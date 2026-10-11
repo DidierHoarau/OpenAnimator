@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import { evaluateLayerAtFrame } from './document'
-import type { AnimatorDocument, Keyframe, Layer, Shape } from './model'
-import { tweenShape, tweenShapes } from './tween'
+import type { AnimatorDocument, GroupNode, ImageNode, Layer, PrimitiveNode, SceneNode, SymbolNode } from './model'
+import { tweenNode, tweenNodes } from './tween'
 
-function shape(id: string, overrides: Partial<Shape> = {}): Shape {
+function shape(id: string, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
   return {
+    type: 'primitive',
+    primitive: 'rect',
     id,
-    kind: 'rect',
     center: { x: 0, y: 0 },
     width: 100,
     height: 50,
@@ -18,44 +19,162 @@ function shape(id: string, overrides: Partial<Shape> = {}): Shape {
   }
 }
 
-describe('tweenShape', () => {
+function group(id: string, overrides: Partial<GroupNode> = {}): GroupNode {
+  return {
+    type: 'group',
+    id,
+    center: { x: 0, y: 0 },
+    width: 100,
+    height: 50,
+    rotation: 0,
+    opacity: 1,
+    children: [shape('child', { center: { x: 0, y: 0 } })],
+    ...overrides
+  }
+}
+
+function image(id: string, overrides: Partial<ImageNode> = {}): ImageNode {
+  return {
+    type: 'image',
+    id,
+    center: { x: 0, y: 0 },
+    width: 100,
+    height: 50,
+    rotation: 0,
+    opacity: 1,
+    resourceId: 'res-1',
+    naturalWidth: 800,
+    naturalHeight: 400,
+    smoothing: true,
+    ...overrides
+  }
+}
+
+function symbol(id: string, overrides: Partial<SymbolNode> = {}): SymbolNode {
+  return {
+    type: 'symbol',
+    id,
+    center: { x: 0, y: 0 },
+    width: 100,
+    height: 50,
+    rotation: 0,
+    opacity: 1,
+    assetId: 'asset-1',
+    ...overrides
+  }
+}
+
+describe('tweenNode', () => {
   it('interpolates geometry, rotation and opacity', () => {
     const from = shape('a', { center: { x: 0, y: 0 }, rotation: 0, opacity: 1 })
     const to = shape('a', { center: { x: 100, y: 200 }, rotation: 90, opacity: 0 })
-    const result = tweenShape(from, to, 0.5)
+    const result = tweenNode(from, to, 0.5)
     expect(result.center).toEqual({ x: 50, y: 100 })
     expect(result.rotation).toBe(45)
     expect(result.opacity).toBe(0.5)
   })
 
   it('interpolates fill colors', () => {
-    const result = tweenShape(shape('a', { fill: '#000000' }), shape('a', { fill: '#ffffff' }), 0.5)
-    expect(result.fill).toBe('#808080')
+    const result = tweenNode(shape('a', { fill: '#000000' }), shape('a', { fill: '#ffffff' }), 0.5)
+    expect((result as PrimitiveNode).fill).toBe('#808080')
   })
 
-  it('snaps between shapes of different kinds', () => {
-    const from = shape('a', { kind: 'rect' })
-    const to = shape('a', { kind: 'ellipse' })
-    expect(tweenShape(from, to, 0.5).kind).toBe('rect')
-    expect(tweenShape(from, to, 1).kind).toBe('ellipse')
+  it('snaps between primitives of different kinds', () => {
+    const from = shape('a', { primitive: 'rect' })
+    const to = shape('a', { primitive: 'ellipse' })
+    expect((tweenNode(from, to, 0.5) as PrimitiveNode).primitive).toBe('rect')
+    expect((tweenNode(from, to, 1) as PrimitiveNode).primitive).toBe('ellipse')
   })
 
   it('falls back to raw colors when not valid hex', () => {
     const from = shape('a', { fill: 'red' })
     const to = shape('a', { fill: 'blue' })
-    expect(tweenShape(from, to, 0.5).fill).toBe('red')
-    expect(tweenShape(from, to, 1).fill).toBe('blue')
+    expect((tweenNode(from, to, 0.5) as PrimitiveNode).fill).toBe('red')
+    expect((tweenNode(from, to, 1) as PrimitiveNode).fill).toBe('blue')
+  })
+
+  it('tweens a group: transform and opacity lerp, children come from `from`', () => {
+    const from = group('g', { center: { x: 0, y: 0 }, opacity: 1 })
+    const to = group('g', {
+      center: { x: 100, y: 200 },
+      width: 200,
+      height: 100,
+      rotation: 60,
+      opacity: 0.4,
+      children: [shape('rewritten', { center: { x: 999, y: 999 } })]
+    })
+    const result = tweenNode(from, to, 0.5) as GroupNode
+    expect(result.type).toBe('group')
+    expect(result.center).toEqual({ x: 50, y: 100 })
+    expect(result.width).toBe(150)
+    expect(result.height).toBe(75)
+    expect(result.rotation).toBe(30)
+    expect(result.opacity).toBeCloseTo(0.7)
+    // Children are identity fields: never interpolated, taken from `from`.
+    expect(result.children).toBe(from.children)
+    expect(result.children[0].id).toBe('child')
+  })
+
+  it('tweens an image: identity fields come from `from`', () => {
+    const from = image('i', { center: { x: 0, y: 0 }, opacity: 1, resourceId: 'res-a' })
+    const to = image('i', {
+      center: { x: 80, y: 40 },
+      width: 200,
+      height: 100,
+      rotation: 45,
+      opacity: 0.2,
+      resourceId: 'res-b',
+      naturalWidth: 1,
+      naturalHeight: 1,
+      smoothing: false
+    })
+    const result = tweenNode(from, to, 0.5) as ImageNode
+    expect(result.center).toEqual({ x: 40, y: 20 })
+    expect(result.width).toBe(150)
+    expect(result.height).toBe(75)
+    expect(result.rotation).toBe(22.5)
+    expect(result.opacity).toBeCloseTo(0.6)
+    expect(result.resourceId).toBe('res-a')
+    expect(result.naturalWidth).toBe(800)
+    expect(result.naturalHeight).toBe(400)
+    expect(result.smoothing).toBe(true)
+  })
+
+  it('tweens a symbol: identity fields come from `from`', () => {
+    const from = symbol('s', { center: { x: 0, y: 0 } })
+    const to = symbol('s', { center: { x: 100, y: 0 }, assetId: 'asset-2' })
+    const result = tweenNode(from, to, 0.25) as SymbolNode
+    expect(result.center.x).toBe(25)
+    expect(result.assetId).toBe('asset-1')
+  })
+
+  it('snaps between nodes of different types', () => {
+    const shapeNode = shape('a')
+    const groupNode = group('a')
+    expect((tweenNode(shapeNode, groupNode, 0.5) as PrimitiveNode).type).toBe('primitive')
+    expect((tweenNode(shapeNode, groupNode, 1) as GroupNode).type).toBe('group')
+    expect((tweenNode(groupNode, shapeNode, 0.5) as GroupNode).type).toBe('group')
+    expect((tweenNode(groupNode, shapeNode, 1) as PrimitiveNode).type).toBe('primitive')
   })
 })
 
-describe('tweenShapes', () => {
-  it('tweens matching shapes and holds static the others', () => {
-    const from = [shape('a', { center: { x: 0, y: 0 } }), shape('static')]
-    const to = [shape('a', { center: { x: 100, y: 0 } }), shape('b')]
-    const result = tweenShapes(from, to, 0.5)
+describe('tweenNodes', () => {
+  it('tweens matching nodes and holds static the others', () => {
+    const from: SceneNode[] = [shape('a', { center: { x: 0, y: 0 } }), shape('static')]
+    const to: SceneNode[] = [shape('a', { center: { x: 100, y: 0 } }), shape('b')]
+    const result = tweenNodes(from, to, 0.5)
     expect(result).toHaveLength(2)
     expect(result[0].center.x).toBe(50)
     expect(result[1].center.x).toBe(0)
+  })
+
+  it('handles mixed node types by id matching', () => {
+    const from: SceneNode[] = [group('g'), shape('p', { center: { x: 0, y: 0 } })]
+    const to: SceneNode[] = [group('g', { center: { x: 40, y: 0 } }), symbol('p')]
+    const result = tweenNodes(from, to, 0.5)
+    expect((result[0] as GroupNode).center.x).toBe(20)
+    // The primitive `p` snaps against a symbol: primitive until the end.
+    expect((result[1] as PrimitiveNode).type).toBe('primitive')
   })
 })
 
@@ -68,15 +187,15 @@ describe('evaluateLayerAtFrame', () => {
     keyframes: [
       {
         frame: 0,
-        shapes: [shape('a', { center: { x: 0, y: 0 } })],
+        nodes: [shape('a', { center: { x: 0, y: 0 } })],
         tween: { easing: 'linear' }
       },
-      { frame: 10, shapes: [shape('a', { center: { x: 100, y: 0 } })] }
+      { frame: 10, nodes: [shape('a', { center: { x: 100, y: 0 } })] }
     ]
   }
 
   it('renders nothing before the first keyframe', () => {
-    const emptyLayer: Layer = { ...layer, keyframes: [{ frame: 5, shapes: [shape('a')] }] }
+    const emptyLayer: Layer = { ...layer, keyframes: [{ frame: 5, nodes: [shape('a')] }] }
     expect(evaluateLayerAtFrame(emptyLayer, 2)).toEqual([])
   })
 
@@ -94,20 +213,20 @@ describe('evaluateLayerAtFrame', () => {
     expect(evaluateLayerAtFrame(layer, 15)).toEqual([])
   })
 
-  it('tweens each shape toward its own next keyframe and hides it after its last one', () => {
+  it('tweens each node toward its own next keyframe and hides it after its last one', () => {
     const partial: Layer = {
       ...layer,
       keyframes: [
         {
           frame: 0,
           tween: { easing: 'linear' },
-          shapes: [
+          nodes: [
             shape('a', { center: { x: 0, y: 0 } }),
             shape('b', { center: { x: 5, y: 0 } })
           ]
         },
-        { frame: 10, shapes: [shape('a', { center: { x: 100, y: 0 } })] },
-        { frame: 20, shapes: [shape('b', { center: { x: 5, y: 0 } })] }
+        { frame: 10, nodes: [shape('a', { center: { x: 100, y: 0 } })] },
+        { frame: 20, nodes: [shape('b', { center: { x: 5, y: 0 } })] }
       ]
     }
     // `a` tweens toward its own next keyframe (10); `b` is keyed only at 0
@@ -125,12 +244,33 @@ describe('evaluateLayerAtFrame', () => {
     expect(evaluateLayerAtFrame(partial, 21)).toEqual([])
   })
 
+  it('tweens a group through a tweened span as one unit', () => {
+    const groupLayer: Layer = {
+      id: 'layer',
+      name: 'Layer 1',
+      visible: true,
+      locked: false,
+      keyframes: [
+        {
+          frame: 0,
+          nodes: [group('g', { center: { x: 0, y: 0 }, opacity: 1 })],
+          tween: { easing: 'linear' }
+        },
+        { frame: 10, nodes: [group('g', { center: { x: 100, y: 0 }, opacity: 0 })] }
+      ]
+    }
+    const atFive = evaluateLayerAtFrame(groupLayer, 5)[0] as GroupNode
+    expect(atFive.center.x).toBe(50)
+    expect(atFive.opacity).toBeCloseTo(0.5)
+    expect(atFive.children).toEqual((groupLayer.keyframes[0].nodes[0] as GroupNode).children)
+  })
+
   it('ignores a tween on the final keyframe', () => {
     const trailing: Layer = {
       ...layer,
       keyframes: [
         ...layer.keyframes,
-        { frame: 20, shapes: [shape('a', { center: { x: 999, y: 0 } })], tween: { easing: 'linear' } }
+        { frame: 20, nodes: [shape('a', { center: { x: 999, y: 0 } })], tween: { easing: 'linear' } }
       ]
     }
     // The final tween never interpolates and the object ends at frame 20.
@@ -143,12 +283,13 @@ describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
+      schemaVersion: 2,
       name: 'test',
       width: 100,
       height: 100,
       fps: 24,
       background: '#000000',
-      layers: [{ id: 'l', name: 'L', visible: true, locked: false, keyframes: [] as Keyframe[] }]
+      layers: [{ id: 'l', name: 'L', visible: true, locked: false, keyframes: [] as never[] }]
     }
     expect(isAnimatorDocument(valid)).toBe(true)
     expect(isAnimatorDocument({})).toBe(false)
