@@ -4,7 +4,7 @@ OpenAnimator is an open-source, vector-based animation tool built as an Electron
 
 ## Status
 
-The application now provides a working authoring core: layers with keyframes, a frame timeline, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, basic vector drawing and selection tools, onion skinning and playback — all rendered as SVG.
+The application now provides a working authoring core: layers with keyframes, a frame timeline, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, raster image import, basic vector drawing and selection tools, onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
 
 ## Tech stack
 
@@ -17,7 +17,8 @@ The application now provides a working authoring core: layers with keyframes, a 
 
 ## Authoring features
 
-- **Document model**: stage size, frame rate, background color, and a list of layers (`layers[0]` is the topmost). The scene is a tree of polymorphic nodes — primitives (`rect`, `ellipse`), placed images, groups and symbol instances — all sharing one transform vocabulary (position, size, rotation, opacity). Documents serialize to plain JSON (`schemaVersion: 2`); legacy `schemaVersion: 1` shape-based files are migrated transparently on open.
+- **Document model**: stage size, frame rate, background color, and a list of layers (`layers[0]` is the topmost). The scene is a tree of polymorphic nodes — primitives (`rect`, `ellipse`), placed images, groups and symbol instances — all sharing one transform vocabulary (position, size, rotation, opacity). Documents serialize to the `schemaVersion: 2` JSON inside the project container; legacy `schemaVersion: 1` shape-based plain-JSON files are migrated transparently on open.
+- **Image import**: `Ctrl+I`, the toolbar button, or dropping image files from the OS onto the stage places the image on the current object layer — centered on the stage or at the drop point — at natural size capped to the stage, auto-selected. PNG/JPG/WebP keep their original bytes, GIFs become a PNG of their first frame and static SVGs are rasterized at 2×. Images render as `<image>` elements, tween on transform + opacity and hit-test by bounding box in v1.
 - **Layers**: visibility and lock toggles, add/remove layers, per-layer keyframes.
 - **Keyframes**: content keyframes and blank keyframes, insert/remove at the playhead, insert frame to extend holds.
 - **Classic tweening**: a tween on a keyframe interpolates matching nodes (matched by id) toward the next keyframe — position, size, rotation and opacity for every node kind, plus fill and outline for primitives — with named easing curves (linear, ease-in, ease-out, ease-in-out) plus a cubic-bezier easing solver. Identity fields (image resource, group children, symbol asset) never interpolate; mismatched kinds snap.
@@ -29,11 +30,12 @@ The application now provides a working authoring core: layers with keyframes, a 
 - **Properties panel**: a right-side panel of collapsible sections whose expanded/collapsed state is remembered across restarts. Sections adapt to the editor state — the node sections only appear while a matching node is selected:
   - **Layer**: keyframe operations on the selected object — insert/remove keyframe, classic tween toggle with easing. Controls enable and disable according to the current layer, playhead and tween state.
   - **Shape**: edits the selected primitive — position, size, rotation, opacity, fill color (swatch or hex) and outline (color + width).
+  - **Image**: the same transform inputs for a selected image, the read-only source file name, a `Native size` reset and `Replace source…` (re-points the image at another file while keeping the placed size).
   - **Group**: the same transform inputs for a selected group, plus `Ungroup` and a disabled `Save as Symbol…` placeholder for the upcoming asset library.
 - **Timeline panel**: frame ruler, expandable layer rows with per-row visibility/lock toggles, one object row per node (groups included) carrying its frame-span bar, keyframe markers and tween spans, and the playhead.
 - **Playback**: play/pause/stop, optional looping, frame-stepping at the document fps.
 - **Onion skinning**: ghosted neighboring frames while paused.
-- **Projects**: save and open `.oanim` project files (plain JSON documents, also reads `.json`), with an explicit Save/Save As/Open, Ctrl+S / Ctrl+Shift+S / Ctrl+O shortcuts and debounced autosave to the current file. Legacy v1 files are validated and migrated to the current format when opened; malformed files are reported with the location of the problem.
+- **Projects**: save and open `.oanim` project files with an explicit Save/Save As/Open, Ctrl+S / Ctrl+Shift+S / Ctrl+O shortcuts and debounced autosave to the current file. Since v0.9.0 the container is a **ZIP archive**: `document.json` plus the referenced binary resources under `resources/<sha256>.<ext>` (stored uncompressed), written atomically (temp file + rename). The loader sniffs the magic bytes: ZIP containers take the archive path; legacy plain-JSON documents (v1 shapes and pre-0.9.0 v2 JSON) still open through the migration/validation path. Resources are content-addressed by SHA-256, so identical content dedupes automatically; a missing or corrupt resource renders a dashed placeholder box while the document still opens, and unknown node types are reported as errors (pre-1.0, no forward-compat shims). `Purge Unused` in the toolbar removes resources no object references from the session store — nothing is garbage-collected silently.
 - **Startup dialog**: shown on launch to start a new project, open a file, or reopen one of the recent projects (stored in the Electron `userData` folder).
 
 ## Project layout
@@ -44,12 +46,17 @@ The application now provides a working authoring core: layers with keyframes, a 
 ├── scripts/               # CI helper scripts (semantic version check)
 ├── src/
 │   ├── main/              # Electron main process (window, IPC, project files)
+│   │   ├── projectContainer.ts # ZIP .oanim v2 codec (pack/parse, magic sniffing)
+│   │   ├── resources.ts   # Content-addressed session resource store (SHA-256)
+│   │   └── projects.ts    # Project file IO, resource/image IPC handlers
 │   ├── preload/           # Preload scripts (contextBridge API)
 │   ├── shared/            # Pure TypeScript document model + unit tests
 │   │   ├── api.ts         # IPC contract between main and renderer
 │   │   ├── model.ts       # Document / layer / keyframe / scene-node types
 │   │   ├── groups.ts      # Group/ungroup pure functions (group-local coords)
 │   │   ├── migrate.ts     # v1 → v2 document migration and validation
+│   │   ├── resources.ts   # Resource refcount walk over the document
+│   │   ├── imagePlacement.ts # Import placement math (stage-capped fit)
 │   │   ├── document.ts    # Document operations and per-frame evaluation
 │   │   ├── tween.ts       # Node interpolation between keyframes
 │   │   ├── easing.ts      # Named eases and cubic-bezier solver
@@ -66,7 +73,9 @@ The application now provides a working authoring core: layers with keyframes, a 
 │       └── src/
 │           ├── editor.ts  # Editor state (frame, selection, tools, playback)
 │           ├── stage.ts   # SVG stage: rendering, drawing, selection
-│           ├── properties.ts # Right panel: explorer / layer / playback / shape sections
+│           ├── resourceCache.ts # Blob/object-URL cache with decode validation
+│           ├── imageImport.ts   # Image import (dialog, drag-drop) and replace-source
+│           ├── properties.ts # Right panel: layer / shape / image / group sections
 │           ├── sectionState.ts # Panel-section collapse state persistence
 │           ├── projects.ts   # Save / open / startup dialog orchestration
 │           ├── timeline.ts # Timeline panel (ruler, rows, playhead)
@@ -116,6 +125,7 @@ npm run dev        # start the app with hot reload
 | `Ctrl+S`            | Save the current project                |
 | `Ctrl+Shift+S`      | Save the project to a new file          |
 | `Ctrl+O`            | Open a project file                     |
+| `Ctrl+I`            | Import an image onto the stage          |
 | `Space`             | Play / pause                            |
 | `Escape`            | Stop and return to frame 1              |
 | `F5` / `F6` / `F7`  | Insert frame / keyframe / blank keyframe|

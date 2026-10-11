@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
-import type { PrimitiveNode } from '@shared/model'
+import type { ImageNode, PrimitiveNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { PropertiesView } from './properties'
@@ -22,6 +22,31 @@ function rect(id: string, x: number, y: number): PrimitiveNode {
   }
 }
 
+function image(id: string, resourceId = 'hash-1'): ImageNode {
+  return {
+    id,
+    type: 'image',
+    name: 'picture.png',
+    resourceId,
+    center: { x: 100, y: 80 },
+    width: 320,
+    height: 240,
+    rotation: 0,
+    opacity: 1,
+    naturalWidth: 640,
+    naturalHeight: 480,
+    smoothing: true
+  }
+}
+
+function sectionByTitle(container: HTMLElement, title: string): HTMLElement {
+  const section = [...container.querySelectorAll('.panel-section')].find(
+    (candidate) => candidate.querySelector('.panel-section-title')?.textContent?.trim() === title
+  )
+  if (!section) throw new Error(`missing section ${title}`)
+  return section as HTMLElement
+}
+
 describe('PropertiesView sections', () => {
   let editor: Editor
   let container: HTMLElement
@@ -35,30 +60,40 @@ describe('PropertiesView sections', () => {
     new PropertiesView(editor, container)
   })
 
-  it('renders the layer, shape and group sections', () => {
+  it('renders the layer, shape, image and group sections', () => {
     const titles = [...container.querySelectorAll('.panel-section-title')].map((node) =>
       node.textContent?.trim()
     )
-    expect(titles).toEqual(['Layer', 'Shape', 'Group'])
+    expect(titles).toEqual(['Layer', 'Shape', 'Image', 'Group'])
   })
 
-  it('shows the shape section for primitives and the group section for groups', () => {
-    const shapeSection = container.querySelectorAll('.panel-section')[1]
-    const groupSection = container.querySelectorAll('.panel-section')[2]
+  it('shows the shape section for primitives, the image section for images and the group section for groups', () => {
+    const shapeSection = sectionByTitle(container, 'Shape')
+    const imageSection = sectionByTitle(container, 'Image')
+    const groupSection = sectionByTitle(container, 'Group')
     expect(shapeSection.classList.contains('hidden')).toBe(true)
+    expect(imageSection.classList.contains('hidden')).toBe(true)
     expect(groupSection.classList.contains('hidden')).toBe(true)
 
     editor.addNode(rect('a', 10, 10))
     expect(shapeSection.classList.contains('hidden')).toBe(false)
+    expect(imageSection.classList.contains('hidden')).toBe(true)
+    expect(groupSection.classList.contains('hidden')).toBe(true)
+
+    editor.addNode(image('i1'))
+    expect(shapeSection.classList.contains('hidden')).toBe(true)
+    expect(imageSection.classList.contains('hidden')).toBe(false)
     expect(groupSection.classList.contains('hidden')).toBe(true)
 
     editor.selectNodes([], 'replace')
     expect(shapeSection.classList.contains('hidden')).toBe(true)
+    expect(imageSection.classList.contains('hidden')).toBe(true)
     expect(groupSection.classList.contains('hidden')).toBe(true)
 
     editor.selectNodes(['a'], 'replace')
     editor.groupSelection()
     expect(shapeSection.classList.contains('hidden')).toBe(true)
+    expect(imageSection.classList.contains('hidden')).toBe(true)
     expect(groupSection.classList.contains('hidden')).toBe(false)
   })
 
@@ -68,7 +103,7 @@ describe('PropertiesView sections', () => {
     editor.selectNodes(['a', 'b'], 'replace')
     editor.groupSelection()
 
-    const groupSection = container.querySelectorAll('.panel-section')[2]
+    const groupSection = sectionByTitle(container, 'Group')
     // The shared transform rows are parked in the visible group section.
     const inputs = [...groupSection.querySelectorAll<HTMLInputElement>('input[type="number"]')]
     expect(inputs.length).toBeGreaterThanOrEqual(6)
@@ -86,7 +121,7 @@ describe('PropertiesView sections', () => {
     editor.selectNodes(['a'], 'replace')
     editor.groupSelection()
 
-    const groupSection = container.querySelectorAll('.panel-section')[2]
+    const groupSection = sectionByTitle(container, 'Group')
     const buttons = [...groupSection.querySelectorAll('button')]
     const ungroup = buttons.find((button) => button.textContent === 'Ungroup')!
     const symbol = buttons.find((button) => button.textContent === 'Save as Symbol… (F8)')!
@@ -97,6 +132,69 @@ describe('PropertiesView sections', () => {
 
     ungroup.click()
     expect(editor.selectedNodeIds).toEqual(['a'])
+  })
+
+  it('shows the read-only source file name in the image section', () => {
+    editor.addNode(image('i1'))
+    const imageSection = sectionByTitle(container, 'Image')
+    const label = imageSection.querySelector('.panel-file-name') as HTMLElement
+    expect(label.textContent).toBe('picture.png')
+  })
+
+  it('resets the image to its native size in one undo step', () => {
+    editor.addNode(image('i1'))
+    const imageSection = sectionByTitle(container, 'Image')
+    const nativeButton = [...imageSection.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Native size'
+    )!
+    expect(nativeButton.disabled).toBe(false)
+
+    nativeButton.click()
+    const node = editor.document.layers[0].keyframes[0].nodes[0] as ImageNode
+    expect(node.width).toBe(640)
+    expect(node.height).toBe(480)
+
+    editor.undo()
+    const reverted = editor.document.layers[0].keyframes[0].nodes[0] as ImageNode
+    expect(reverted.width).toBe(320)
+    expect(reverted.height).toBe(240)
+  })
+
+  it('replaces the image source, keeping the placed size', async () => {
+    const addResource = vi.fn(() => Promise.resolve({ resourceId: 'hash-2', deduped: false }))
+    ;(window as unknown as { api: unknown }).api = {
+      pickImageFile: () =>
+        Promise.resolve({ canceled: false, fileName: 'other.png', bytes: new Uint8Array([1, 2, 3]) }),
+      addResource
+    }
+    container.textContent = ''
+    const view = new PropertiesView(editor, container, {
+      imageImportDeps: { decode: () => Promise.resolve({ width: 100, height: 50 }) }
+    })
+    editor.addNode(image('i1'))
+    view.render()
+    const imageSection = sectionByTitle(container, 'Image')
+    const replaceButton = [...imageSection.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Replace source…'
+    )!
+
+    replaceButton.click()
+    await vi.waitFor(() => {
+      const node = editor.document.layers[0].keyframes[0].nodes[0] as ImageNode
+      expect(node.resourceId).toBe('hash-2')
+    })
+    const node = editor.document.layers[0].keyframes[0].nodes[0] as ImageNode
+    expect(addResource).toHaveBeenCalled()
+    expect(node.name).toBe('other.png')
+    expect(node.naturalWidth).toBe(100)
+    expect(node.naturalHeight).toBe(50)
+    // Placed size kept.
+    expect(node.width).toBe(320)
+    expect(node.height).toBe(240)
+
+    editor.undo()
+    const reverted = editor.document.layers[0].keyframes[0].nodes[0] as ImageNode
+    expect(reverted.resourceId).toBe('hash-1')
   })
 
   it('enables keyframe operations for the selected object only', () => {

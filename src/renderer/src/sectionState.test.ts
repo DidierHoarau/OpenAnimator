@@ -23,12 +23,12 @@ class MemoryStorage {
 describe('section state', () => {
   it('defaults to all sections expanded when nothing is stored', () => {
     const state = loadSectionState(new MemoryStorage())
-    expect(state).toEqual({ layer: true, shape: true, group: true })
+    expect(state).toEqual({ layer: true, shape: true, image: true, group: true })
   })
 
   it('round-trips collapsed sections through storage', () => {
     const storage = new MemoryStorage()
-    const state: SectionState = { layer: false, shape: true, group: false }
+    const state: SectionState = { layer: false, shape: true, image: true, group: false }
     saveSectionState(storage, state)
     expect(storage.getItem(SECTION_STORAGE_KEY)).toBe(JSON.stringify(state))
     expect(loadSectionState(storage)).toEqual(state)
@@ -50,6 +50,7 @@ describe('section state', () => {
     expect(loadSectionState(storage)).toEqual({
       layer: true,
       shape: true,
+      image: true,
       group: true
     })
   })

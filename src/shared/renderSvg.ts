@@ -2,6 +2,13 @@ import { groupNaturalSize } from './groups'
 import type { GroupNode, ImageNode, PrimitiveNode, SceneNode, SymbolNode } from './model'
 import type { RenderLayer } from './render'
 
+/**
+ * Object-URL resolver injected by the DOM renderer: maps a resource id to its
+ * blob URL, or null when the resource is missing/corrupt (placeholder box).
+ * The pure evaluator never touches URLs — only this renderer entry point does.
+ */
+export type ResourceResolver = (resourceId: string) => string | null
+
 /** Escapes a string for safe use inside a double- or single-quoted XML attribute. */
 export function escapeXmlAttribute(value: string): string {
   return value
@@ -39,7 +46,7 @@ function primitiveToSvgMarkup(node: PrimitiveNode): string {
   return `${markup}/>`
 }
 
-function groupToSvgMarkup(node: GroupNode): string {
+function groupToSvgMarkup(node: GroupNode, resolveResource: ResourceResolver | undefined): string {
   const natural = groupNaturalSize(node.children)
   const sx = natural.width === 0 ? 1 : node.width / natural.width
   const sy = natural.height === 0 ? 1 : node.height / natural.height
@@ -48,12 +55,13 @@ function groupToSvgMarkup(node: GroupNode): string {
     `translate(${node.center.x} ${node.center.y}) rotate(${node.rotation}) scale(${sx} ${sy})`
   )}${attr('opacity', node.opacity)}>`
   for (const child of node.children) {
-    markup += nodeToSvgMarkup(child)
+    markup += nodeToSvgMarkup(child, resolveResource)
   }
   return `${markup}</g>`
 }
 
-function imageToSvgMarkup(node: ImageNode): string {
+/** Dashed placeholder box shown while an image's resource is missing or corrupt. */
+function imagePlaceholderMarkup(node: ImageNode): string {
   return (
     `<rect${attr('x', -node.width / 2)}${attr('y', -node.height / 2)}` +
     `${attr('width', node.width)}${attr('height', node.height)}` +
@@ -63,6 +71,19 @@ function imageToSvgMarkup(node: ImageNode): string {
     placementAttrs(node.center, node.rotation, node.opacity) +
     '/>'
   )
+}
+
+function imageToSvgMarkup(node: ImageNode, resolveResource: ResourceResolver | undefined): string {
+  const href = resolveResource?.(node.resourceId) ?? null
+  if (!href) return imagePlaceholderMarkup(node)
+  let markup =
+    `<image${attr('href', href)}` +
+    `${attr('x', -node.width / 2)}${attr('y', -node.height / 2)}` +
+    `${attr('width', node.width)}${attr('height', node.height)}` +
+    attr('preserveAspectRatio', 'none')
+  if (!node.smoothing) markup += attr('style', 'image-rendering: pixelated')
+  markup += placementAttrs(node.center, node.rotation, node.opacity)
+  return `${markup}/>`
 }
 
 function symbolToSvgMarkup(node: SymbolNode): string {
@@ -81,16 +102,18 @@ function symbolToSvgMarkup(node: SymbolNode): string {
  * SVG markup for one evaluated node — the pure, string-based counterpart of
  * the stage. Primitives keep their historical byte-for-byte markup; groups
  * render as a nested `<g>` with the placed scale folded into the transform
- * (children are never re-encoded); images and symbols render as dashed
- * placeholder boxes until their real rendering lands. Every attribute value
- * is XML-escaped, so document data can never inject markup.
+ * (children are never re-encoded); images render as `<image href>` when the
+ * injected resolver yields a URL, and as a dashed placeholder box otherwise
+ * (no resolver, missing or corrupt resource); symbols stay dashed placeholder
+ * boxes until the asset-library phase. Every attribute value is XML-escaped,
+ * so document data can never inject markup.
  */
-export function nodeToSvgMarkup(node: SceneNode): string {
+export function nodeToSvgMarkup(node: SceneNode, resolveResource?: ResourceResolver): string {
   switch (node.type) {
     case 'group':
-      return groupToSvgMarkup(node)
+      return groupToSvgMarkup(node, resolveResource)
     case 'image':
-      return imageToSvgMarkup(node)
+      return imageToSvgMarkup(node, resolveResource)
     case 'symbol':
       return symbolToSvgMarkup(node)
     case 'primitive':
@@ -102,11 +125,14 @@ export function nodeToSvgMarkup(node: SceneNode): string {
  * Concatenates evaluated layers into one SVG fragment in paint order,
  * usable as innerHTML of an SVG group element.
  */
-export function renderLayersToSvgMarkup(layers: RenderLayer[]): string {
+export function renderLayersToSvgMarkup(
+  layers: RenderLayer[],
+  resolveResource?: ResourceResolver
+): string {
   let markup = ''
   for (const layer of layers) {
     for (const node of layer.nodes) {
-      markup += nodeToSvgMarkup(node)
+      markup += nodeToSvgMarkup(node, resolveResource)
     }
   }
   return markup

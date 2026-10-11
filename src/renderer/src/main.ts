@@ -5,6 +5,7 @@ import { createStarterDocument } from '@shared/starterDocument'
 import { el } from './dom'
 import { Editor } from './editor'
 import type { Tool } from './editor'
+import { importImageBytes, importImageViaDialog } from './imageImport'
 import { PropertiesView } from './properties'
 import { fileLabel, newDocument, openDocument, saveDocument, showStartupDialog } from './projects'
 import { StageView } from './stage'
@@ -51,6 +52,9 @@ function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
   toolbar.appendChild(el('span', 'sep'))
 
   const docs = el('div', 'group')
+  const importButton = el('button', undefined, 'Import Image…')
+  importButton.title = 'Import an image onto the stage (Ctrl+I)'
+  importButton.addEventListener('click', () => void importImageViaDialog(editor))
   const newButton = el('button', undefined, 'New')
   newButton.title = 'Start a new project'
   newButton.addEventListener('click', () => void newDocument(editor))
@@ -63,7 +67,16 @@ function buildToolbar(editor: Editor, layout: HTMLElement): HTMLElement {
   const saveAsButton = el('button', undefined, 'Save As…')
   saveAsButton.title = 'Save the project to a new file (Ctrl+Shift+S)'
   saveAsButton.addEventListener('click', () => void saveDocument(editor, { as: true }))
-  docs.append(newButton, openButton, saveButton, saveAsButton)
+  const purgeButton = el('button', undefined, 'Purge Unused')
+  purgeButton.title = 'Remove resources no object references from the session store'
+  purgeButton.addEventListener('click', () => {
+    void window.api.purgeUnusedResources(editor.document).then((result) => {
+      editor.showMessage(
+        result.removed === 0 ? 'No unused resources' : `Purged ${result.removed} unused resource(s)`
+      )
+    })
+  })
+  docs.append(importButton, newButton, openButton, saveButton, saveAsButton, purgeButton)
   toolbar.appendChild(docs)
 
   editor.onUiChange(() => {
@@ -139,6 +152,9 @@ function registerKeyboard(editor: Editor, stageView: StageView): void {
       } else if (key === 'o') {
         event.preventDefault()
         void openDocument(editor)
+      } else if (key === 'i') {
+        event.preventDefault()
+        void importImageViaDialog(editor)
       } else if (inTextField) {
         // Let native text undo/redo keep working inside fields.
         return
@@ -237,6 +253,22 @@ function registerKeyboard(editor: Editor, stageView: StageView): void {
   })
 }
 
+/** OS drag-drop of image files onto the workspace imports them at the drop point. */
+function registerFileDrop(editor: Editor, workspace: HTMLElement, stageView: StageView): void {
+  workspace.addEventListener('dragover', (event) => {
+    event.preventDefault()
+  })
+  workspace.addEventListener('drop', (event) => {
+    event.preventDefault()
+    const file = event.dataTransfer?.files?.[0]
+    if (!file) return
+    const point = stageView.toStagePoint(event)
+    void file
+      .arrayBuffer()
+      .then((buffer) => importImageBytes(editor, file.name, new Uint8Array(buffer), point))
+  })
+}
+
 async function bootstrap(): Promise<void> {
   const root = document.querySelector<HTMLDivElement>('#app')
   if (!root) throw new Error('Missing #app root element')
@@ -260,6 +292,7 @@ async function bootstrap(): Promise<void> {
   new TimelineView(editor, timelineHost)
   new PropertiesView(editor, propertiesHost)
   registerKeyboard(editor, stageView)
+  registerFileDrop(editor, workspace, stageView)
   showStartupDialog(editor)
 
   // Debounced autosave to the project file on every document change.

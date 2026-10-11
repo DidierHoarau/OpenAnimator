@@ -583,6 +583,15 @@ input:disabled {
   color: var(--muted);
 }
 
+.panel-file-name {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: none;
+}
+
 .panel-empty {
   color: var(--muted);
   font-size: 12px;

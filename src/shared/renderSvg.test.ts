@@ -146,6 +146,50 @@ describe('renderSvg', () => {
     expect(symbolMarkup).toContain('opacity="0.25"')
   })
 
+  it('renders an image node as <image href> when the resolver yields a URL', () => {
+    const resolve = (id: string): string | null => (id === 'res-1' ? 'blob:img-1' : null)
+    expect(nodeToSvgMarkup(image(), resolve)).toBe(
+      '<image href="blob:img-1" x="-40" y="-30" width="80" height="60" ' +
+        'preserveAspectRatio="none" transform="translate(40 30) rotate(0)" opacity="1"/>'
+    )
+  })
+
+  it('falls back to the placeholder when the resource is missing', () => {
+    const resolve = (): string | null => null
+    expect(nodeToSvgMarkup(image(), resolve)).toBe(nodeToSvgMarkup(image()))
+  })
+
+  it('marks unsmoothed images as pixelated', () => {
+    const resolve = (): string | null => 'blob:img-1'
+    const markup = nodeToSvgMarkup(image({ smoothing: false }), resolve)
+    expect(markup).toContain('style="image-rendering: pixelated"')
+    expect(nodeToSvgMarkup(image({ smoothing: true }), resolve)).not.toContain('pixelated')
+  })
+
+  it('escapes hostile URLs so they cannot break out of the href attribute', () => {
+    const hostile = '" onerror="alert(1)'
+    const markup = nodeToSvgMarkup(image(), () => hostile)
+    // The quotes are escaped, so the whole string stays one attribute value.
+    expect(markup).toContain('href="&quot; onerror=&quot;alert(1)"')
+    expect(markup.startsWith('<image href="&quot;')).toBe(true)
+  })
+
+  it('threads the resolver into group children', () => {
+    const groupWithImage: GroupNode = {
+      type: 'group',
+      id: 'g2',
+      center: { x: 0, y: 0 },
+      width: 80,
+      height: 60,
+      rotation: 0,
+      opacity: 1,
+      children: [image({ center: { x: 0, y: 0 } })]
+    }
+    const markup = nodeToSvgMarkup(groupWithImage, () => 'blob:img-1')
+    expect(markup).toContain('<image href="blob:img-1"')
+    expect(nodeToSvgMarkup(groupWithImage)).toContain('stroke-dasharray')
+  })
+
   it('concatenates layers and their nodes in paint order', () => {
     const layers: RenderLayer[] = [
       { layerId: 'l1', name: 'bottom', nodes: [shape({ id: 'a' })] },

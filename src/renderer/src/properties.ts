@@ -5,10 +5,12 @@ import {
   findNearestNodeKeyframeIndex
 } from '@shared/document'
 import type { EasingName } from '@shared/easing'
-import type { SceneNode } from '@shared/model'
+import type { ImageNode, SceneNode } from '@shared/model'
 
 import type { Editor } from './editor'
 import { el } from './dom'
+import type { ImageImportDeps } from './imageImport'
+import { pickImageFile, prepareImageResource } from './imageImport'
 import {
   loadSectionState,
   saveSectionState,
@@ -65,14 +67,15 @@ class PanelSection {
 
 /**
  * Right panel with collapsible sections: "Layer" operations on the selected
- * object (keyframe add/remove and tweening at the current frame), the node
- * properties of the selection — the "Shape" section for primitives (fill and
- * outline rows) and the "Group" section for groups (ungroup and the upcoming
- * symbol action). Both node sections share the same transform inputs
- * (position, size, rotation, opacity). Playback and frame controls live at
- * the top of the timeline; layers and per-object keyframes are managed in the
- * timeline tree. The node sections only appear while a matching node is
- * selected.
+ * object (keyframe add/remove and tweening at the current frame), and the
+ * node properties of the selection — the "Shape" section for primitives (fill
+ * and outline rows), the "Image" section for images (source file, native-size
+ * reset and replace-source) and the "Group" section for groups (ungroup and
+ * the upcoming symbol action). All node sections share the same transform
+ * inputs (position, size, rotation, opacity). Playback and frame controls
+ * live at the top of the timeline; layers and per-object keyframes are
+ * managed in the timeline tree. The node sections only appear while a
+ * matching node is selected.
  */
 export class PropertiesView {
   private readonly editor: Editor
@@ -98,10 +101,19 @@ export class PropertiesView {
   private readonly strokeColor: HTMLInputElement
   private readonly strokeWidth: HTMLInputElement
   private readonly ungroupButton: HTMLButtonElement
+  private readonly imageFileLabel: HTMLElement
+  private readonly nativeSizeButton: HTMLButtonElement
+  private readonly replaceSourceButton: HTMLButtonElement
+  private readonly imageImportDeps: ImageImportDeps
   private lastNodeId: string | null = null
 
-  constructor(editor: Editor, container: HTMLElement) {
+  constructor(
+    editor: Editor,
+    container: HTMLElement,
+    options: { imageImportDeps?: ImageImportDeps } = {}
+  ) {
     this.editor = editor
+    this.imageImportDeps = options.imageImportDeps ?? {}
     this.sectionState = loadSectionState(window.localStorage)
 
     const scroll = el('div', 'props-scroll')
@@ -242,7 +254,33 @@ export class PropertiesView {
     groupActions.append(this.ungroupButton, symbolButton)
     group.content.append(groupActions)
 
-    scroll.append(layer.root, shape.root, group.root)
+    // Image properties, visible only while an image node is selected.
+    const image = this.createSection('image', 'Image')
+    const imageFileRow = this.row(image.content, 'Source')
+    this.imageFileLabel = el('span', 'panel-file-name')
+    this.imageFileLabel.title = 'File the image was imported from'
+    imageFileRow.appendChild(this.imageFileLabel)
+    const imageActions = el('div', 'panel-buttons')
+    this.nativeSizeButton = this.button(
+      'Native size',
+      'Reset the placed size to the image natural size',
+      () => {
+        this.editor.updateSelectedNode((current) => {
+          if (current.type !== 'image') return
+          current.width = current.naturalWidth
+          current.height = current.naturalHeight
+        })
+      }
+    )
+    this.replaceSourceButton = this.button(
+      'Replace source…',
+      'Pick another image file and re-point the selected image at it (keeps the placed size)',
+      () => void this.replaceImageSource()
+    )
+    imageActions.append(this.nativeSizeButton, this.replaceSourceButton)
+    image.content.append(imageActions)
+
+    scroll.append(layer.root, shape.root, image.root, group.root)
     container.appendChild(scroll)
 
     editor.onDocChange(() => this.render())
@@ -326,6 +364,27 @@ export class PropertiesView {
     })
   }
 
+  /**
+   * Re-points the selected image at another file: the picked image is
+   * prepared (decode, re-encode, store) and the node's resourceId, natural
+   * size and name update in one undo step — the placed size is kept.
+   */
+  private async replaceImageSource(): Promise<void> {
+    const picked = await pickImageFile()
+    if (!picked) return
+    const prepared = await prepareImageResource(this.editor, picked.fileName, picked.bytes, this.imageImportDeps)
+    if (!prepared) return
+    const updated = this.editor.updateSelectedNode((current) => {
+      if (current.type !== 'image') return
+      const image = current as ImageNode
+      image.resourceId = prepared.resourceId
+      image.naturalWidth = Math.max(1, prepared.natural.width)
+      image.naturalHeight = Math.max(1, prepared.natural.height)
+      image.name = prepared.name
+    })
+    if (updated) this.render()
+  }
+
   render(): void {
     this.renderLayerSection()
     this.renderNodeSection()
@@ -356,18 +415,24 @@ export class PropertiesView {
     const layer = editor.currentLayer
     const editable = node !== null && layer !== undefined && !layer.locked && layer.visible
     const isPrimitive = node?.type === 'primitive'
+    const isImage = node?.type === 'image'
     const isGroup = node?.type === 'group'
     // Mutually exclusive: the section matches the primary selected node kind.
     this.sections.get('shape')?.setVisible(isPrimitive)
+    this.sections.get('image')?.setVisible(isImage)
     this.sections.get('group')?.setVisible(isGroup)
     if (!node) {
       this.lastNodeId = null
       return
     }
 
-    // The transform rows are shared by both node sections; park them in the
+    // The transform rows are shared by the node sections; park them in the
     // one that is currently visible.
-    const host = isGroup ? this.sections.get('group')!.content : this.sections.get('shape')!.content
+    const host = isGroup
+      ? this.sections.get('group')!.content
+      : isImage
+        ? this.sections.get('image')!.content
+        : this.sections.get('shape')!.content
     if (this.transformRows.parentElement !== host) {
       host.insertBefore(this.transformRows, host.firstChild)
     }
@@ -388,6 +453,11 @@ export class PropertiesView {
 
     this.ungroupButton.disabled = !editable
 
+    if (node.type === 'image') {
+      this.imageFileLabel.textContent = node.name ?? '(unnamed image)'
+      this.nativeSizeButton.disabled = !editable
+      this.replaceSourceButton.disabled = !editable
+    }
     if (node.type === 'primitive') {
       const fill = normalizeHex(node.fill, DEFAULT_FILL)
       if (!keepFocused(this.fillColor)) this.fillColor.value = fill

@@ -28,6 +28,7 @@ import { groupNodes, ungroupNode } from '@shared/groups'
 import { cloneNode } from '@shared/model'
 import type { AnimatorDocument, GroupNode, Layer, SceneNode } from '@shared/model'
 import { createId } from '@shared/document'
+import { ResourceCache } from './resourceCache'
 
 export type Tool = 'select' | 'rect' | 'ellipse' | 'hand'
 
@@ -45,6 +46,8 @@ export class Editor {
   static readonly HISTORY_LIMIT = 100
 
   document: AnimatorDocument
+  /** Content-addressed binary resources of the session (image blobs etc.). */
+  readonly resources = new ResourceCache()
   currentFrame = 0
   currentLayerId: string
   /** Selected node ids in click order; the last one is the primary selection. */
@@ -127,7 +130,8 @@ export class Editor {
     for (const listener of this.uiListeners) listener()
   }
 
-  private showMessage(message: string): void {
+  /** Surfaces a transient status-bar message (import feedback, hints…). */
+  showMessage(message: string): void {
     for (const listener of this.messageListeners) listener(message)
   }
 
@@ -194,9 +198,10 @@ export class Editor {
     this.showMessage(message)
   }
 
-  setDocument(document: AnimatorDocument): void {
+  setDocument(document: AnimatorDocument, resources: Record<string, Uint8Array> = {}): void {
     this.pause()
     this.document = document
+    this.resources.reset(resources)
     this.currentLayerId = document.layers[0]?.id ?? ''
     this.currentFrame = 0
     this.selectedNodeIds = []
