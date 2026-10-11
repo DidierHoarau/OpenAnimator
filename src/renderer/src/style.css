@@ -456,7 +456,13 @@ input:disabled {
   transform: translateY(-50%);
   border-radius: 3px;
   opacity: 0.5;
-  pointer-events: none;
+  /* Draggable: dropping on a frame moves the object's keyframes there. */
+  cursor: grab;
+}
+
+.tl-shape-span.dragging,
+.tl-filmstrip-cell.dragging {
+  opacity: 0.35;
 }
 
 .tl-icon {
@@ -552,6 +558,10 @@ input:disabled {
 
 .tl-filmstrip-cell {
   overflow: hidden;
+}
+
+.tl-filmstrip-cell[draggable='true'] {
+  cursor: grab;
 }
 
 .tl-filmstrip-thumb {

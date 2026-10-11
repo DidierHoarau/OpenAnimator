@@ -237,6 +237,70 @@ describe('TimelineView', () => {
     expect(groupRow().querySelector('.tl-shape-kf')?.textContent).toBe('\u00d7')
   })
 
+  it('moves an object to another frame by dragging its span bar', () => {
+    editor.addNode(rect('a'))
+    // Extend the authored timeline first so there is room to move.
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    expandFirstLayer()
+
+    const shapeRow = container.querySelector<HTMLElement>('.tl-shape-row')!
+    const track = shapeRow.querySelector<HTMLElement>('.tl-track')!
+    const bar = shapeRow.querySelector<HTMLElement>('.tl-shape-span')!
+    expect(bar.getAttribute('draggable')).toBe('true')
+
+    bar.dispatchEvent(new Event('dragstart', { bubbles: true }))
+    expect(bar.classList.contains('dragging')).toBe(true)
+    // Dropping 3.5 frame widths into the track moves the keyframes to frame 3.
+    track.getBoundingClientRect = () => ({ left: 180 }) as unknown as DOMRect
+    track.dispatchEvent(new MouseEvent('drop', { bubbles: true, clientX: 180 + 3 * 14 + 7 }))
+
+    const layer = getLayer(editor.document, editor.currentLayerId)!
+    expect(layer.keyframes.map((keyframe) => keyframe.frame)).toEqual([3])
+    expect(bar.classList.contains('dragging')).toBe(false)
+    // The move is one undo step.
+    editor.undo()
+    expect(getLayer(editor.document, editor.currentLayerId)!.keyframes.map((k) => k.frame)).toEqual([
+      0
+    ])
+  })
+
+  it('moves an object to a frame number through the context menu', () => {
+    editor.addNode(rect('a'))
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    expandFirstLayer()
+
+    const shapeRow = container.querySelector<HTMLElement>('.tl-shape-row')!
+    shapeRow.dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, clientX: 12, clientY: 12 })
+    )
+    const menu = container.querySelector<HTMLElement>('.tl-context-menu')!
+    const moveInput = menu.querySelector<HTMLInputElement>('.tl-context-move input')!
+    // Prefilled with the object's first keyframe (1-based) and movable.
+    expect(moveInput.value).toBe('1')
+    expect(moveInput.disabled).toBe(false)
+
+    moveInput.value = '4'
+    moveInput.dispatchEvent(new Event('change', { bubbles: true }))
+    const layer = getLayer(editor.document, editor.currentLayerId)!
+    expect(layer.keyframes.map((keyframe) => keyframe.frame)).toEqual([3])
+    // The moved object is selected for follow-up edits and the menu closes.
+    expect(editor.selectedNodeIds).toEqual(['a'])
+    expect(menu.classList.contains('hidden')).toBe(true)
+  })
+
+  it('offers Move to frame only for object rows and drawing layers', () => {
+    const row = container.querySelector<HTMLElement>('.tl-row')!
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 12, clientY: 12 }))
+    const moveRow = container.querySelector<HTMLElement>('.tl-context-menu .tl-context-move')!
+    expect(moveRow.classList.contains('hidden')).toBe(true)
+  })
+
   it('seeks by pointer position on tracks and keys only the target object', () => {
     editor.addNode(rect('a'))
     editor.addNode(rect('b'))
@@ -362,6 +426,65 @@ describe('TimelineView — drawing layers', () => {
       new MouseEvent('pointerdown', { bubbles: true, clientX: 180 + 4 * 14 + 7 })
     )
     expect(editor.currentFrame).toBe(4)
+  })
+
+  it('moves a cell to another frame by dragging its filmstrip span', () => {
+    addDrawingLayer()
+    editor.resources.put('res-1', new Uint8Array([1, 2, 3]))
+    // One cell at frame 1, held afterwards.
+    editor.commitStroke('res-1', 1)
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    ;[...container.querySelectorAll<HTMLElement>('.tl-toggle')][1].click()
+
+    const filmstrip = container.querySelector<HTMLElement>('.tl-filmstrip-row')!
+    const track = filmstrip.querySelector<HTMLElement>('.tl-track')!
+    const cells = [...filmstrip.querySelectorAll<HTMLElement>('.tl-filmstrip-cell')]
+    const blank = cells.find((cell) => cell.classList.contains('tl-cell-blank'))!
+    const held = cells.find((cell) => !cell.classList.contains('tl-cell-blank'))!
+    // Only cells with content can be dragged.
+    expect(blank.getAttribute('draggable')).toBeNull()
+    expect(held.getAttribute('draggable')).toBe('true')
+
+    held.dispatchEvent(new Event('dragstart', { bubbles: true }))
+    expect(held.classList.contains('dragging')).toBe(true)
+    track.getBoundingClientRect = () => ({ left: 180 }) as unknown as DOMRect
+    track.dispatchEvent(new MouseEvent('drop', { bubbles: true, clientX: 180 + 4 * 14 + 7 }))
+
+    const layer = getLayer(editor.document, editor.currentLayerId)! as DrawingLayer
+    expect(layer.cells).toEqual([{ frame: 4, resourceId: 'res-1' }])
+    expect(held.classList.contains('dragging')).toBe(false)
+    // One undo step restores the original frame.
+    editor.undo()
+    expect((getLayer(editor.document, editor.currentLayerId)! as DrawingLayer).cells).toEqual([
+      { frame: 1, resourceId: 'res-1' }
+    ])
+  })
+
+  it('moves the playhead cell to a frame number through the context menu', () => {
+    const layer = addDrawingLayer()
+    editor.resources.put('res-1', new Uint8Array([1, 2, 3]))
+    editor.commitStroke('res-1', 1)
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    const row = [...container.querySelectorAll<HTMLElement>('.tl-row')].find(
+      (candidate) => candidate.dataset.layerId === layer.id
+    )!
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 12, clientY: 12 }))
+    const menu = container.querySelector<HTMLElement>('.tl-context-menu')!
+    const moveInput = menu.querySelector<HTMLInputElement>('.tl-context-move input')!
+    expect(moveInput.value).toBe('2')
+
+    moveInput.value = '5'
+    moveInput.dispatchEvent(new Event('change', { bubbles: true }))
+    expect((getLayer(editor.document, layer.id)! as DrawingLayer).cells).toEqual([
+      { frame: 4, resourceId: 'res-1' }
+    ])
+    expect(menu.classList.contains('hidden')).toBe(true)
   })
 
   it('shows cell operations and resolution in the drawing-layer context menu', () => {
