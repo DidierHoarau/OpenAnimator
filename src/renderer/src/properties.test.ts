@@ -79,11 +79,21 @@ describe('PropertiesView sections', () => {
     new PropertiesView(editor, container)
   })
 
-  it('renders the layer, shape, path, text, image, group, symbol and draw sections', () => {
+  it('renders the layer, shape, path, text, image, group, symbol, draw and cell sections', () => {
     const titles = [...container.querySelectorAll('.panel-section-title')].map((node) =>
       node.textContent?.trim()
     )
-    expect(titles).toEqual(['Layer', 'Shape', 'Path', 'Text', 'Image', 'Group', 'Symbol', 'Draw'])
+    expect(titles).toEqual([
+      'Layer',
+      'Shape',
+      'Path',
+      'Text',
+      'Image',
+      'Group',
+      'Symbol',
+      'Draw',
+      'Cell'
+    ])
   })
 
   it('shows the shape section for primitives, the image section for images and the group section for groups', () => {
@@ -403,5 +413,161 @@ describe('PropertiesView — Draw section', () => {
     expect(layer.cells.map((cell) => cell.frame)).toEqual([0, 3])
     // F6 duplicates the previous cell: frame 3 holds the painted content.
     expect(layer.cells[1].resourceId).toBe('res-1')
+  })
+})
+
+describe('PropertiesView — Cell section', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24), {
+      createTransparentPng: async () => new Uint8Array([0]),
+      storeResource: async () => 'res-blank'
+    })
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container)
+  })
+
+  const cellSection = (): HTMLElement => {
+    const section = [...container.querySelectorAll('.panel-section')].find(
+      (candidate) => candidate.querySelector('.panel-section-title')?.textContent?.trim() === 'Cell'
+    )
+    if (!section) throw new Error('missing section Cell')
+    return section as HTMLElement
+  }
+
+  const numberInputs = (): { start: HTMLInputElement; end: HTMLInputElement; move: HTMLInputElement } => {
+    const inputs = [
+      ...cellSection().querySelectorAll<HTMLInputElement>('input[type="number"]')
+    ]
+    return { start: inputs[0], end: inputs[1], move: inputs[2] }
+  }
+
+  const drawingLayer = (): DrawingLayer =>
+    editor.document.layers.find(
+      (candidate): candidate is DrawingLayer => candidate.kind === 'drawing'
+    )!
+
+  /** Grows the authored timeline past `frame` so cells can move there. */
+  const extendTo = (frame: number): void => {
+    while (editor.duration <= frame) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+  }
+
+  it('shows the visible range of the cell under the playhead', () => {
+    expect(cellSection().classList.contains('hidden')).toBe(true)
+
+    editor.addLayerAtBottom('drawing')
+    expect(cellSection().classList.contains('hidden')).toBe(false)
+    const range = (): string =>
+      cellSection().querySelector('.panel-suffix')!.textContent ?? ''
+    expect(range()).toBe('no cell here')
+    expect(numberInputs().start.disabled).toBe(true)
+
+    editor.commitStroke('res-1', 0)
+    expect(range()).toBe('frames 1\u2013end')
+    expect(numberInputs().start.value).toBe('1')
+    expect(numberInputs().start.disabled).toBe(false)
+
+    // A second cell ends the hold of the first.
+    extendTo(5)
+    editor.commitStroke('res-2', 3)
+    editor.seekToFrame(1)
+    expect(range()).toBe('frames 1\u20133')
+    expect(numberInputs().end.value).toBe('3')
+  })
+
+  it('moves the cell by editing its start frame and the playhead follows', () => {
+    editor.addLayerAtBottom('drawing')
+    editor.commitStroke('res-1', 0)
+    extendTo(5)
+
+    const { start } = numberInputs()
+    start.value = '4'
+    start.dispatchEvent(new Event('change', { bubbles: true }))
+
+    expect(drawingLayer().cells.map((cell) => cell.frame)).toEqual([3])
+    expect(editor.currentFrame).toBe(3)
+    expect(cellSection().querySelector('.panel-suffix')!.textContent).toBe('frames 4\u2013end')
+  })
+
+  it('retimes a held cell by editing its end frame', async () => {
+    editor.addLayerAtBottom('drawing')
+    editor.commitStroke('res-1', 0)
+    extendTo(5)
+    editor.seekToFrame(1)
+
+    const { end } = numberInputs()
+    end.value = '2'
+    end.dispatchEvent(new Event('change', { bubbles: true }))
+    // The retime stores a transparent cell: an async step.
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+
+    // Shrinking the last cell inserts a transparent cell after the new end,
+    // so the painted cell stops holding at frame 2.
+    const frames = drawingLayer().cells.map((cell) => cell.frame)
+    expect(frames).toEqual([0, 2])
+    expect(drawingLayer().cells[1].resourceId).not.toBe('res-1')
+    expect(cellSection().querySelector('.panel-suffix')!.textContent).toBe('frames 1\u20132')
+  })
+
+  it('moves the cell to a frame from its Move to input', () => {
+    editor.addLayerAtBottom('drawing')
+    editor.commitStroke('res-1', 2)
+    extendTo(5)
+    editor.seekToFrame(4)
+
+    const { move } = numberInputs()
+    move.value = '6'
+    move.dispatchEvent(new Event('change', { bubbles: true }))
+
+    expect(drawingLayer().cells.map((cell) => cell.frame)).toEqual([5])
+    expect(editor.currentFrame).toBe(5)
+  })
+})
+
+describe('PropertiesView — Layer move', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24))
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container)
+  })
+
+  it('moves the selection to a frame from the Layer section', () => {
+    editor.addNode(rect('a', 10, 10))
+    while (editor.duration <= 5) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+
+    const section = sectionByTitle(container, 'Layer')
+    const input = section.querySelector<HTMLInputElement>('input[type="number"]')!
+    expect(input.disabled).toBe(false)
+    expect(input.value).toBe('1')
+
+    input.value = '4'
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+    const frames = (): number[] =>
+      editor.currentLayer!.keyframes
+        .filter((keyframe) => keyframe.nodes.some((node) => node.id === 'a'))
+        .map((keyframe) => keyframe.frame)
+    expect(frames()).toEqual([3])
+    expect(input.value).toBe('4')
+
+    // One undo step restores the original timing.
+    editor.undo()
+    expect(frames()).toEqual([0])
   })
 })
