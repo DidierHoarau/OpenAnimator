@@ -1,5 +1,5 @@
 /** Identifiers of the right-panel sections. */
-export type SectionId = 'layer' | 'shape' | 'image' | 'group' | 'symbol'
+export type SectionId = 'layer' | 'shape' | 'image' | 'group' | 'symbol' | 'draw'
 
 /** Expanded/collapsed state of every panel section. */
 export type SectionState = Record<SectionId, boolean>
@@ -17,7 +17,8 @@ export const DEFAULT_SECTION_STATE: SectionState = {
   shape: true,
   image: true,
   group: true,
-  symbol: true
+  symbol: true,
+  draw: true
 }
 
 const SECTION_IDS = Object.keys(DEFAULT_SECTION_STATE) as SectionId[]

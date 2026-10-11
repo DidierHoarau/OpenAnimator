@@ -76,13 +76,44 @@ export interface Keyframe {
   tween?: KeyframeTween
 }
 
-export interface Layer {
+export interface LayerBase {
   id: string
   name: string
   visible: boolean
   locked: boolean
+}
+
+/** Pose/tween layer: content is a tree of tweenable SceneNodes. */
+export interface ObjectLayer extends LayerBase {
+  kind: 'object'
   /** Keyframes sorted by ascending `frame`. */
   keyframes: Keyframe[]
+}
+
+/** One raster cell of a drawing layer: a PNG resource holding from its
+ * `frame` until the next cell; after the last cell the layer is blank. */
+export interface DrawingCell {
+  frame: number
+  resourceId: string
+}
+
+/** Flipbook layer: one raster cell per frame span, never tweened. */
+export interface DrawingLayer extends LayerBase {
+  kind: 'drawing'
+  /** Cell buffers are `stage size × resolutionScale` pixels (default 1). */
+  resolutionScale: number
+  /** Cells sorted by ascending `frame`; a cell holds until the next one. */
+  cells: DrawingCell[]
+}
+
+export type Layer = ObjectLayer | DrawingLayer
+
+export function isObjectLayer(layer: Layer): layer is ObjectLayer {
+  return layer.kind === 'object'
+}
+
+export function isDrawingLayer(layer: Layer): layer is DrawingLayer {
+  return layer.kind === 'drawing'
 }
 
 /** The authoring document. `layers[0]` is the topmost layer. */

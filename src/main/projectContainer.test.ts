@@ -40,7 +40,9 @@ function documentWithNodes(nodes: SceneNode[]): AnimatorDocument {
     background: '#10151b',
     layers: [{ id: 'layer-1', name: 'Layer 1', visible: true, locked: false, keyframes: [{ frame: 0, shapes: [] }] }]
   })
-  document.layers[0].keyframes[0].nodes.push(...nodes)
+  const layer = document.layers[0]
+  if (layer.kind !== 'object') throw new Error('expected an object layer')
+  layer.keyframes[0].nodes.push(...nodes)
   return document
 }
 
@@ -112,7 +114,9 @@ describe('packProject / parseProject — round trip', () => {
     const packed = packProject(document, resources([['a'.repeat(64), SAME_BYTES, 'png']]))
     const parsed = parseProject(packed)
     expect(parsed.resources.size).toBe(1)
-    expect(parsed.document.layers[0].keyframes[0].nodes.length).toBe(2)
+    const layer = parsed.document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    expect(layer.keyframes[0].nodes.length).toBe(2)
   })
 
   it('skips unreferenced resources (refcount walk)', () => {

@@ -2,8 +2,11 @@ import './style.css'
 
 import { createStarterDocument } from '@shared/starterDocument'
 
+import { isDrawingLayer } from '@shared/model'
+
+import { preloadDrawingCells } from './cellPreload'
 import { el } from './dom'
-import { Editor } from './editor'
+import { Editor, toolCompatibleWithLayer } from './editor'
 import type { Tool } from './editor'
 import { importImageBytes, importImageViaDialog } from './imageImport'
 import { LibraryView } from './library'
@@ -20,6 +23,8 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   const toolButtons: Array<[Tool, string, string]> = [
     ['select', 'Select', 'Select and move shapes (V)'],
     ['hand', 'Hand', 'Pan the stage view (H, or hold Space and drag)'],
+    ['brush', 'Brush', 'Paint on the current drawing layer (B)'],
+    ['eraser', 'Eraser', 'Erase on the current drawing layer (E)'],
     ['rect', 'Rectangle', 'Draw a rectangle (R)'],
     ['ellipse', 'Ellipse', 'Draw an ellipse (O)']
   ]
@@ -88,10 +93,18 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   docs.append(importButton, newButton, openButton, saveButton, saveAsButton, purgeButton)
   toolbar.appendChild(docs)
 
-  editor.onUiChange(() => {
-    for (const button of tools.querySelectorAll('button[data-tool]')) {
-      button.classList.toggle('active', button.getAttribute('data-tool') === editor.tool)
+  const updateTools = (): void => {
+    for (const button of tools.querySelectorAll<HTMLButtonElement>('button[data-tool]')) {
+      const tool = (button.getAttribute('data-tool') ?? 'select') as Tool
+      // Tools that cannot act on the current layer kind are dimmed, e.g. the
+      // brush on an object layer or the rectangle tool on a drawing layer.
+      button.disabled = !toolCompatibleWithLayer(tool, editor.currentLayer)
+      button.classList.toggle('active', tool === editor.tool)
     }
+  }
+  updateTools()
+  editor.onUiChange(() => {
+    updateTools()
     onion.classList.toggle('active', editor.onionSkin)
   })
   return toolbar
@@ -194,6 +207,22 @@ function registerKeyboard(editor: Editor, stageView: StageView): void {
       case 'H':
         editor.setTool('hand')
         break
+      case 'b':
+      case 'B':
+        editor.setTool('brush')
+        break
+      case 'e':
+      case 'E':
+        editor.setTool('eraser')
+        break
+      case '[':
+        event.preventDefault()
+        editor.setBrushSize(editor.brushSize - 1)
+        break
+      case ']':
+        event.preventDefault()
+        editor.setBrushSize(editor.brushSize + 1)
+        break
       case 'r':
       case 'R':
         editor.setTool('rect')
@@ -222,10 +251,22 @@ function registerKeyboard(editor: Editor, stageView: StageView): void {
         event.preventDefault()
         editor.insertFrameHere()
         break
-      case 'F6':
+      case 'F6': {
         event.preventDefault()
-        editor.insertKeyframeHere()
+        // Drawing layers key cells, object layers key their selected nodes.
+        const layer = editor.currentLayer
+        if (layer && isDrawingLayer(layer)) void editor.insertCellHere()
+        else editor.insertKeyframeHere()
         break
+      }
+      case 'F7': {
+        const layer = editor.currentLayer
+        if (layer && isDrawingLayer(layer)) {
+          event.preventDefault()
+          void editor.insertBlankCellHere()
+        }
+        break
+      }
       case 'F8':
         event.preventDefault()
         editor.saveSelectionAsSymbol()
@@ -313,6 +354,12 @@ async function bootstrap(): Promise<void> {
   registerKeyboard(editor, stageView)
   registerFileDrop(editor, workspace, stageView)
   showStartupDialog(editor)
+
+  // Warm the image cache for every drawing cell when playback starts so the
+  // first pass does not flash blank cells.
+  editor.onUiChange(() => {
+    if (editor.playing) preloadDrawingCells(editor)
+  })
 
   // Debounced autosave to the project file on every document change; the
   // scratch document of a symbol edit session is never autosaved.

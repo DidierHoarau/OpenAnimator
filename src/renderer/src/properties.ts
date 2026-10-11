@@ -2,9 +2,12 @@ import { formatHexColor, parseHexColor } from '@shared/color'
 import {
   findKeyframeAtFrame,
   findKeyframeIndexForFrame,
-  findNearestNodeKeyframeIndex
+  findNearestNodeKeyframeIndex,
+  findNextCellFrame,
+  findPreviousCellFrame
 } from '@shared/document'
 import type { EasingName } from '@shared/easing'
+import { isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { ImageNode, SceneNode } from '@shared/model'
 
 import type { Editor } from './editor'
@@ -107,6 +110,15 @@ export class PropertiesView {
   private readonly symbolNameLabel: HTMLElement
   private readonly editSymbolButton: HTMLButtonElement
   private readonly breakApartButton: HTMLButtonElement
+  private readonly brushColor: HTMLInputElement
+  private readonly brushHex: HTMLInputElement
+  private readonly brushSize: HTMLInputElement
+  private readonly brushOpacity: HTMLInputElement
+  private readonly onionToggle: HTMLInputElement
+  private readonly prevCellButton: HTMLButtonElement
+  private readonly duplicateCellButton: HTMLButtonElement
+  private readonly clearCellButton: HTMLButtonElement
+  private readonly nextCellButton: HTMLButtonElement
   private readonly imageImportDeps: ImageImportDeps
   private lastNodeId: string | null = null
 
@@ -308,7 +320,96 @@ export class PropertiesView {
     imageActions.append(this.nativeSizeButton, this.replaceSourceButton)
     image.content.append(imageActions)
 
-    scroll.append(layer.root, shape.root, image.root, group.root, symbol.root)
+    // Draw properties, visible only while a drawing layer is active.
+    const draw = this.createSection('draw', 'Draw')
+    const colorRow = this.row(draw.content, 'Color')
+    this.brushColor = el('input', 'color-swatch') as HTMLInputElement
+    this.brushColor.type = 'color'
+    this.brushColor.title = 'Brush color'
+    this.brushHex = el('input', 'hex-input') as HTMLInputElement
+    this.brushHex.type = 'text'
+    this.brushHex.title = 'Brush color as hex'
+    this.brushHex.placeholder = '#rrggbb'
+    this.brushColor.addEventListener('input', () => {
+      editor.setBrushColor(this.brushColor.value)
+      this.brushHex.value = this.brushColor.value
+    })
+    this.brushHex.addEventListener('change', () => {
+      const parsed = parseHexColor(this.brushHex.value)
+      if (parsed) {
+        const hex = formatHexColor(parsed)
+        editor.setBrushColor(hex)
+        this.brushColor.value = hex
+      } else {
+        this.render()
+      }
+    })
+    colorRow.append(this.brushColor, this.brushHex)
+
+    const sizeRow = this.row(draw.content, 'Size')
+    sizeRow.appendChild(el('span', 'panel-suffix', 'px'))
+    this.brushSize = el('input') as HTMLInputElement
+    this.brushSize.type = 'number'
+    this.brushSize.min = '1'
+    this.brushSize.max = '100'
+    this.brushSize.title = 'Brush and eraser size in stage pixels (1–100), [ and ] to adjust'
+    this.brushSize.addEventListener('change', () => {
+      const value = Number(this.brushSize.value)
+      if (!Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      editor.setBrushSize(value)
+    })
+    sizeRow.appendChild(this.brushSize)
+
+    const opacityRow = this.row(draw.content, 'Opacity')
+    this.brushOpacity = el('input') as HTMLInputElement
+    this.brushOpacity.type = 'number'
+    this.brushOpacity.min = '0'
+    this.brushOpacity.max = '1'
+    this.brushOpacity.step = '0.1'
+    this.brushOpacity.title = 'Brush stroke opacity'
+    this.brushOpacity.addEventListener('change', () => {
+      const value = Number(this.brushOpacity.value)
+      if (!Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      editor.setBrushOpacity(value)
+    })
+    opacityRow.appendChild(this.brushOpacity)
+
+    const onionRow = this.row(draw.content, 'Onion skin')
+    this.onionToggle = el('input') as HTMLInputElement
+    this.onionToggle.type = 'checkbox'
+    this.onionToggle.title = 'Show the neighbouring frames of the drawing through the current cell'
+    this.onionToggle.addEventListener('change', () => {
+      if (this.onionToggle.checked !== editor.onionSkin) editor.toggleOnionSkin()
+    })
+    onionRow.appendChild(this.onionToggle)
+
+    const cellActions = el('div', 'panel-buttons')
+    this.prevCellButton = this.button('◀ Prev', 'Go to the previous cell', () =>
+      editor.seekToPreviousCell()
+    )
+    this.duplicateCellButton = this.button(
+      'Duplicate',
+      'Insert a cell duplicating the previous buffer, for in-betweening (F6)',
+      () => void editor.insertCellHere()
+    )
+    this.clearCellButton = this.button(
+      'Clear',
+      'Clear the cell at the playhead (the previous cell stops holding through)',
+      () => void editor.clearCellHere()
+    )
+    this.nextCellButton = this.button('Next ▶', 'Go to the next cell', () =>
+      editor.seekToNextCell()
+    )
+    cellActions.append(this.prevCellButton, this.duplicateCellButton, this.clearCellButton, this.nextCellButton)
+    draw.content.append(cellActions)
+
+    scroll.append(layer.root, shape.root, image.root, group.root, symbol.root, draw.root)
     container.appendChild(scroll)
 
     editor.onDocChange(() => this.render())
@@ -416,22 +517,26 @@ export class PropertiesView {
   render(): void {
     this.renderLayerSection()
     this.renderNodeSection()
+    this.renderDrawSection()
   }
 
   private renderLayerSection(): void {
     const editor = this.editor
     const layer = editor.currentLayer
-    const editable = layer !== undefined && !layer.locked
+    // Keyframe/tween operations only make sense on object layers.
+    const editable = layer !== undefined && isObjectLayer(layer) && !layer.locked
     const selected = editor.primarySelectedNodeId
     // Object-level: the buttons act on the selected object's own keyframe.
     const ownsKeyframe =
       layer !== undefined &&
+      isObjectLayer(layer) &&
       selected !== null &&
       editor.hasNodeKeyframeAt(layer.id, selected, editor.currentFrame)
     this.keyframeButton.disabled = !editable || selected === null || ownsKeyframe
     this.removeKeyframeButton.disabled = !editable || !ownsKeyframe
     this.tweenButton.disabled = !editable || !ownsKeyframe
-    const keyframe = layer ? findKeyframeAtFrame(layer, editor.currentFrame) : undefined
+    const keyframe =
+      layer && isObjectLayer(layer) ? findKeyframeAtFrame(layer, editor.currentFrame) : undefined
     this.tweenButton.classList.toggle('active', ownsKeyframe && keyframe?.tween !== undefined)
     this.easingSelect.disabled = !ownsKeyframe || keyframe?.tween === undefined
     if (keyframe?.tween) this.easingSelect.value = keyframe.tween.easing
@@ -514,6 +619,25 @@ export class PropertiesView {
     this.lastNodeId = node.id
   }
 
+  /** Draw section: brush settings and cell ops while a drawing layer is active. */
+  private renderDrawSection(): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    const isDrawing = layer !== undefined && isDrawingLayer(layer)
+    this.sections.get('draw')?.setVisible(isDrawing)
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return
+
+    const keep = (input: HTMLInputElement): boolean => document.activeElement === input
+    const hex = normalizeHex(editor.brushColor, '#e6edf3')
+    if (!keep(this.brushColor)) this.brushColor.value = hex
+    if (!keep(this.brushHex)) this.brushHex.value = editor.brushColor
+    if (!keep(this.brushSize)) this.brushSize.value = String(editor.brushSize)
+    if (!keep(this.brushOpacity)) this.brushOpacity.value = String(editor.brushOpacity)
+    this.onionToggle.checked = editor.onionSkin
+    this.prevCellButton.disabled = findPreviousCellFrame(layer, editor.currentFrame) === null
+    this.nextCellButton.disabled = findNextCellFrame(layer, editor.currentFrame) === null
+  }
+
   /**
    * Pose shown for the selected node: the one in the keyframe active at the
    * current frame when present, otherwise its nearest existing pose (e.g. a
@@ -525,7 +649,7 @@ export class PropertiesView {
     const nodeId = editor.primarySelectedNodeId
     if (!nodeId) return null
     const layer = editor.currentLayer
-    if (!layer) return null
+    if (!layer || !isObjectLayer(layer)) return null
     const activeIndex = findKeyframeIndexForFrame(layer, editor.currentFrame)
     if (activeIndex !== -1) {
       const node = layer.keyframes[activeIndex].nodes.find((node) => node.id === nodeId)

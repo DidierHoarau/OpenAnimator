@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { createDocument, evaluateLayerAtFrame, getLayer } from '@shared/document'
-import type { Asset, GroupNode, ImageNode, PrimitiveNode, SceneNode, SymbolNode } from '@shared/model'
+import {
+  createDocument,
+  createDrawingLayer,
+  evaluateLayerAtFrame,
+  getLayer,
+  resolveCellAtFrame
+} from '@shared/document'
+import type { Asset, DrawingLayer, GroupNode, ImageNode, PrimitiveNode, SceneNode, SymbolNode } from '@shared/model'
 
 import { Editor } from './editor'
+import type { EditorDeps } from './editor'
 
 function rect(id: string): PrimitiveNode {
   return {
@@ -581,5 +588,252 @@ describe('Editor — symbol edit mode', () => {
       ])
     ]
     expect(childAt(editor, 0).center).toEqual({ x: 10, y: 20 })
+  })
+})
+
+
+describe('drawing layers and paint tools', () => {
+  const transparentBytes = new Uint8Array([0, 0, 0, 0])
+
+  function drawingEditor(deps: EditorDeps = {}): { editor: Editor; layer: DrawingLayer } {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = createDrawingLayer('Draw')
+    doc.layers.unshift(layer)
+    const editor = new Editor(doc, deps)
+    editor.currentLayerId = layer.id
+    return { editor, layer }
+  }
+
+  /** The live drawing layer of the editor's current document (undo/redo
+   * replace the document object, so captured aliases go stale). */
+  function liveLayer(editor: Editor, id: string): DrawingLayer {
+    const layer = getLayer(editor.document, id)
+    if (!layer || layer.kind !== 'drawing') throw new Error('drawing layer vanished')
+    return layer
+  }
+
+  /** Cell-op editor whose transparent buffers and stores are fully fake. */
+  function seededEditor(storeLog: Uint8Array[] = []): { editor: Editor; layer: DrawingLayer } {
+    let next = 0
+    return drawingEditor({
+      createTransparentPng: async (width, height) => {
+        expect(width).toBe(960)
+        expect(height).toBe(540)
+        return transparentBytes
+      },
+      storeResource: async (bytes) => {
+        storeLog.push(bytes)
+        next += 1
+        return `res-${next}`
+      }
+    })
+  }
+
+  it('restricts tools per layer kind and auto-switches on layer switches', () => {
+    const { editor } = drawingEditor()
+    const objectId = editor.document.layers[1].id
+    // Drawing layer: brush/eraser/hand only; incompatible requests are ignored.
+    expect(editor.tool).toBe('brush')
+    editor.setTool('eraser')
+    expect(editor.tool).toBe('eraser')
+    editor.setTool('select')
+    expect(editor.tool).toBe('eraser')
+    editor.setTool('rect')
+    expect(editor.tool).toBe('eraser')
+    // Hand is compatible with both kinds.
+    editor.setTool('hand')
+    expect(editor.tool).toBe('hand')
+
+    // Switching back to the object layer keeps Hand (compatible everywhere)...
+    editor.setCurrentLayer(objectId)
+    expect(editor.tool).toBe('hand')
+    // ...and an incompatible eraser request is ignored, not auto-switched.
+    editor.setTool('eraser')
+    expect(editor.tool).toBe('hand')
+
+    // On the object layer, select/rect work again and the brush is refused.
+    editor.setTool('select')
+    expect(editor.tool).toBe('select')
+    editor.setTool('rect')
+    expect(editor.tool).toBe('rect')
+    editor.setTool('brush')
+    expect(editor.tool).toBe('rect')
+  })
+
+  it('auto-switches the tool when the document changes under it', () => {
+    const { editor, layer } = drawingEditor()
+    expect(editor.tool).toBe('brush')
+    // e.g. an undo of the drawing layer's creation: the brush cannot stay.
+    editor.document.layers = editor.document.layers.filter((entry) => entry.id !== layer.id)
+    editor.setDocument(editor.document)
+    expect(editor.tool).toBe('select')
+  })
+
+  it('commits a stroke with auto-cell and a single undo step', () => {
+    const { editor, layer } = drawingEditor()
+    editor.seekToFrame(5)
+    expect(editor.commitStroke('paint-1', 5)).toBe(true)
+    expect(liveLayer(editor, layer.id).cells).toEqual([{ frame: 5, resourceId: 'paint-1' }])
+    expect(editor.duration).toBe(6)
+
+    editor.undo()
+    expect(liveLayer(editor, layer.id).cells).toHaveLength(0)
+    editor.redo()
+    expect(liveLayer(editor, layer.id).cells).toEqual([{ frame: 5, resourceId: 'paint-1' }])
+
+    // Painting again at the same frame replaces the cell content, still as
+    // its own undo step.
+    editor.commitStroke('paint-2', 5)
+    editor.undo()
+    expect(liveLayer(editor, layer.id).cells).toEqual([{ frame: 5, resourceId: 'paint-1' }])
+  })
+
+  it('refuses to commit strokes on other layer kinds or locked layers', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const editor = new Editor(doc)
+    expect(editor.commitStroke('paint-1')).toBe(false)
+
+    const locked = drawingEditor()
+    locked.layer.locked = true
+    expect(locked.editor.commitStroke('paint-1')).toBe(false)
+  })
+
+  it('insertCellHere duplicates the previous cell or seeds a transparent one', async () => {
+    const { editor, layer } = seededEditor()
+
+    // Blank layer: the duplicate falls back to a transparent buffer.
+    expect(await editor.insertCellHere()).toBe(true)
+    expect(liveLayer(editor, layer.id).cells).toEqual([{ frame: 0, resourceId: 'res-1' }])
+
+    // A painted cell at 0, then F6 at frame 3 duplicates its resource.
+    editor.commitStroke('paint-1', 0)
+    editor.seekToFrame(3)
+    expect(await editor.insertCellHere()).toBe(true)
+    expect(liveLayer(editor, layer.id).cells.map((cell) => cell.frame)).toEqual([0, 3])
+    expect(liveLayer(editor, layer.id).cells[1].resourceId).toBe('paint-1')
+
+    // A cell already at the playhead refuses the insertion.
+    expect(await editor.insertCellHere()).toBe(false)
+    expect(liveLayer(editor, layer.id).cells).toHaveLength(2)
+
+    // Everything above is one undo step per insertion.
+    editor.undo()
+    expect(liveLayer(editor, layer.id).cells.map((cell) => cell.frame)).toEqual([0])
+  })
+
+  it('insertBlankCellHere always seeds a transparent cell', async () => {
+    const { editor, layer } = seededEditor()
+    editor.commitStroke('paint-1', 0)
+    editor.seekToFrame(2)
+    expect(await editor.insertBlankCellHere()).toBe(true)
+    // The blank cell is its own transparent resource, not the held content.
+    expect(liveLayer(editor, layer.id).cells[1].resourceId).toBe('res-1')
+    // A cell already at the playhead refuses the insertion.
+    expect(await editor.insertBlankCellHere()).toBe(false)
+
+    // After the blank cell, frame 3 holds the transparent buffer — the
+    // painted content stopped holding through.
+    editor.seekToFrame(3)
+    expect(resolveCellAtFrame(liveLayer(editor, layer.id), 3)).toBe('res-1')
+  })
+
+  it('clearCellHere blanks the cell at the playhead', async () => {
+    const { editor, layer } = seededEditor()
+    // Nothing held: nothing to clear.
+    expect(await editor.clearCellHere()).toBe(false)
+
+    editor.commitStroke('paint-1', 0)
+    expect(await editor.clearCellHere()).toBe(true)
+    expect(liveLayer(editor, layer.id).cells[0].resourceId).not.toBe('paint-1')
+    editor.undo()
+    expect(liveLayer(editor, layer.id).cells[0].resourceId).toBe('paint-1')
+  })
+
+  it('removeCellHere removes exactly the cell at the playhead', () => {
+    const { editor, layer } = seededEditor()
+    expect(editor.removeCellHere()).toBe(false)
+
+    editor.commitStroke('paint-1', 0)
+    editor.commitStroke('paint-2', 3)
+    // Frame 1 holds the cell of frame 0 but has no cell of its own.
+    editor.seekToFrame(1)
+    expect(editor.removeCellHere()).toBe(false)
+    editor.seekToFrame(3)
+    expect(editor.removeCellHere()).toBe(true)
+    expect(liveLayer(editor, layer.id).cells.map((cell) => cell.frame)).toEqual([0])
+    editor.undo()
+    expect(liveLayer(editor, layer.id).cells.map((cell) => cell.frame)).toEqual([0, 3])
+  })
+
+  it('seeks between cell boundaries', () => {
+    const { editor } = seededEditor()
+    expect(editor.seekToPreviousCell()).toBe(false)
+    editor.commitStroke('paint-1', 0)
+    editor.commitStroke('paint-2', 4)
+    editor.seekToFrame(6)
+    expect(editor.seekToPreviousCell()).toBe(true)
+    expect(editor.currentFrame).toBe(4)
+    expect(editor.seekToPreviousCell()).toBe(true)
+    expect(editor.currentFrame).toBe(0)
+    expect(editor.seekToPreviousCell()).toBe(false)
+    editor.seekToFrame(1)
+    expect(editor.seekToNextCell()).toBe(true)
+    expect(editor.currentFrame).toBe(4)
+    expect(editor.seekToNextCell()).toBe(false)
+  })
+
+  it('clamps brush settings and per-layer drawing resolution', () => {
+    const { editor, layer } = seededEditor()
+    editor.setBrushSize(0)
+    expect(editor.brushSize).toBe(1)
+    editor.setBrushSize(500)
+    expect(editor.brushSize).toBe(100)
+    editor.setBrushSize(12.6)
+    expect(editor.brushSize).toBe(13)
+    editor.setBrushSize(Number.NaN)
+    expect(editor.brushSize).toBe(13)
+    editor.setBrushOpacity(2)
+    expect(editor.brushOpacity).toBe(1)
+    editor.setBrushOpacity(-1)
+    expect(editor.brushOpacity).toBe(0)
+
+    editor.setDrawingResolution(layer.id, 2.4)
+    expect(layer.resolutionScale).toBe(2)
+    editor.setDrawingResolution(layer.id, 99)
+    expect(layer.resolutionScale).toBe(4)
+    editor.setDrawingResolution(layer.id, 0)
+    expect(layer.resolutionScale).toBe(1)
+    editor.setDrawingResolution('missing', 2)
+    // Each resolution change is its own undo step.
+    editor.undo()
+    expect(liveLayer(editor, layer.id).resolutionScale).toBe(4)
+    editor.undo()
+    expect(liveLayer(editor, layer.id).resolutionScale).toBe(2)
+  })
+
+  it('cell operations refuse object layers and locked drawing layers', async () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const editor = new Editor(doc)
+    expect(await editor.insertCellHere()).toBe(false)
+    expect(await editor.insertBlankCellHere()).toBe(false)
+    expect(await editor.clearCellHere()).toBe(false)
+    expect(editor.removeCellHere()).toBe(false)
+
+    const locked = seededEditor()
+    locked.layer.locked = true
+    expect(await locked.editor.insertCellHere()).toBe(false)
+    expect(await locked.editor.insertBlankCellHere()).toBe(false)
+    expect(await locked.editor.clearCellHere()).toBe(false)
+    expect(locked.editor.removeCellHere()).toBe(false)
+  })
+
+  it('keeps object operations off drawing layers', () => {
+    const { editor, layer } = seededEditor()
+    editor.addNode(rect('a'))
+    expect(layer.cells).toHaveLength(0)
+    editor.insertKeyframeHere()
+    editor.ensureNodeKeyframe('a')
+    expect(layer.cells).toHaveLength(0)
+    expect(getLayer(editor.document, layer.id)?.kind).toBe('drawing')
   })
 })

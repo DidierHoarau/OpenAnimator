@@ -4,9 +4,11 @@ import { hitTestNodes, nodeBounds, rectIntersectsRect } from '@shared/hitTesting
 import type { Rect } from '@shared/hitTesting'
 import { evaluateDocumentAtFrame } from '@shared/render'
 import { renderLayersToSvgMarkup } from '@shared/renderSvg'
+import { isObjectLayer } from '@shared/model'
 import type { PrimitiveNode } from '@shared/model'
 import { identityView, panView, zoomAtView } from '@shared/viewTransform'
 import type { ViewTransform } from '@shared/viewTransform'
+import { DrawingSession } from './drawing'
 import type { Editor } from './editor'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -44,8 +46,11 @@ export class StageView {
   onViewChange?: (scale: number) => void
 
   private readonly svg: SVGSVGElement
+  private readonly overlay: HTMLCanvasElement
   private readonly editor: Editor
   private drag: DragState | null = null
+  /** Live paint stroke (brush/eraser), mirrored onto the overlay canvas. */
+  private session: DrawingSession | null = null
   private view: ViewTransform = identityView()
   private spaceDown = false
   private spaceUsedForPan = false
@@ -56,6 +61,12 @@ export class StageView {
     this.svg.classList.add('stage')
     this.svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
     host.appendChild(this.svg)
+
+    // The live-stroke mirror: an absolutely positioned canvas over the stage
+    // SVG showing the session buffer until the stroke is committed.
+    this.overlay = document.createElement('canvas')
+    this.overlay.className = 'stage-overlay'
+    host.appendChild(this.overlay)
 
     this.svg.addEventListener('pointerdown', (event) => this.onPointerDown(event))
     this.svg.addEventListener('pointermove', (event) => this.onPointerMove(event))
@@ -119,6 +130,7 @@ export class StageView {
       'viewBox',
       `${this.view.tx} ${this.view.ty} ${doc.width / this.view.scale} ${doc.height / this.view.scale}`
     )
+    if (this.session) this.paintOverlay()
     this.onViewChange?.(this.view.scale)
   }
 
@@ -133,6 +145,8 @@ export class StageView {
   private updateCursor(): void {
     if (this.spaceDown || this.editor.tool === 'hand') {
       this.svg.style.cursor = this.drag?.mode === 'pan' ? 'grabbing' : 'grab'
+    } else if (this.editor.tool === 'brush' || this.editor.tool === 'eraser') {
+      this.svg.style.cursor = 'crosshair'
     } else {
       this.svg.style.cursor = ''
     }
@@ -162,9 +176,24 @@ export class StageView {
 
     const layer = editor.currentLayer
 
+    if (editor.tool === 'brush' || editor.tool === 'eraser') {
+      if (!layer || !layer.visible || layer.locked) return
+      // The tool matrix keeps brush/eraser on drawing layers only.
+      const session = new DrawingSession(
+        editor,
+        { eraser: editor.tool === 'eraser', onPaint: () => this.paintOverlay() }
+      )
+      this.session = session
+      this.svg.setPointerCapture(event.pointerId)
+      event.preventDefault()
+      void session.begin({ ...point, pressure: event.pressure })
+      return
+    }
+
     if (editor.tool === 'select') {
-      const content = layer ? evaluateLayerAtFrame(layer, editor.currentFrame) : []
-      const hit = layer && layer.visible ? hitTestNodes(content, point) : undefined
+      const content =
+        layer && isObjectLayer(layer) ? evaluateLayerAtFrame(layer, editor.currentFrame) : []
+      const hit = layer && layer.visible && isObjectLayer(layer) ? hitTestNodes(content, point) : undefined
       if (!hit) {
         // Rubber-band selection from empty stage area; Shift unions.
         if (!event.shiftKey) editor.selectNodes([], 'replace')
@@ -221,6 +250,12 @@ export class StageView {
   }
 
   private onPointerMove(event: PointerEvent): void {
+    if (this.session) {
+      const point = this.toStagePoint(event)
+      this.session.extend({ ...point, pressure: event.pressure })
+      event.preventDefault()
+      return
+    }
     const drag = this.drag
     if (!drag) return
     drag.last = this.toStagePoint(event)
@@ -262,6 +297,15 @@ export class StageView {
   }
 
   private onPointerUp(event: PointerEvent): void {
+    if (this.session) {
+      const session = this.session
+      this.session = null
+      // The commit is one undo step; the doc change re-renders the stage and
+      // clears the overlay mirror.
+      void session.end()
+      this.releasePointer(event)
+      return
+    }
     const drag = this.drag
     if (!drag) return
     this.drag = null
@@ -275,6 +319,10 @@ export class StageView {
       this.applyMarquee(drag)
     }
     this.updateCursor()
+    this.releasePointer(event)
+  }
+
+  private releasePointer(event: PointerEvent): void {
     if (this.svg.hasPointerCapture(event.pointerId)) {
       this.svg.releasePointerCapture(event.pointerId)
     }
@@ -323,19 +371,78 @@ export class StageView {
       width,
       height
     }
-    const ids = evaluateLayerAtFrame(layer, editor.currentFrame)
-      .filter((node) => rectIntersectsRect(nodeBounds(node), marquee))
-      .map((node) => node.id)
+    const ids = isObjectLayer(layer)
+      ? evaluateLayerAtFrame(layer, editor.currentFrame)
+          .filter((node) => rectIntersectsRect(nodeBounds(node), marquee))
+          .map((node) => node.id)
+      : []
     editor.selectNodes(ids, drag.additive ? 'add' : 'replace')
   }
 
   private cancelDrag(): void {
+    if (this.session) {
+      this.session.cancel()
+      this.session = null
+      this.clearOverlay()
+      this.updateCursor()
+      return
+    }
     const drag = this.drag
     if (!drag) return
     this.drag = null
     if (drag.mode === 'move' && drag.moveStarted) this.editor.endInteraction()
     drag.preview?.remove()
     this.updateCursor()
+  }
+
+  /**
+   * Mirrors the live stroke buffer onto the overlay canvas: the buffer (stage
+   * size × resolution scale) is drawn at the stage rect's current screen
+   * position, so the mirror follows zoom/pan exactly like the SVG content.
+   */
+  private paintOverlay(): void {
+    const session = this.session
+    const buffer = session?.bufferCanvas
+    if (!session || !buffer) {
+      this.clearOverlay()
+      return
+    }
+    const host = this.overlay.parentElement
+    const ctx = this.overlay.getContext('2d')
+    if (!host || !ctx) return
+    const hostRect = host.getBoundingClientRect()
+    const svgRect = this.svg.getBoundingClientRect()
+    this.overlay.style.left = `${svgRect.left - hostRect.left}px`
+    this.overlay.style.top = `${svgRect.top - hostRect.top}px`
+    this.overlay.style.width = `${svgRect.width}px`
+    this.overlay.style.height = `${svgRect.height}px`
+    const canvasRect = this.overlay.getBoundingClientRect()
+    if (this.overlay.width !== Math.round(svgRect.width) || this.overlay.height !== Math.round(svgRect.height)) {
+      this.overlay.width = Math.max(1, Math.round(svgRect.width))
+      this.overlay.height = Math.max(1, Math.round(svgRect.height))
+    }
+    const ctm = this.svg.getScreenCTM()
+    if (!ctm) return
+    const origin = new DOMPoint(0, 0).matrixTransform(ctm)
+    const unitX = new DOMPoint(1, 0).matrixTransform(ctm)
+    const unitY = new DOMPoint(0, 1).matrixTransform(ctm)
+    const scaleX = Math.hypot(unitX.x - origin.x, unitX.y - origin.y)
+    const scaleY = Math.hypot(unitY.x - origin.x, unitY.y - origin.y)
+    const doc = this.editor.document
+    ctx.clearRect(0, 0, this.overlay.width, this.overlay.height)
+    ctx.imageSmoothingEnabled = true
+    ctx.drawImage(
+      buffer,
+      origin.x - canvasRect.left,
+      origin.y - canvasRect.top,
+      Math.max(1, doc.width * scaleX),
+      Math.max(1, doc.height * scaleY)
+    )
+  }
+
+  private clearOverlay(): void {
+    const ctx = this.overlay.getContext('2d')
+    ctx?.clearRect(0, 0, this.overlay.width, this.overlay.height)
   }
 
   private updatePreview(drag: DragState): void {
@@ -421,7 +528,7 @@ export class StageView {
 
     // One selection box per selected node of the current layer's content.
     const layer = editor.currentLayer
-    if (layer && layer.visible) {
+    if (layer && layer.visible && isObjectLayer(layer)) {
       for (const node of evaluateLayerAtFrame(layer, editor.currentFrame)) {
         if (!editor.selectedNodeIds.includes(node.id)) continue
         const overlay = document.createElementNS(SVG_NS, 'rect')
@@ -439,5 +546,7 @@ export class StageView {
       }
     }
     this.updateCursor()
+    if (this.session) this.paintOverlay()
+    else this.clearOverlay()
   }
 }

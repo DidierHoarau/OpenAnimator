@@ -1,9 +1,11 @@
 import {
   findKeyframeAtFrame,
   findNearestNodeKeyframeIndex,
-  getLayer
+  getLayer,
+  resolveCellAtFrame
 } from '@shared/document'
-import type { Layer, SceneNode } from '@shared/model'
+import { isDrawingLayer, isObjectLayer } from '@shared/model'
+import type { DrawingLayer, Layer, ObjectLayer, SceneNode } from '@shared/model'
 
 import type { Editor } from './editor'
 import { el } from './dom'
@@ -62,6 +64,9 @@ export class TimelineView {
   private readonly menu: HTMLDivElement
   private readonly menuRenameButton: HTMLButtonElement
   private readonly menuDeleteButton: HTMLButtonElement
+  private readonly menuCellButtons: HTMLButtonElement[]
+  private readonly menuResolutionRow: HTMLDivElement
+  private readonly menuResolutionInput: HTMLInputElement
   private readonly expandedLayers = new Set<string>()
   private nodeKeyframeButtons: HTMLButtonElement[] = []
   private nodeTweenButtons: HTMLButtonElement[] = []
@@ -108,7 +113,8 @@ export class TimelineView {
     this.frameLabel = el('span', 'tl-frame-label')
     controls.append(playbackGroup, fpsGroup, frameGroup, this.frameLabel)
 
-    // Context menu shared by every layer and object row.
+    // Context menu shared by every layer and object row. Drawing layers get
+    // the cell operations; object layers keep rename/delete only.
     this.menu = el('div', 'tl-context-menu hidden')
     this.menuRenameButton = el('button', 'tl-context-item', 'Rename')
     this.menuDeleteButton = el('button', 'tl-context-item tl-context-danger', 'Delete')
@@ -122,7 +128,43 @@ export class TimelineView {
       this.closeContextMenu()
       if (target) this.deleteTarget(target)
     })
-    this.menu.append(this.menuRenameButton, this.menuDeleteButton)
+    const cellOp = (label: string, action: () => void): HTMLButtonElement => {
+      const button = el('button', 'tl-context-item', label)
+      button.addEventListener('click', () => {
+        const target = this.menuTarget
+        this.closeContextMenu()
+        if (target) action()
+      })
+      return button
+    }
+    this.menuCellButtons = [
+      cellOp('Insert Cell (F6)', () => void this.editor.insertCellHere()),
+      cellOp('Insert Blank Cell (F7)', () => void this.editor.insertBlankCellHere()),
+      cellOp('Clear Cell', () => void this.editor.clearCellHere()),
+      cellOp('Remove Cell', () => this.editor.removeCellHere())
+    ]
+    this.menuResolutionRow = el('div', 'tl-context-item tl-context-resolution')
+    this.menuResolutionRow.appendChild(el('span', undefined, 'Cell resolution'))
+    this.menuResolutionInput = el('input', 'tl-number') as HTMLInputElement
+    this.menuResolutionInput.type = 'number'
+    this.menuResolutionInput.min = '1'
+    this.menuResolutionInput.max = '4'
+    this.menuResolutionInput.step = '1'
+    this.menuResolutionInput.title =
+      'Cell buffer size in multiples of the stage size; affects new cells only'
+    this.menuResolutionInput.addEventListener('change', () => {
+      const target = this.menuTarget
+      if (target) {
+        this.editor.setDrawingResolution(target.layerId, Number(this.menuResolutionInput.value))
+      }
+    })
+    this.menuResolutionRow.appendChild(this.menuResolutionInput)
+    this.menu.append(
+      this.menuRenameButton,
+      ...this.menuCellButtons,
+      this.menuResolutionRow,
+      this.menuDeleteButton
+    )
     window.addEventListener('pointerdown', (event) => {
       if (this.menu.classList.contains('hidden')) return
       if (event.target instanceof Node && this.menu.contains(event.target)) return
@@ -158,9 +200,9 @@ export class TimelineView {
     const target = event.target as HTMLElement
     // An inline rename field must survive selection changes.
     if (target instanceof HTMLInputElement) return
-    const frameAttr = target.dataset?.frame
-    if (frameAttr !== undefined) {
-      this.editor.seekToFrame(Number(frameAttr))
+    const frameTarget = target.closest<HTMLElement>('[data-frame]')
+    if (frameTarget?.dataset.frame !== undefined) {
+      this.editor.seekToFrame(Number(frameTarget.dataset.frame))
       return
     }
     const shapeRow = target.closest<HTMLElement>('.tl-shape-row')
@@ -199,8 +241,10 @@ export class TimelineView {
     for (const layer of doc.layers) {
       this.rowsHost.appendChild(this.buildLayerGroup(layer, frames))
     }
-    // The layer list always ends with a line to append a layer.
-    this.rowsHost.appendChild(this.buildAddLayerRow())
+    // The layer list always ends with the lines to append a layer of either kind.
+    for (const row of this.buildAddLayerRows()) {
+      this.rowsHost.appendChild(row)
+    }
 
     // Playback state lives on the top controls now.
     this.playButton.textContent = editor.playing ? 'Pause' : 'Play'
@@ -212,21 +256,25 @@ export class TimelineView {
     this.updatePlayhead()
   }
 
-  /** A layer row, followed by one child row per shape when expanded. */
+  /** A layer row, followed by its child rows while expanded: per-object rows
+   * for object layers, the cell filmstrip for drawing layers. */
   private buildLayerGroup(layer: Layer, frames: number): HTMLDivElement {
     const group = el('div', 'tl-layer-group')
     const expanded = this.expandedLayers.has(layer.id)
 
     group.appendChild(this.buildLayerRow(layer, expanded, frames))
 
-    // Node child rows, rendered only while the layer is expanded.
     if (expanded) {
-      const nodes = this.collectAllNodes(layer)
-      if (nodes.length === 0) {
-        group.appendChild(this.buildEmptyNodeRow(frames))
+      if (isDrawingLayer(layer)) {
+        group.appendChild(this.buildFilmstripRow(layer, frames))
       } else {
-        for (const node of nodes) {
-          group.appendChild(this.buildNodeRow(layer, node, frames))
+        const nodes = this.collectAllNodes(layer)
+        if (nodes.length === 0) {
+          group.appendChild(this.buildEmptyNodeRow(frames))
+        } else {
+          for (const node of nodes) {
+            group.appendChild(this.buildNodeRow(layer, node, frames))
+          }
         }
       }
     }
@@ -255,6 +303,11 @@ export class TimelineView {
     })
     const name = el('span', 'name', layer.name)
     name.title = layer.name
+    // Kind badge: object (keyframes/tweens) vs drawing (frame-by-frame cells).
+    const kindBadge = el('span', 'tl-kind', isDrawingLayer(layer) ? '\u270e' : '\u25a3')
+    kindBadge.title = isDrawingLayer(layer)
+      ? 'Drawing layer: one raster cell per frame span, never tweened'
+      : 'Object layer: keyframes and tweens'
     const lockButton = el('button', 'tl-icon', layer.locked ? 'L' : '·')
     lockButton.title = layer.locked ? 'Unlock layer' : 'Lock layer'
     lockButton.addEventListener('click', (event) => {
@@ -262,7 +315,7 @@ export class TimelineView {
       editor.toggleLayerLock(layer.id)
     })
     lockButton.classList.toggle('active', layer.locked)
-    head.append(toggle, visibilityButton, name, lockButton)
+    head.append(toggle, visibilityButton, name, kindBadge, lockButton)
     head.addEventListener('click', (event) => {
       if (event.target instanceof HTMLInputElement) return
       editor.setCurrentLayer(layer.id)
@@ -314,11 +367,53 @@ export class TimelineView {
     return row
   }
 
-  /** Permanent line at the end of the layer list to append a layer. */
-  private buildAddLayerRow(): HTMLDivElement {
-    const row = el('div', 'tl-add-layer', '+ Add layer')
-    row.title = 'Add a layer at the bottom of the stack'
-    row.addEventListener('click', () => this.editor.addLayerAtBottom())
+  /** Lines at the end of the layer list to append a layer of either kind. */
+  private buildAddLayerRows(): HTMLDivElement[] {
+    const objectRow = el('div', 'tl-add-layer', '+ Object Layer')
+    objectRow.title = 'Add an object layer (keyframes and tweens) at the bottom of the stack'
+    objectRow.addEventListener('click', () => this.editor.addLayerAtBottom('object'))
+    const drawingRow = el('div', 'tl-add-layer', '+ Drawing Layer')
+    drawingRow.title = 'Add a drawing layer (frame-by-frame cells) at the bottom of the stack'
+    drawingRow.addEventListener('click', () => this.editor.addLayerAtBottom('drawing'))
+    return [objectRow, drawingRow]
+  }
+
+  /**
+   * Filmstrip of a drawing layer: one thumbnail per frame from the resolved
+   * cell (a held cell repeats until the next one; frames after the last cell
+   * render gray). Clicking a frame seeks the playhead.
+   */
+  private buildFilmstripRow(layer: DrawingLayer, frames: number): HTMLDivElement {
+    const row = el('div', 'tl-row tl-filmstrip-row')
+    row.dataset.layerId = layer.id
+    const head = el('div', 'tl-head')
+    const label = el('span', 'name', 'cells')
+    label.style.color = 'var(--muted)'
+    head.appendChild(label)
+    row.appendChild(head)
+
+    const track = el('div', 'tl-track tl-filmstrip')
+    track.style.width = `${frames * FRAME_WIDTH}px`
+    track.style.height = `${ROW_HEIGHT}px`
+    for (let frame = 0; frame < frames; frame++) {
+      const cell = el('div', 'tl-cell tl-filmstrip-cell')
+      cell.dataset.frame = String(frame)
+      cell.style.left = `${frame * FRAME_WIDTH}px`
+      const resourceId = resolveCellAtFrame(layer, frame)
+      const url = resourceId ? this.editor.resources.getUrl(resourceId) : null
+      if (url) {
+        const thumb = document.createElement('img')
+        thumb.className = 'tl-filmstrip-thumb'
+        thumb.src = url
+        thumb.alt = ''
+        thumb.draggable = false
+        cell.appendChild(thumb)
+      } else {
+        cell.classList.add('tl-cell-blank')
+      }
+      track.appendChild(cell)
+    }
+    row.appendChild(track)
     return row
   }
 
@@ -334,7 +429,7 @@ export class TimelineView {
     return row
   }
 
-  private buildNodeRow(layer: Layer, node: SceneNode, frames: number): HTMLDivElement {
+  private buildNodeRow(layer: ObjectLayer, node: SceneNode, frames: number): HTMLDivElement {
     const editor = this.editor
     const row = el('div', 'tl-row tl-shape-row')
     row.dataset.layerId = layer.id
@@ -400,7 +495,7 @@ export class TimelineView {
    * that holds the object and a tween span running to the object's next
    * keyframe. Layer rows intentionally carry no keyframe markers.
    */
-  private buildNodeTrack(layer: Layer, node: SceneNode, frames: number): HTMLDivElement {
+  private buildNodeTrack(layer: ObjectLayer, node: SceneNode, frames: number): HTMLDivElement {
     const span = this.getNodeFrameSpan(layer, node.id)
     const track = this.buildBarTrack(
       span ? span.start : null,
@@ -484,7 +579,7 @@ export class TimelineView {
       const nodeId = button.dataset.shapeId
       if (!layerId || !nodeId) continue
       const layer = getLayer(editor.document, layerId)
-      if (!layer) continue
+      if (!layer || !isObjectLayer(layer)) continue
       const keyframe = findKeyframeAtFrame(layer, editor.currentFrame)
       const keyed = keyframe?.nodes.some((node) => node.id === nodeId) ?? false
       const previousIndex = findNearestNodeKeyframeIndex(layer, nodeId, editor.currentFrame - 1)
@@ -506,6 +601,10 @@ export class TimelineView {
     const layer = getLayer(this.editor.document, target.layerId)
     if (!layer) return
     this.menuTarget = target
+    const drawing = isDrawingLayer(layer)
+    for (const button of this.menuCellButtons) button.classList.toggle('hidden', !drawing)
+    this.menuResolutionRow.classList.toggle('hidden', !drawing)
+    if (drawing) this.menuResolutionInput.value = String(layer.resolutionScale)
     this.menuDeleteButton.disabled =
       target.nodeId === null && this.editor.document.layers.length <= 1
     this.menu.classList.remove('hidden')
@@ -529,6 +628,7 @@ export class TimelineView {
     if (!row || !label) return
     let currentName = layer.name
     if (target.nodeId) {
+      if (!isObjectLayer(layer)) return
       const node = this.collectAllNodes(layer).find((candidate) => candidate.id === target.nodeId)
       if (!node) return
       currentName = nodeLabel(node)
@@ -597,7 +697,7 @@ export class TimelineView {
 
   /** Returns the frame range [start, end) where a node is continuously active. */
   private getNodeFrameSpan(
-    layer: Layer,
+    layer: ObjectLayer,
     nodeId: string
   ): { start: number; end: number } | null {
     // Object-level span: the object is on stage exactly from its first
@@ -612,8 +712,8 @@ export class TimelineView {
     }
   }
 
-  /** Collects all unique nodes across every keyframe of a layer. */
-  private collectAllNodes(layer: Layer): SceneNode[] {
+  /** Collects all unique nodes across every keyframe of an object layer. */
+  private collectAllNodes(layer: ObjectLayer): SceneNode[] {
     const seen = new Set<string>()
     const result: SceneNode[] = []
     for (const keyframe of layer.keyframes) {

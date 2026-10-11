@@ -4,7 +4,7 @@ OpenAnimator is an open-source, vector-based animation tool built as an Electron
 
 ## Status
 
-The application now provides a working authoring core: layers with keyframes, a frame timeline, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, a reusable asset library with document and persistent global collections, symbol instances with isolated editing, raster image import, basic vector drawing and selection tools, onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
+The application now provides a working authoring core: layers with keyframes, frame-by-frame drawing layers painted with brush and eraser tools, a frame timeline with cell filmstrips, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, a reusable asset library with document and persistent global collections, symbol instances with isolated editing, raster image import, basic vector drawing and selection tools, onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
 
 ## Tech stack
 
@@ -17,9 +17,10 @@ The application now provides a working authoring core: layers with keyframes, a 
 
 ## Authoring features
 
-- **Document model**: stage size, frame rate, background color, and a list of layers (`layers[0]` is the topmost). The scene is a tree of polymorphic nodes — primitives (`rect`, `ellipse`), placed images, groups and symbol instances — all sharing one transform vocabulary (position, size, rotation, opacity). Documents serialize to the `schemaVersion: 2` JSON inside the project container; legacy `schemaVersion: 1` shape-based plain-JSON files are migrated transparently on open.
+- **Document model**: stage size, frame rate, background color, and a list of layers (`layers[0]` is the topmost). Layers come in two kinds: object layers (keyframed scene nodes) and drawing layers (frame-by-frame raster cells). The scene is a tree of polymorphic nodes — primitives (`rect`, `ellipse`), placed images, groups and symbol instances — all sharing one transform vocabulary (position, size, rotation, opacity). Documents serialize to the `schemaVersion: 2` JSON inside the project container; legacy `schemaVersion: 1` shape-based plain-JSON files are migrated transparently on open.
 - **Image import**: `Ctrl+I`, the toolbar button, or dropping image files from the OS onto the stage places the image on the current object layer — centered on the stage or at the drop point — at natural size capped to the stage, auto-selected. PNG/JPG/WebP keep their original bytes, GIFs become a PNG of their first frame and static SVGs are rasterized at 2×. Images render as `<image>` elements, tween on transform + opacity and hit-test by bounding box in v1.
-- **Layers**: visibility and lock toggles, add/remove layers, per-layer keyframes.
+- **Layers**: visibility and lock toggles, add/remove layers of both kinds, per-layer keyframes.
+- **Frame-by-frame drawing layers**: paint raster cells directly on the stage with the Brush (`B`) and Eraser (`E`) tools — pointer-pressure-aware width, jitter-smoothed quadratic strokes, adjustable color, size (`[` / `]`) and opacity, and a live overlay that mirrors the in-progress stroke. Each stroke commits as one PNG resource in the content-addressed store (auto-deduped) and one undo step; drawing on a frame without a cell creates one automatically. Cells hold until the next cell; `F6` duplicates the previous cell, `F7` inserts a blank one, `Clear`/`Remove Cell` blank or drop the cell at the playhead, and the timeline shows a per-layer filmstrip of cell thumbnails with a per-layer buffer-resolution setting (1–4× stage size).
 - **Keyframes**: content keyframes and blank keyframes, insert/remove at the playhead, insert frame to extend holds.
 - **Classic tweening**: a tween on a keyframe interpolates matching nodes (matched by id) toward the next keyframe — position, size, rotation and opacity for every node kind, plus fill and outline for primitives — with named easing curves (linear, ease-in, ease-out, ease-in-out) plus a cubic-bezier easing solver. Identity fields (image resource, group children, symbol asset) never interpolate; mismatched kinds snap.
 - **Drawing tools**: rectangle and ellipse creation by drag (click for a default-size shape), selection with rotation-aware hit testing, move, nudge (arrow keys) and delete.
@@ -34,7 +35,8 @@ The application now provides a working authoring core: layers with keyframes, a 
   - **Image**: the same transform inputs for a selected image, the read-only source file name, a `Native size` reset and `Replace source…` (re-points the image at another file while keeping the placed size).
   - **Group**: the same transform inputs for a selected group, plus `Ungroup` and `Save as Symbol… (F8)`.
   - **Symbol**: the same transform inputs for a selected symbol instance, the read-only asset name, `Edit Symbol` (isolated editing) and `Break Apart` (decouple into an editable group).
-- **Timeline panel**: frame ruler, expandable layer rows with per-row visibility/lock toggles, one object row per node (groups included) carrying its frame-span bar, keyframe markers and tween spans, and the playhead.
+  - **Draw**: shown for drawing layers — brush color (swatch + hex), size and opacity, the onion-skin toggle and the cell operations (`◀ Prev`, `Duplicate`, `Clear`, `Next ▶`) for the cell at the playhead.
+- **Timeline panel**: frame ruler, expandable layer rows with per-row visibility/lock toggles and a kind badge, one object row per node (groups included) carrying its frame-span bar, keyframe markers and tween spans, a per-frame cell filmstrip for drawing layers, and the playhead.
 - **Playback**: play/pause/stop, optional looping, frame-stepping at the document fps.
 - **Onion skinning**: ghosted neighboring frames while paused.
 - **Projects**: save and open `.oanim` project files with an explicit Save/Save As/Open, Ctrl+S / Ctrl+Shift+S / Ctrl+O shortcuts and debounced autosave to the current file. Since v0.9.0 the container is a **ZIP archive**: `document.json` plus the referenced binary resources under `resources/<sha256>.<ext>` (stored uncompressed), written atomically (temp file + rename). The loader sniffs the magic bytes: ZIP containers take the archive path; legacy plain-JSON documents (v1 shapes and pre-0.9.0 v2 JSON) still open through the migration/validation path. Resources are content-addressed by SHA-256, so identical content dedupes automatically; a missing or corrupt resource renders a dashed placeholder box while the document still opens, and unknown node types are reported as errors (pre-1.0, no forward-compat shims). `Purge Unused` in the toolbar removes resources no object references from the session store — nothing is garbage-collected silently.
@@ -78,6 +80,8 @@ The application now provides a working authoring core: layers with keyframes, a 
 │       └── src/
 │           ├── editor.ts  # Editor state (frame, selection, tools, playback)
 │           ├── stage.ts   # SVG stage: rendering, drawing, selection
+│           ├── drawing.ts # Stroke smoothing + DrawingSession (overlay-then-commit)
+│           ├── cellPreload.ts # Playback preloader for drawing-cell images
 │           ├── resourceCache.ts # Blob/object-URL cache with decode validation
 │           ├── imageImport.ts   # Image import (dialog, drag-drop) and replace-source
 │           ├── library.ts # Left panel: document + global asset library, drag to stage
@@ -119,6 +123,8 @@ npm run dev        # start the app with hot reload
 | Keys                | Action                                  |
 | ------------------- | --------------------------------------- |
 | `V` / `R` / `O`     | Select / Rectangle / Ellipse tool       |
+| `B` / `E`           | Brush / Eraser tool (drawing layers)    |
+| `[` / `]`           | Decrease / increase the brush size      |
 | `H`                 | Hand tool (pan the stage view)          |
 | `Ctrl+Z`            | Undo                                    |
 | `Ctrl+Shift+Z` / `Ctrl+Y` | Redo                              |
@@ -135,7 +141,7 @@ npm run dev        # start the app with hot reload
 | `Ctrl+I`            | Import an image onto the stage          |
 | `Space`             | Play / pause                            |
 | `Escape`            | Stop and return to frame 1              |
-| `F5` / `F6` / `F7`  | Insert frame / keyframe / blank keyframe|
+| `F5` / `F6` / `F7`  | Insert frame / keyframe or duplicate cell / blank keyframe or cell |
 | Shift-click         | Add to or toggle the selection          |
 | Rubber-band on empty stage | Select objects (Shift unions)    |
 | `Delete`            | Delete the selected objects             |

@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
-import type { Asset, ImageNode, PrimitiveNode, SymbolNode } from '@shared/model'
+import type { Asset, DrawingLayer, ImageNode, PrimitiveNode, SymbolNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { PropertiesView } from './properties'
@@ -79,11 +79,11 @@ describe('PropertiesView sections', () => {
     new PropertiesView(editor, container)
   })
 
-  it('renders the layer, shape, image, group and symbol sections', () => {
+  it('renders the layer, shape, image, group, symbol and draw sections', () => {
     const titles = [...container.querySelectorAll('.panel-section-title')].map((node) =>
       node.textContent?.trim()
     )
-    expect(titles).toEqual(['Layer', 'Shape', 'Image', 'Group', 'Symbol'])
+    expect(titles).toEqual(['Layer', 'Shape', 'Image', 'Group', 'Symbol', 'Draw'])
   })
 
   it('shows the shape section for primitives, the image section for images and the group section for groups', () => {
@@ -315,5 +315,87 @@ describe('PropertiesView sections', () => {
     for (const section of container.querySelectorAll('.panel-section')) {
       expect(section.classList.contains('collapsed')).toBe(false)
     }
+  })
+})
+
+describe('PropertiesView — Draw section', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24), {
+      createTransparentPng: async () => new Uint8Array([0]),
+      storeResource: async () => 'res-1'
+    })
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container)
+  })
+
+  const drawSection = (): HTMLElement => {
+    const section = [...container.querySelectorAll('.panel-section')].find(
+      (candidate) => candidate.querySelector('.panel-section-title')?.textContent?.trim() === 'Draw'
+    )
+    if (!section) throw new Error('missing section Draw')
+    return section as HTMLElement
+  }
+
+  it('shows the Draw section only for drawing layers', () => {
+    expect(drawSection().classList.contains('hidden')).toBe(true)
+
+    editor.addLayerAtBottom('drawing')
+    expect(drawSection().classList.contains('hidden')).toBe(false)
+
+    editor.setCurrentLayer(editor.document.layers[0].id)
+    expect(drawSection().classList.contains('hidden')).toBe(true)
+  })
+
+  it('mirrors the brush settings into its inputs', () => {
+    editor.addLayerAtBottom('drawing')
+    editor.setBrushColor('#00ff00')
+    editor.setBrushSize(12)
+    editor.setBrushOpacity(0.5)
+    editor.setTool('eraser')
+
+    const section = drawSection()
+    const color = section.querySelector<HTMLInputElement>('input[type="color"]')!
+    const size = section.querySelector<HTMLInputElement>('input[type="number"]')!
+    expect(color.value).toBe('#00ff00')
+    expect(size.value).toBe('12')
+
+    // Editing the size feeds back into the editor.
+    size.value = '30'
+    size.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(editor.brushSize).toBe(30)
+    expect(editor.tool).toBe('eraser')
+  })
+
+  it('navigates cells and runs cell operations from the section buttons', async () => {
+    editor.addLayerAtBottom('drawing')
+    editor.commitStroke('res-1', 0)
+    editor.seekToFrame(2)
+    // A fresh render pass after the seek.
+    const section = drawSection()
+    const buttons = [...section.querySelectorAll('button')]
+    const prev = buttons.find((button) => button.textContent === '◀ Prev')!
+    const duplicate = buttons.find((button) => button.textContent === 'Duplicate')!
+    const next = buttons.find((button) => button.textContent === 'Next ▶')!
+    expect(prev.disabled).toBe(false)
+    expect(next.disabled).toBe(true)
+
+    prev.click()
+    expect(editor.currentFrame).toBe(0)
+
+    editor.seekToFrame(3)
+    duplicate.click()
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+    const layer = editor.document.layers.find(
+      (candidate): candidate is DrawingLayer => candidate.kind === 'drawing'
+    )!
+    expect(layer.cells.map((cell) => cell.frame)).toEqual([0, 3])
+    // F6 duplicates the previous cell: frame 3 holds the painted content.
+    expect(layer.cells[1].resourceId).toBe('res-1')
   })
 })

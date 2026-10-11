@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { evaluateDocumentAtFrame } from './render'
 import { isAnimatorDocument } from './document'
 import { MigrationError, migrateDocument } from './migrate'
-import type { AnimatorDocument, PrimitiveNode } from './model'
+import type { AnimatorDocument, ObjectLayer, PrimitiveNode } from './model'
 
 function loadFixture(name: string): unknown {
   return JSON.parse(readFileSync(join(__dirname, 'fixtures', 'v1', `${name}.json`), 'utf8'))
@@ -38,6 +38,7 @@ function expectedTweenedStrokesDocument(): AnimatorDocument {
     assets: [],
     layers: [
       {
+        kind: 'object',
         id: 'layer-hero',
         name: 'Hero',
         visible: true,
@@ -117,10 +118,12 @@ describe('migrateDocument — v1 fixtures', () => {
       locked: true,
       keyframes: [{ frame: 0, nodes: [expect.objectContaining({ id: 'glow', primitive: 'ellipse' })] }]
     })
-    expect(migrated.layers[1].keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 6])
-    expect(migrated.layers[1].keyframes[0].tween).toEqual({ easing: 'linear' })
     expect(
-      migrated.layers[1].keyframes[1].nodes.map((node) => node.id)
+      (migrated.layers[1] as ObjectLayer).keyframes.map((keyframe) => keyframe.frame)
+    ).toEqual([0, 6])
+    expect((migrated.layers[1] as ObjectLayer).keyframes[0].tween).toEqual({ easing: 'linear' })
+    expect(
+      (migrated.layers[1] as ObjectLayer).keyframes[1].nodes.map((node) => node.id)
     ).toEqual(['box-a', 'box-b'])
     expect(isAnimatorDocument(migrated)).toBe(true)
   })
@@ -129,8 +132,8 @@ describe('migrateDocument — v1 fixtures', () => {
     const raw = loadFixture('no-frames')
     const migrated = migrateDocument(raw)
     expect(migrated.frames).toBeUndefined()
-    expect(migrated.layers[0].keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 4])
-    expect(migrated.layers[0].keyframes[1].tween).toEqual({ easing: 'ease-out' })
+    expect((migrated.layers[0] as ObjectLayer).keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 4])
+    expect((migrated.layers[0] as ObjectLayer).keyframes[1].tween).toEqual({ easing: 'ease-out' })
     expect(isAnimatorDocument(migrated)).toBe(true)
   })
 
@@ -147,6 +150,7 @@ describe('migrateDocument — v1 fixtures', () => {
       assets: [],
       layers: [
         {
+          kind: 'object',
           id: 'layer-1',
           name: 'Layer 1',
           visible: true,
@@ -388,5 +392,65 @@ describe('migrateDocument — assets', () => {
     const migrated = migrateDocument(cyclic)
     expect(migrated.assets).toHaveLength(1)
     expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+})
+
+describe('migrateDocument — drawing layers', () => {
+  const baseWithUntypedLayer = () => ({
+    schemaVersion: 2,
+    name: 'x',
+    width: 100,
+    height: 100,
+    fps: 24,
+    background: '#000000',
+    layers: [{ id: 'l', name: 'L', visible: true, locked: false, keyframes: [{ frame: 0, nodes: [] }] }]
+  })
+
+  it('normalizes v2 documents written before drawing layers to object layers', () => {
+    const migrated = migrateDocument(JSON.parse(JSON.stringify(baseWithUntypedLayer())))
+    expect(migrated.layers[0].kind).toBe('object')
+    expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+
+  it('accepts well-formed drawing layers of v2 documents', () => {
+    const withDrawing = JSON.parse(JSON.stringify(baseWithUntypedLayer()))
+    withDrawing.layers.push({
+      kind: 'drawing',
+      id: 'd',
+      name: 'Draw',
+      visible: true,
+      locked: false,
+      resolutionScale: 2,
+      cells: [{ frame: 0, resourceId: 'res-1' }]
+    })
+    const migrated = migrateDocument(withDrawing)
+    expect(migrated.layers[1].kind).toBe('drawing')
+    expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+
+  it('rejects malformed drawing layers', () => {
+    const badScale = JSON.parse(JSON.stringify(baseWithUntypedLayer()))
+    badScale.layers.push({
+      kind: 'drawing',
+      id: 'd',
+      name: 'Draw',
+      visible: true,
+      locked: false,
+      resolutionScale: 0,
+      cells: []
+    })
+    expect(() => migrateDocument(badScale)).toThrow(MigrationError)
+
+    const badCell = JSON.parse(JSON.stringify(baseWithUntypedLayer()))
+    badCell.layers.push({
+      kind: 'drawing',
+      id: 'd',
+      name: 'Draw',
+      visible: true,
+      locked: false,
+      resolutionScale: 1,
+      cells: [{ frame: 0 }]
+    })
+    expect(() => migrateDocument(badCell)).toThrow(MigrationError)
   })
 })

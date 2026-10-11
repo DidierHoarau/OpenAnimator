@@ -6,19 +6,26 @@ import {
   createLayer,
   documentDuration,
   evaluateLayerAtFrame,
+  findCellAtFrame,
   findKeyframeAtFrame,
   findKeyframeIndexForFrame,
   findNearestNodeKeyframeIndex,
+  findNextCellFrame,
+  findPreviousCellFrame,
   getLayer,
   insertBlankKeyframe,
+  insertCell as insertCellOp,
   insertFrame,
   moveLayer as moveLayerOp,
+  removeCell as removeCellOp,
   removeFrame,
   removeLayer as removeLayerOp,
   removeNodeFromAllKeyframes,
   removeNodeFromLayer,
   renameLayer as renameLayerOp,
   renameNodeInLayer,
+  resolveCellAtFrame,
+  setCellContent as setCellContentOp,
   setKeyframeTween,
   updateNodeInLayer
 } from '@shared/document'
@@ -36,13 +43,39 @@ import { nodeBounds } from '@shared/hitTesting'
 import type { Rect } from '@shared/hitTesting'
 import { groupNaturalSize, groupNodes, ungroupNode } from '@shared/groups'
 import type { Vec2 } from '@shared/geometry'
-import { cloneNode } from '@shared/model'
-import type { AnimatorDocument, Asset, GroupNode, ImageNode, Layer, SceneNode, SymbolNode } from '@shared/model'
+import { cloneNode, isDrawingLayer, isObjectLayer } from '@shared/model'
+import type { AnimatorDocument, Asset, DrawingLayer, GroupNode, ImageNode, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
 import { validateAssetGraph } from '@shared/symbols'
 import { createId } from '@shared/document'
+import { createTransparentPng } from './drawing'
 import { ResourceCache } from './resourceCache'
 
-export type Tool = 'select' | 'rect' | 'ellipse' | 'hand'
+export type Tool = 'select' | 'rect' | 'ellipse' | 'hand' | 'brush' | 'eraser'
+
+/**
+ * Whether a tool may be active while `layer` is the current layer: the tool
+ * availability matrix (Brush/Eraser only on drawing layers, Select/Rectangle/
+ * Ellipse only on object layers, Hand everywhere).
+ */
+export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): boolean {
+  if (tool === 'hand') return true
+  if (!layer) return false
+  return isObjectLayer(layer)
+    ? tool === 'select' || tool === 'rect' || tool === 'ellipse'
+    : tool === 'brush' || tool === 'eraser'
+}
+
+/** Injectable side effects for environments without a DOM (tests). */
+export interface EditorDeps {
+  /** Encodes a fully transparent PNG of the given pixel size. */
+  createTransparentPng?: (width: number, height: number) => Promise<Uint8Array | null>
+  /** Stores bytes in the session resource store; returns the resource id. */
+  storeResource?: (bytes: Uint8Array) => Promise<string | null>
+}
+
+function defaultStoreResource(bytes: Uint8Array): Promise<string | null> {
+  return window.api.addResource(bytes, 'cell.png').then((result) => result.resourceId)
+}
 
 export type SelectionMode = 'replace' | 'add' | 'toggle'
 
@@ -73,7 +106,18 @@ export class Editor {
   dirty = false
   /** Asset currently being edited in the isolated scratch document, if any. */
   editingAssetId: string | null = null
+  /** Brush color (session state, not part of the document). */
+  brushColor = '#e6edf3'
+  /** Brush/eraser width in stage pixels, 1–100. */
+  brushSize = 6
+  /** Brush stroke opacity 0..1 (the eraser always erases fully). */
+  brushOpacity = 1
 
+  private readonly deps: EditorDeps
+  /** Transparent cell buffers already stored, keyed by pixel size: blank
+   * cells are real cells holding a transparent PNG, which content-addressed
+   * storage dedupes to one resource per buffer size. */
+  private readonly transparentCellIds = new Map<string, string>()
   private readonly undoStack: AnimatorDocument[] = []
   private readonly redoStack: AnimatorDocument[] = []
   /** Depth of the coalesced interaction currently open (drags push once). */
@@ -89,9 +133,11 @@ export class Editor {
   private lastTick: number | null = null
   private accumulator = 0
 
-  constructor(document: AnimatorDocument) {
+  constructor(document: AnimatorDocument, deps: EditorDeps = {}) {
     this.document = document
+    this.deps = deps
     this.currentLayerId = document.layers[0]?.id ?? ''
+    this.autoSwitchTool()
   }
 
   get duration(): number {
@@ -207,6 +253,7 @@ export class Editor {
     if (!getLayer(this.document, this.currentLayerId)) {
       this.currentLayerId = this.document.layers[0]?.id ?? ''
     }
+    this.autoSwitchTool()
     this.pruneSelection()
     this.docChanged()
     if (frameMoved) this.frameChanged()
@@ -226,6 +273,8 @@ export class Editor {
     this.undoStack.length = 0
     this.redoStack.length = 0
     this.interactionDepth = 0
+    this.transparentCellIds.clear()
+    this.autoSwitchTool()
     this.docChanged()
     this.uiChanged()
     // A cyclic or over-deep asset graph must never hang the renderer: the
@@ -269,8 +318,22 @@ export class Editor {
 
   setTool(tool: Tool): void {
     if (this.tool === tool) return
+    // The tool availability matrix: incompatible tools are ignored (the
+    // toolbar dims them), so a tool can never be active on the wrong layer.
+    if (!toolCompatibleWithLayer(tool, this.currentLayer)) return
     this.tool = tool
     this.uiChanged()
+  }
+
+  /**
+   * Auto-switches to a compatible tool when the current one cannot be used on
+   * the current layer (drawing layer → Brush, object layer → Select). Tools
+   * compatible with both kinds, like Hand, survive a layer switch.
+   */
+  private autoSwitchTool(): void {
+    if (toolCompatibleWithLayer(this.tool, this.currentLayer)) return
+    const layer = this.currentLayer
+    this.tool = layer && isDrawingLayer(layer) ? 'brush' : 'select'
   }
 
   /**
@@ -309,6 +372,7 @@ export class Editor {
     if (this.selectedNodeIds.length === 0) return
     const present = new Set<string>()
     for (const layer of this.document.layers) {
+      if (!isObjectLayer(layer)) continue
       for (const keyframe of layer.keyframes) {
         for (const node of keyframe.nodes) present.add(node.id)
       }
@@ -319,7 +383,7 @@ export class Editor {
   /** Union of the rotation-aware bounds of the evaluated selected nodes. */
   getSelectionBounds(): Rect | null {
     const layer = this.currentLayer
-    if (!layer) return null
+    if (!layer || !isObjectLayer(layer)) return null
     let bounds: Rect | null = null
     for (const node of evaluateLayerAtFrame(layer, this.currentFrame)) {
       if (!this.selectedNodeIds.includes(node.id)) continue
@@ -388,7 +452,7 @@ export class Editor {
 
   addNode(node: SceneNode): void {
     const layer = this.currentLayer
-    if (!layer || layer.locked || !layer.visible) return
+    if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) return
     this.pushHistory()
     this.insertNode(node)
   }
@@ -397,7 +461,7 @@ export class Editor {
    * undo step (import keeps the library and the stage consistent). */
   addImageWithAsset(node: ImageNode): void {
     const layer = this.currentLayer
-    if (!layer || layer.locked || !layer.visible) return
+    if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) return
     this.pushHistory()
     this.insertNode(node)
     this.document.assets.push(
@@ -415,7 +479,7 @@ export class Editor {
   /** Body of addNode without its own history entry (callers push first). */
   private insertNode(node: SceneNode): void {
     const layer = this.currentLayer
-    if (!layer) return
+    if (!layer || !isObjectLayer(layer)) return
     // Auto-key: the new node gets its own pose at the current frame instead
     // of bleeding into an earlier keyframe's hold; other objects hold through.
     if (!findKeyframeAtFrame(layer, this.currentFrame)) {
@@ -445,7 +509,7 @@ export class Editor {
 
   private updateNodesById(ids: string[], update: (node: SceneNode) => void): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const keyable = ids.filter(
       (id) => findNearestNodeKeyframeIndex(layer, id, this.currentFrame) !== -1
     )
@@ -470,7 +534,7 @@ export class Editor {
   /** Deletes every selected node of the current layer at the current frame. */
   deleteSelected(): void {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return
+    if (!layer || !isObjectLayer(layer) || layer.locked) return
     const removable = this.selectedNodeIds.filter((id) =>
       this.isNodeInActiveKeyframe(layer, id)
     )
@@ -487,7 +551,7 @@ export class Editor {
     }
   }
 
-  private isNodeInActiveKeyframe(layer: Layer, nodeId: string): boolean {
+  private isNodeInActiveKeyframe(layer: ObjectLayer, nodeId: string): boolean {
     const index = findKeyframeIndexForFrame(layer, this.currentFrame)
     return index !== -1 && layer.keyframes[index].nodes.some((node) => node.id === nodeId)
   }
@@ -499,7 +563,7 @@ export class Editor {
    */
   insertKeyframeHere(): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const ids = this.selectedNodeIds.filter(
       (id) => findNearestNodeKeyframeIndex(layer, id, this.currentFrame) !== -1
     )
@@ -523,7 +587,7 @@ export class Editor {
    */
   hasNodeKeyframeAt(layerId: string, nodeId: string, frame: number): boolean {
     const layer = getLayer(this.document, layerId)
-    if (!layer) return false
+    if (!layer || !isObjectLayer(layer)) return false
     const keyframe = layer.keyframes.find((keyframe) => keyframe.frame === frame)
     return keyframe?.nodes.some((n) => n.id === nodeId) ?? false
   }
@@ -537,7 +601,7 @@ export class Editor {
    */
   ensureNodeKeyframe(nodeId: string): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     if (!this.canKeyNode(layer, nodeId)) return false
     this.pushHistory()
     if (!this.ensureNodeKeyframeMutation(layer, nodeId)) return false
@@ -553,7 +617,7 @@ export class Editor {
    */
   ensureSelectedNodesKeyframes(): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const ids = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
     if (ids.length === 0) return false
     this.pushHistory()
@@ -565,13 +629,13 @@ export class Editor {
     return changed
   }
 
-  private canKeyNode(layer: Layer, nodeId: string): boolean {
+  private canKeyNode(layer: ObjectLayer, nodeId: string): boolean {
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (keyframe?.nodes.some((n) => n.id === nodeId)) return false
     return findNearestNodeKeyframeIndex(layer, nodeId, this.currentFrame) !== -1
   }
 
-  private ensureNodeKeyframeMutation(layer: Layer, nodeId: string): boolean {
+  private ensureNodeKeyframeMutation(layer: ObjectLayer, nodeId: string): boolean {
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (keyframe?.nodes.some((n) => n.id === nodeId)) return false
     const sourceIndex = findNearestNodeKeyframeIndex(layer, nodeId, this.currentFrame)
@@ -595,7 +659,7 @@ export class Editor {
    */
   groupSelection(): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const keyable = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
     this.pushHistory()
     for (const id of keyable) {
@@ -640,7 +704,7 @@ export class Editor {
    */
   ungroupSelection(): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe) return false
     const groups = keyframe.nodes.filter(
@@ -672,7 +736,7 @@ export class Editor {
    */
   saveSelectionAsSymbol(): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const keyable = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
     this.pushHistory()
     for (const id of keyable) {
@@ -736,8 +800,8 @@ export class Editor {
     const asset = this.document.assets.find((entry) => entry.id === assetId)
     if (!asset) return false
     const layer = this.currentLayer
-    if (!layer || layer.locked || !layer.visible) {
-      this.showMessage('Select a visible, unlocked layer to place the asset on')
+    if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) {
+      this.showMessage('Select a visible, unlocked object layer to place the asset on')
       return false
     }
     const natural = assetNaturalSize(asset)
@@ -786,8 +850,8 @@ export class Editor {
     at?: Vec2
   ): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked || !layer.visible) {
-      this.showMessage('Select a visible, unlocked layer to place the asset on')
+    if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) {
+      this.showMessage('Select a visible, unlocked object layer to place the asset on')
       return false
     }
     for (const [resourceId, bytes] of Object.entries(resources)) {
@@ -872,7 +936,7 @@ export class Editor {
    */
   breakApartSelection(): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe) return false
     const instances = keyframe.nodes.filter(
@@ -949,7 +1013,11 @@ export class Editor {
     this.redoStack.length = 0
     if (commit) {
       const asset = realDocument.assets.find((entry) => entry.id === assetId)
-      const keyframe = scratch.layers[0]?.keyframes.find((entry) => entry.frame === 0)
+      const scratchLayer = scratch.layers[0]
+      const keyframe =
+        scratchLayer && isObjectLayer(scratchLayer)
+          ? scratchLayer.keyframes.find((entry) => entry.frame === 0)
+          : undefined
       if (asset && asset.kind === 'symbol' && asset.content && keyframe) {
         const children = keyframe.nodes.map(cloneNode)
         const natural = groupNaturalSize(children)
@@ -966,6 +1034,183 @@ export class Editor {
     }
     this.docChanged()
     this.uiChanged()
+  }
+
+  /** Registers resource bytes in the session cache after storing them; the
+   * object URL exists before the document change is committed. */
+  async storeCellBytes(bytes: Uint8Array): Promise<string | null> {
+    try {
+      const resourceId = await (this.deps.storeResource ?? defaultStoreResource)(bytes)
+      if (resourceId) this.resources.put(resourceId, bytes)
+      return resourceId
+    } catch (error) {
+      console.warn('OpenAnimator: storing the cell resource failed', error)
+      this.showMessage('The drawing could not be stored')
+      return null
+    }
+  }
+
+  /**
+   * Replaces or creates the cell at `frame` with the given buffer resource —
+   * the commit of one paint stroke, as a single undo step. Drawing on a frame
+   * without a cell creates one (auto-cell on draw).
+   */
+  commitStroke(resourceId: string, frame: number = this.currentFrame): boolean {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return false
+    this.pushHistory()
+    setCellContentOp(layer, frame, resourceId)
+    this.docChanged()
+    return true
+  }
+
+  /** Fully transparent buffer resource for the layer's cell size, stored once
+   * per distinct pixel size (identical buffers dedupe in the resource store). */
+  private async transparentCellResource(layer: DrawingLayer): Promise<string | null> {
+    const width = Math.max(1, Math.round(this.document.width * layer.resolutionScale))
+    const height = Math.max(1, Math.round(this.document.height * layer.resolutionScale))
+    const key = `${width}x${height}`
+    const cached = this.transparentCellIds.get(key)
+    if (cached) return cached
+    const bytes = this.deps.createTransparentPng
+      ? await this.deps.createTransparentPng(width, height)
+      : await createTransparentPng(width, height)
+    if (!bytes) return null
+    const resourceId = await this.storeCellBytes(bytes)
+    if (!resourceId) return null
+    this.transparentCellIds.set(key, resourceId)
+    return resourceId
+  }
+
+  private async cellSeedResource(layer: DrawingLayer, duplicate: boolean): Promise<string | null> {
+    if (duplicate) {
+      const held = resolveCellAtFrame(layer, this.currentFrame - 1)
+      if (held) return held
+    }
+    return this.transparentCellResource(layer)
+  }
+
+  /**
+   * F6 on a drawing layer: inserts a cell at the playhead duplicating the
+   * previous cell's buffer (in-betweening) — or a transparent one when the
+   * layer is blank before. One undo step.
+   */
+  async insertCellHere(): Promise<boolean> {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return false
+    if (findCellAtFrame(layer, this.currentFrame)) {
+      this.showMessage('A cell already exists at this frame')
+      return false
+    }
+    const seed = await this.cellSeedResource(layer, true)
+    if (!seed) return false
+    this.pushHistory()
+    insertCellOp(layer, this.currentFrame, seed)
+    this.docChanged()
+    this.showMessage('Cell inserted')
+    return true
+  }
+
+  /** F7 on a drawing layer: inserts a blank (transparent) cell at the
+   * playhead, stopping the hold of any previous cell. One undo step. */
+  async insertBlankCellHere(): Promise<boolean> {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return false
+    if (findCellAtFrame(layer, this.currentFrame)) {
+      this.showMessage('A cell already exists at this frame')
+      return false
+    }
+    const seed = await this.cellSeedResource(layer, false)
+    if (!seed) return false
+    this.pushHistory()
+    insertCellOp(layer, this.currentFrame, seed)
+    this.docChanged()
+    this.showMessage('Blank cell inserted')
+    return true
+  }
+
+  /** Clears the cell at the playhead: the frame holds a transparent buffer,
+   * so the previous cell stops holding through it. One undo step. */
+  async clearCellHere(): Promise<boolean> {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return false
+    if (!resolveCellAtFrame(layer, this.currentFrame)) {
+      this.showMessage('Nothing to clear at this frame')
+      return false
+    }
+    const seed = await this.cellSeedResource(layer, false)
+    if (!seed) return false
+    this.pushHistory()
+    setCellContentOp(layer, this.currentFrame, seed)
+    this.docChanged()
+    this.showMessage('Cell cleared')
+    return true
+  }
+
+  /** Removes the cell exactly at the playhead: the hold collapses to the
+   * previous cell (or the layer goes blank after the last cell). */
+  removeCellHere(): boolean {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer) || layer.locked) return false
+    if (!findCellAtFrame(layer, this.currentFrame)) {
+      this.showMessage('No cell at this frame')
+      return false
+    }
+    this.pushHistory()
+    removeCellOp(layer, this.currentFrame)
+    this.docChanged()
+    this.showMessage('Cell removed')
+    return true
+  }
+
+  /** Seeks to the nearest cell boundary before/after the playhead. */
+  seekToPreviousCell(): boolean {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer)) return false
+    const frame = findPreviousCellFrame(layer, this.currentFrame)
+    if (frame === null) return false
+    this.setFrame(frame)
+    return true
+  }
+
+  seekToNextCell(): boolean {
+    const layer = this.currentLayer
+    if (!layer || !isDrawingLayer(layer)) return false
+    const frame = findNextCellFrame(layer, this.currentFrame)
+    if (frame === null) return false
+    this.setFrame(frame)
+    return true
+  }
+
+  setBrushColor(color: string): void {
+    this.brushColor = color
+    this.uiChanged()
+  }
+
+  /** Brush/eraser width in stage pixels, clamped to 1–100. */
+  setBrushSize(size: number): void {
+    if (!Number.isFinite(size)) return
+    this.brushSize = Math.min(100, Math.max(1, Math.round(size)))
+    this.uiChanged()
+  }
+
+  setBrushOpacity(opacity: number): void {
+    if (!Number.isFinite(opacity)) return
+    this.brushOpacity = Math.min(1, Math.max(0, opacity))
+    this.uiChanged()
+  }
+
+  /** Buffer resolution of a drawing layer (1–4 × stage size); affects new
+   * buffers only, existing cells keep their pixels. */
+  setDrawingResolution(layerId: string, scale: number): void {
+    const layer = getLayer(this.document, layerId)
+    if (!layer || !isDrawingLayer(layer)) return
+    if (!Number.isFinite(scale)) return
+    const next = Math.min(4, Math.max(1, Math.round(scale)))
+    if (next === layer.resolutionScale) return
+    this.pushHistory()
+    layer.resolutionScale = next
+    this.docChanged()
   }
 
   insertFrameHere(): void {
@@ -1001,7 +1246,7 @@ export class Editor {
    */
   removeNodeKeyframe(nodeId: string): boolean {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return false
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
     if (!this.hasNodeKeyframeAt(this.currentLayerId, nodeId, this.currentFrame)) return false
     this.pushHistory()
     if (!removeNodeFromLayer(layer, this.currentFrame, nodeId)) return false
@@ -1022,7 +1267,7 @@ export class Editor {
 
   toggleTweenHere(): void {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return
+    if (!layer || !isObjectLayer(layer) || layer.locked) return
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe) return
     this.pushHistory()
@@ -1033,7 +1278,7 @@ export class Editor {
 
   setTweenEasingHere(easing: EasingName): void {
     const layer = this.currentLayer
-    if (!layer || layer.locked) return
+    if (!layer || !isObjectLayer(layer) || layer.locked) return
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe?.tween) return
     this.pushHistory()
@@ -1044,15 +1289,21 @@ export class Editor {
   setCurrentLayer(layerId: string): void {
     if (!getLayer(this.document, layerId) || this.currentLayerId === layerId) return
     this.currentLayerId = layerId
+    this.autoSwitchTool()
     this.uiChanged()
     this.frameChanged()
   }
 
-  /** Adds a new layer at the bottom of the stack and makes it current. */
-  addLayerAtBottom(): void {
+  /** Adds a new layer of the given kind at the bottom of the stack and makes
+   * it current. */
+  addLayerAtBottom(kind: Layer['kind'] = 'object'): void {
     this.pushHistory()
-    const layer = addLayerOp(this.document, `Layer ${this.document.layers.length + 1}`, 'bottom')
+    const layer =
+      kind === 'drawing'
+        ? addLayerOp(this.document, `Layer ${this.document.layers.length + 1}`, 'bottom', 'drawing')
+        : addLayerOp(this.document, `Layer ${this.document.layers.length + 1}`, 'bottom')
     this.currentLayerId = layer.id
+    this.autoSwitchTool()
     this.docChanged()
     this.uiChanged()
   }
@@ -1097,7 +1348,7 @@ export class Editor {
   /** Deletes a node from every keyframe of its layer. */
   deleteNode(layerId: string, nodeId: string): void {
     const layer = getLayer(this.document, layerId)
-    if (!layer || layer.locked) return
+    if (!layer || !isObjectLayer(layer) || layer.locked) return
     if (!layer.keyframes.some((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))) {
       return
     }
@@ -1111,7 +1362,7 @@ export class Editor {
   /** Renames a node in every keyframe of its layer. */
   renameNode(layerId: string, nodeId: string, name: string): void {
     const layer = getLayer(this.document, layerId)
-    if (!layer) return
+    if (!layer || !isObjectLayer(layer)) return
     if (!layer.keyframes.some((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))) {
       return
     }

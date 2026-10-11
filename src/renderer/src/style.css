@@ -129,6 +129,15 @@ button.active {
   color: var(--accent);
 }
 
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button:disabled:hover {
+  border-color: var(--border);
+}
+
 select,
 input[type='number'] {
   background: var(--panel-deep);
@@ -170,6 +179,7 @@ input:disabled {
 
 .workspace {
   grid-area: workspace;
+  position: relative;
   min-height: 0;
   display: flex;
   align-items: center;
@@ -183,6 +193,13 @@ input:disabled {
   display: block;
   touch-action: none;
   user-select: none;
+}
+
+/* In-progress brush/eraser strokes, mirrored from the offscreen buffer. */
+
+.stage-overlay {
+  position: absolute;
+  pointer-events: none;
 }
 
 .stage__selection {
@@ -419,6 +436,40 @@ input:disabled {
 
 /* Add-layer line at the end of the layer list */
 
+.tl-kind {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--muted);
+}
+
+/* Drawing-layer filmstrip: one thumbnail per frame */
+
+.tl-filmstrip-cell {
+  overflow: hidden;
+}
+
+.tl-filmstrip-thumb {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Frames not held by any cell of the drawing layer */
+
+.tl-cell-blank::after {
+  content: '';
+  position: absolute;
+  inset: 2px 1px;
+  background: repeating-linear-gradient(
+    45deg,
+    transparent 0 3px,
+    rgba(139, 148, 158, 0.14) 3px 6px
+  );
+}
+
 .tl-add-layer {
   position: sticky;
   left: 0;
@@ -492,6 +543,23 @@ input:disabled {
 
 .tl-context-danger:hover:not(:disabled) {
   color: #f87171;
+}
+
+/* Cell resolution row of the drawing-layer context menu */
+
+.tl-context-resolution {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
+.tl-context-resolution:hover {
+  background: none;
+}
+
+.tl-context-resolution input[type='number'] {
+  width: 44px;
 }
 
 /* Library panel */

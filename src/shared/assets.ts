@@ -1,7 +1,7 @@
 import type { Vec2 } from './geometry'
 import { groupNaturalSize } from './groups'
 import { createId } from './document'
-import { cloneNode } from './model'
+import { cloneNode, isObjectLayer } from './model'
 import type { AnimatorDocument, Asset, GroupNode, SceneNode } from './model'
 
 /** Fields the caller supplies when creating a document asset; `id` and
@@ -48,6 +48,7 @@ export function countAssetInstances(document: AnimatorDocument, assetId: string)
     if (node.type === 'group') for (const child of node.children) visit(child)
   }
   for (const layer of document.layers) {
+    if (!isObjectLayer(layer)) continue
     for (const keyframe of layer.keyframes) {
       for (const node of keyframe.nodes) visit(node)
     }
