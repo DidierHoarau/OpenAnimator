@@ -2,15 +2,16 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createDocument, getLayer } from '@shared/document'
-import type { Shape } from '@shared/model'
+import type { PrimitiveNode, SceneNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { TimelineView } from './timeline'
 
-function rect(id: string): Shape {
+function rect(id: string): PrimitiveNode {
   return {
     id,
-    kind: 'rect',
+    type: 'primitive',
+    primitive: 'rect',
     center: { x: 0, y: 0 },
     width: 10,
     height: 10,
@@ -20,16 +21,47 @@ function rect(id: string): Shape {
   }
 }
 
+function imageNode(id: string, name?: string): SceneNode {
+  return {
+    id,
+    name,
+    type: 'image',
+    resourceId: `resource-${id}`,
+    center: { x: 0, y: 0 },
+    width: 100,
+    height: 50,
+    rotation: 0,
+    opacity: 1,
+    naturalWidth: 100,
+    naturalHeight: 50,
+    smoothing: true
+  }
+}
+
+function symbolNode(id: string): SceneNode {
+  return {
+    id,
+    type: 'symbol',
+    assetId: `asset-${id}`,
+    center: { x: 0, y: 0 },
+    width: 40,
+    height: 40,
+    rotation: 0,
+    opacity: 1
+  }
+}
+
 describe('TimelineView', () => {
   let editor: Editor
   let container: HTMLElement
+  let view: TimelineView
 
   beforeEach(() => {
     document.body.textContent = ''
     editor = new Editor(createDocument('test', 960, 540, 24))
     container = document.createElement('div')
     document.body.appendChild(container)
-    new TimelineView(editor, container)
+    view = new TimelineView(editor, container)
   })
 
   const expandFirstLayer = (): void => {
@@ -55,7 +87,7 @@ describe('TimelineView', () => {
   })
 
   it('adds and deletes a per-object keyframe from the object row', () => {
-    editor.addShape(rect('a'))
+    editor.addNode(rect('a'))
     expandFirstLayer()
     // The auto-key puts the object in the keyframe at frame 0.
     expect(kfButton().textContent).toBe('×')
@@ -65,16 +97,16 @@ describe('TimelineView', () => {
     expect(kfButton().textContent).toBe('◇')
 
     kfButton().click()
-    expect(editor.hasShapeKeyframeAt(editor.currentLayerId, 'a', 1)).toBe(true)
+    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'a', 1)).toBe(true)
     expect(kfButton().textContent).toBe('×')
 
     kfButton().click()
-    expect(editor.hasShapeKeyframeAt(editor.currentLayerId, 'a', 1)).toBe(false)
+    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'a', 1)).toBe(false)
     expect(kfButton().textContent).toBe('◇')
   })
 
   it('shows keyframe markers at the object level, never on layer rows', () => {
-    editor.addShape(rect('a'))
+    editor.addNode(rect('a'))
     editor.insertFrameHere()
     expandFirstLayer()
 
@@ -90,15 +122,15 @@ describe('TimelineView', () => {
     expect(markerFrames()).toEqual(['0'])
 
     editor.setFrame(1)
-    editor.ensureShapeKeyframe('a')
+    editor.ensureNodeKeyframe('a')
     expect(markerFrames()).toEqual(['0', '1'])
   })
 
   it('enables the tween toggle only when the object has a previous keyframe', () => {
-    editor.addShape(rect('a'))
+    editor.addNode(rect('a'))
     editor.insertFrameHere()
     editor.setFrame(1)
-    editor.ensureShapeKeyframe('a')
+    editor.ensureNodeKeyframe('a')
     expandFirstLayer()
 
     expect(tweenButton().disabled).toBe(false)
@@ -132,7 +164,7 @@ describe('TimelineView', () => {
   })
 
   it('deletes an object through the context menu', () => {
-    editor.addShape(rect('a'))
+    editor.addNode(rect('a'))
     expandFirstLayer()
     const shapeRow = container.querySelector<HTMLElement>('.tl-shape-row')!
     shapeRow.dispatchEvent(
@@ -165,9 +197,49 @@ describe('TimelineView', () => {
     expect(editor.document.layers[1].id).toBe(topId)
   })
 
+  it('labels object rows by node kind and colors non-primitive swatches neutrally', () => {
+    editor.addNode(rect('a'))
+    const layer = getLayer(editor.document, editor.currentLayerId)!
+    // Kinds without a creation tool are injected directly into the keyframe.
+    layer.keyframes[0].nodes.push(imageNode('img', 'Photo'), symbolNode('sym'))
+    view.render()
+    expandFirstLayer()
+
+    const labels = [...container.querySelectorAll('.tl-shape-row .name')].map(
+      (label) => label.textContent
+    )
+    expect(labels).toEqual(['Rectangle', 'Photo', 'Symbol'])
+    const swatches = [
+      ...container.querySelectorAll<HTMLElement>('.tl-shape-row .tl-swatch')
+    ].map((swatch) => swatch.style.background)
+    expect(swatches).toEqual(['#ff0000', '#64748b', '#64748b'])
+  })
+
+  it('renders a group row exactly like a shape row with its own keyframes', () => {
+    editor.addNode(rect('a'))
+    editor.addNode(rect('b'))
+    editor.selectNodes(['a', 'b'], 'replace')
+    editor.groupSelection()
+    const groupRow = (): HTMLElement => container.querySelector<HTMLElement>('.tl-shape-row')!
+
+    expandFirstLayer()
+    expect(groupRow().querySelector('.name')?.textContent).toBe('Group')
+    expect(groupRow().querySelectorAll('.tl-key')).toHaveLength(1)
+
+    // The group behaves like any object: it can hold later keyframes and
+    // tween spans of its own.
+    editor.insertFrameHere()
+    editor.setFrame(1)
+    editor.ensureNodeKeyframe(
+      groupRow().dataset.shapeId!
+    )
+    expect(groupRow().querySelectorAll('.tl-key')).toHaveLength(2)
+    expect(groupRow().querySelector('.tl-shape-kf')?.textContent).toBe('\u00d7')
+  })
+
   it('seeks past the last frame on cell clicks and keys only the target object', () => {
-    editor.addShape(rect('a'))
-    editor.addShape(rect('b'))
+    editor.addNode(rect('a'))
+    editor.addNode(rect('b'))
     expandFirstLayer()
 
     const cell = container.querySelector<HTMLElement>('.tl-row .tl-cell[data-frame="5"]')!
@@ -183,8 +255,8 @@ describe('TimelineView', () => {
     expect(buttonFor('b').textContent).toBe('◇')
 
     buttonFor('a').click()
-    expect(editor.hasShapeKeyframeAt(editor.currentLayerId, 'a', 5)).toBe(true)
-    expect(editor.hasShapeKeyframeAt(editor.currentLayerId, 'b', 5)).toBe(false)
+    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'a', 5)).toBe(true)
+    expect(editor.hasNodeKeyframeAt(editor.currentLayerId, 'b', 5)).toBe(false)
     expect(buttonFor('a').textContent).toBe('×')
     expect(buttonFor('b').textContent).toBe('◇')
   })

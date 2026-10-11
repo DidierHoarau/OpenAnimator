@@ -1,0 +1,75 @@
+{
+  "name": "Tween demo",
+  "width": 960,
+  "height": 540,
+  "fps": 24,
+  "background": "#10151b",
+  "layers": [
+    {
+      "id": "layer-hero",
+      "name": "Hero",
+      "visible": true,
+      "locked": false,
+      "keyframes": [
+        {
+          "frame": 0,
+          "shapes": [
+            {
+              "id": "ball",
+              "kind": "ellipse",
+              "name": "Ball",
+              "center": { "x": 100, "y": 100 },
+              "width": 80,
+              "height": 80,
+              "rotation": 0,
+              "fill": "#f59e0b",
+              "stroke": "#fcd34d",
+              "strokeWidth": 3,
+              "opacity": 1
+            },
+            {
+              "id": "ground",
+              "kind": "rect",
+              "name": "Ground",
+              "center": { "x": 480, "y": 500 },
+              "width": 960,
+              "height": 80,
+              "rotation": 0,
+              "fill": "#1f2937",
+              "opacity": 1
+            }
+          ],
+          "tween": { "easing": "ease-in-out" }
+        },
+        {
+          "frame": 12,
+          "shapes": [
+            {
+              "id": "ball",
+              "kind": "ellipse",
+              "name": "Ball",
+              "center": { "x": 480, "y": 380 },
+              "width": 120,
+              "height": 120,
+              "rotation": 90,
+              "fill": "#38bdf8",
+              "opacity": 0.5
+            },
+            {
+              "id": "ground",
+              "kind": "rect",
+              "name": "Ground",
+              "center": { "x": 480, "y": 500 },
+              "width": 960,
+              "height": 80,
+              "rotation": 0,
+              "fill": "#1f2937",
+              "opacity": 1
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "frames": 13
+}

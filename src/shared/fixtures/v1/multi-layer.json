@@ -1,0 +1,98 @@
+{
+  "name": "Multi layer",
+  "width": 640,
+  "height": 360,
+  "fps": 12,
+  "background": "#0b0e12",
+  "layers": [
+    {
+      "id": "layer-fx",
+      "name": "Effects",
+      "visible": false,
+      "locked": true,
+      "keyframes": [
+        {
+          "frame": 0,
+          "shapes": [
+            {
+              "id": "glow",
+              "kind": "ellipse",
+              "center": { "x": 320, "y": 180 },
+              "width": 300,
+              "height": 300,
+              "rotation": 15,
+              "fill": "#fbbf24",
+              "stroke": "#fde68a",
+              "strokeWidth": 6,
+              "opacity": 0.4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "layer-art",
+      "name": "Art",
+      "visible": true,
+      "locked": false,
+      "keyframes": [
+        {
+          "frame": 0,
+          "shapes": [
+            {
+              "id": "box-a",
+              "kind": "rect",
+              "center": { "x": 120, "y": 100 },
+              "width": 90,
+              "height": 60,
+              "rotation": 0,
+              "fill": "#ef4444",
+              "opacity": 1
+            },
+            {
+              "id": "box-b",
+              "kind": "rect",
+              "center": { "x": 240, "y": 140 },
+              "width": 40,
+              "height": 40,
+              "rotation": 45,
+              "fill": "#22c55e",
+              "stroke": "#bbf7d0",
+              "strokeWidth": 2,
+              "opacity": 0.9
+            }
+          ],
+          "tween": { "easing": "linear" }
+        },
+        {
+          "frame": 6,
+          "shapes": [
+            {
+              "id": "box-a",
+              "kind": "rect",
+              "center": { "x": 200, "y": 160 },
+              "width": 90,
+              "height": 60,
+              "rotation": 30,
+              "fill": "#3b82f6",
+              "opacity": 1
+            },
+            {
+              "id": "box-b",
+              "kind": "rect",
+              "center": { "x": 300, "y": 200 },
+              "width": 80,
+              "height": 20,
+              "rotation": 45,
+              "fill": "#22c55e",
+              "stroke": "#bbf7d0",
+              "strokeWidth": 4,
+              "opacity": 0.2
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "frames": 7
+}

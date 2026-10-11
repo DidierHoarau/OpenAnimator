@@ -1,10 +1,11 @@
-import type { AnimatorDocument, Shape } from './model'
+import type { AnimatorDocument, PrimitiveNode } from './model'
 import { createId } from './document'
 
-function ballShape(id: string, x: number, y: number): Shape {
+function ballNode(id: string, x: number, y: number): PrimitiveNode {
   return {
+    type: 'primitive',
+    primitive: 'ellipse',
     id,
-    kind: 'ellipse',
     center: { x, y },
     width: 90,
     height: 90,
@@ -18,9 +19,10 @@ function ballShape(id: string, x: number, y: number): Shape {
 
 /** Document used for new projects and as a first-run demo of tweening. */
 export function createStarterDocument(): AnimatorDocument {
-  const backdrop = {
-    id: createId('shape'),
-    kind: 'rect' as const,
+  const backdrop: PrimitiveNode = {
+    type: 'primitive',
+    primitive: 'rect',
+    id: createId('node'),
     center: { x: 480, y: 270 },
     width: 960,
     height: 540,
@@ -29,7 +31,7 @@ export function createStarterDocument(): AnimatorDocument {
     opacity: 1
   }
 
-  const ballId = createId('shape')
+  const ballId = createId('node')
   const demoLayer = {
     id: createId('layer'),
     name: 'Demo',
@@ -38,15 +40,15 @@ export function createStarterDocument(): AnimatorDocument {
     keyframes: [
       {
         frame: 0,
-        shapes: [ballShape(ballId, 180, 180)],
+        nodes: [ballNode(ballId, 180, 180)],
         tween: { easing: 'ease-in-out' as const }
       },
       {
         frame: 12,
-        shapes: [ballShape(ballId, 480, 380)],
+        nodes: [ballNode(ballId, 480, 380)],
         tween: { easing: 'ease-in-out' as const }
       },
-      { frame: 24, shapes: [ballShape(ballId, 780, 180)] }
+      { frame: 24, nodes: [ballNode(ballId, 780, 180)] }
     ]
   }
 
@@ -55,10 +57,11 @@ export function createStarterDocument(): AnimatorDocument {
     name: 'Background',
     visible: true,
     locked: false,
-    keyframes: [{ frame: 0, shapes: [backdrop] }]
+    keyframes: [{ frame: 0, nodes: [backdrop] }]
   }
 
   return {
+    schemaVersion: 2,
     name: 'Untitled',
     width: 960,
     height: 540,

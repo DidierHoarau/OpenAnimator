@@ -1,31 +1,33 @@
 import {
   addLayer as addLayerOp,
-  addShapeToLayer,
+  addNodeToLayer,
   cloneDocument,
   createDocument,
   documentDuration,
   evaluateLayerAtFrame,
   findKeyframeAtFrame,
   findKeyframeIndexForFrame,
-  findNearestShapeKeyframeIndex,
+  findNearestNodeKeyframeIndex,
   getLayer,
   insertBlankKeyframe,
   insertFrame,
   moveLayer as moveLayerOp,
   removeFrame,
   removeLayer as removeLayerOp,
-  removeShapeFromAllKeyframes,
-  removeShapeFromLayer,
+  removeNodeFromAllKeyframes,
+  removeNodeFromLayer,
   renameLayer as renameLayerOp,
-  renameShapeInLayer,
+  renameNodeInLayer,
   setKeyframeTween,
-  updateShapeInLayer
+  updateNodeInLayer
 } from '@shared/document'
 import type { EasingName } from '@shared/easing'
-import { shapeBounds } from '@shared/hitTesting'
+import { nodeBounds } from '@shared/hitTesting'
 import type { Rect } from '@shared/hitTesting'
-import { cloneShape } from '@shared/model'
-import type { AnimatorDocument, Layer, Shape } from '@shared/model'
+import { groupNodes, ungroupNode } from '@shared/groups'
+import { cloneNode } from '@shared/model'
+import type { AnimatorDocument, GroupNode, Layer, SceneNode } from '@shared/model'
+import { createId } from '@shared/document'
 
 export type Tool = 'select' | 'rect' | 'ellipse' | 'hand'
 
@@ -45,8 +47,8 @@ export class Editor {
   document: AnimatorDocument
   currentFrame = 0
   currentLayerId: string
-  /** Selected shape ids in click order; the last one is the primary selection. */
-  selectedShapeIds: string[] = []
+  /** Selected node ids in click order; the last one is the primary selection. */
+  selectedNodeIds: string[] = []
   tool: Tool = 'select'
   playing = false
   loop = true
@@ -81,10 +83,10 @@ export class Editor {
     return getLayer(this.document, this.currentLayerId)
   }
 
-  /** The most recently selected shape (drives the properties panel). */
-  get primarySelectedShapeId(): string | null {
-    return this.selectedShapeIds.length > 0
-      ? this.selectedShapeIds[this.selectedShapeIds.length - 1]
+  /** The most recently selected node (drives the properties panel). */
+  get primarySelectedNodeId(): string | null {
+    return this.selectedNodeIds.length > 0
+      ? this.selectedNodeIds[this.selectedNodeIds.length - 1]
       : null
   }
 
@@ -197,7 +199,7 @@ export class Editor {
     this.document = document
     this.currentLayerId = document.layers[0]?.id ?? ''
     this.currentFrame = 0
-    this.selectedShapeIds = []
+    this.selectedNodeIds = []
     this.undoStack.length = 0
     this.redoStack.length = 0
     this.interactionDepth = 0
@@ -249,16 +251,16 @@ export class Editor {
    * `add` merges them into the selection and `toggle` flips the membership of
    * every id (shift-click and shift-marquee semantics).
    */
-  selectShapes(ids: string[], mode: SelectionMode): void {
+  selectNodes(ids: string[], mode: SelectionMode): void {
     let next: string[]
     if (mode === 'replace') {
       next = [...ids]
     } else if (mode === 'add') {
-      const merged = new Set(this.selectedShapeIds)
+      const merged = new Set(this.selectedNodeIds)
       for (const id of ids) merged.add(id)
       next = [...merged]
     } else {
-      const merged = new Set(this.selectedShapeIds)
+      const merged = new Set(this.selectedNodeIds)
       for (const id of ids) {
         if (merged.has(id)) merged.delete(id)
         else merged.add(id)
@@ -266,35 +268,35 @@ export class Editor {
       next = [...merged]
     }
     if (
-      next.length === this.selectedShapeIds.length &&
-      next.every((id, index) => id === this.selectedShapeIds[index])
+      next.length === this.selectedNodeIds.length &&
+      next.every((id, index) => id === this.selectedNodeIds[index])
     ) {
       return
     }
-    this.selectedShapeIds = next
+    this.selectedNodeIds = next
     this.uiChanged()
   }
 
   /** Drops selection ids that no longer exist anywhere in the document. */
   private pruneSelection(): void {
-    if (this.selectedShapeIds.length === 0) return
+    if (this.selectedNodeIds.length === 0) return
     const present = new Set<string>()
     for (const layer of this.document.layers) {
       for (const keyframe of layer.keyframes) {
-        for (const shape of keyframe.shapes) present.add(shape.id)
+        for (const node of keyframe.nodes) present.add(node.id)
       }
     }
-    this.selectedShapeIds = this.selectedShapeIds.filter((id) => present.has(id))
+    this.selectedNodeIds = this.selectedNodeIds.filter((id) => present.has(id))
   }
 
-  /** Union of the rotation-aware bounds of the evaluated selected shapes. */
+  /** Union of the rotation-aware bounds of the evaluated selected nodes. */
   getSelectionBounds(): Rect | null {
     const layer = this.currentLayer
     if (!layer) return null
     let bounds: Rect | null = null
-    for (const shape of evaluateLayerAtFrame(layer, this.currentFrame)) {
-      if (!this.selectedShapeIds.includes(shape.id)) continue
-      const box = shapeBounds(shape)
+    for (const node of evaluateLayerAtFrame(layer, this.currentFrame)) {
+      if (!this.selectedNodeIds.includes(node.id)) continue
+      const box = nodeBounds(node)
       if (!bounds) {
         bounds = { ...box }
         continue
@@ -357,73 +359,73 @@ export class Editor {
     this.docChanged()
   }
 
-  addShape(shape: Shape): void {
+  addNode(node: SceneNode): void {
     const layer = this.currentLayer
     if (!layer || layer.locked || !layer.visible) return
     this.pushHistory()
-    // Auto-key: the new shape gets its own pose at the current frame instead
+    // Auto-key: the new node gets its own pose at the current frame instead
     // of bleeding into an earlier keyframe's hold; other objects hold through.
     if (!findKeyframeAtFrame(layer, this.currentFrame)) {
       insertBlankKeyframe(layer, this.currentFrame)
     }
-    addShapeToLayer(layer, this.currentFrame, shape)
-    this.selectedShapeIds = [shape.id]
+    addNodeToLayer(layer, this.currentFrame, node)
+    this.selectedNodeIds = [node.id]
     this.docChanged()
     this.uiChanged()
   }
 
-  /** Updates the primary selected shape, auto-keying it first. One history entry. */
-  updateSelectedShape(update: (shape: Shape) => void): boolean {
-    const primary = this.primarySelectedShapeId
+  /** Updates the primary selected node, auto-keying it first. One history entry. */
+  updateSelectedNode(update: (node: SceneNode) => void): boolean {
+    const primary = this.primarySelectedNodeId
     if (!primary) return false
-    return this.updateShapesById([primary], update)
+    return this.updateNodesById([primary], update)
   }
 
   /**
-   * Updates every selected shape of the current layer, auto-keying each one
+   * Updates every selected node of the current layer, auto-keying each one
    * first (object-level keyframes; other objects hold through). One history
    * entry for the whole set.
    */
-  updateSelectedShapes(update: (shape: Shape) => void): boolean {
-    return this.updateShapesById(this.selectedShapeIds, update)
+  updateSelectedNodes(update: (node: SceneNode) => void): boolean {
+    return this.updateNodesById(this.selectedNodeIds, update)
   }
 
-  private updateShapesById(ids: string[], update: (shape: Shape) => void): boolean {
+  private updateNodesById(ids: string[], update: (node: SceneNode) => void): boolean {
     const layer = this.currentLayer
     if (!layer || layer.locked) return false
     const keyable = ids.filter(
-      (id) => findNearestShapeKeyframeIndex(layer, id, this.currentFrame) !== -1
+      (id) => findNearestNodeKeyframeIndex(layer, id, this.currentFrame) !== -1
     )
     if (keyable.length === 0) return false
     this.pushHistory()
     let changed = false
     for (const id of keyable) {
-      if (this.ensureShapeKeyframeMutation(layer, id)) changed = true
-      if (updateShapeInLayer(layer, this.currentFrame, id, update)) changed = true
+      if (this.ensureNodeKeyframeMutation(layer, id)) changed = true
+      if (updateNodeInLayer(layer, this.currentFrame, id, update)) changed = true
     }
     if (changed) this.docChanged()
     return changed
   }
 
   nudgeSelected(dx: number, dy: number): void {
-    this.updateSelectedShapes((shape) => {
-      shape.center.x += dx
-      shape.center.y += dy
+    this.updateSelectedNodes((node) => {
+      node.center.x += dx
+      node.center.y += dy
     })
   }
 
-  /** Deletes every selected shape of the current layer at the current frame. */
+  /** Deletes every selected node of the current layer at the current frame. */
   deleteSelected(): void {
     const layer = this.currentLayer
     if (!layer || layer.locked) return
-    const removable = this.selectedShapeIds.filter((id) =>
-      this.isShapeInActiveKeyframe(layer, id)
+    const removable = this.selectedNodeIds.filter((id) =>
+      this.isNodeInActiveKeyframe(layer, id)
     )
     if (removable.length === 0) return
     this.pushHistory()
     let removed = false
     for (const id of removable) {
-      if (removeShapeFromLayer(layer, this.currentFrame, id)) removed = true
+      if (removeNodeFromLayer(layer, this.currentFrame, id)) removed = true
     }
     if (removed) {
       this.pruneSelection()
@@ -432,11 +434,9 @@ export class Editor {
     }
   }
 
-  private isShapeInActiveKeyframe(layer: Layer, shapeId: string): boolean {
+  private isNodeInActiveKeyframe(layer: Layer, nodeId: string): boolean {
     const index = findKeyframeIndexForFrame(layer, this.currentFrame)
-    return (
-      index !== -1 && layer.keyframes[index].shapes.some((shape) => shape.id === shapeId)
-    )
+    return index !== -1 && layer.keyframes[index].nodes.some((node) => node.id === nodeId)
   }
 
   /**
@@ -447,14 +447,14 @@ export class Editor {
   insertKeyframeHere(): boolean {
     const layer = this.currentLayer
     if (!layer || layer.locked) return false
-    const ids = this.selectedShapeIds.filter(
-      (id) => findNearestShapeKeyframeIndex(layer, id, this.currentFrame) !== -1
+    const ids = this.selectedNodeIds.filter(
+      (id) => findNearestNodeKeyframeIndex(layer, id, this.currentFrame) !== -1
     )
     if (ids.length === 0) return false
     this.pushHistory()
     let created = false
     for (const id of ids) {
-      if (this.ensureShapeKeyframeMutation(layer, id)) created = true
+      if (this.ensureNodeKeyframeMutation(layer, id)) created = true
     }
     if (created) {
       this.docChanged()
@@ -464,30 +464,30 @@ export class Editor {
   }
 
   /**
-   * Returns true when the given shape has its own keyframe exactly at the
+   * Returns true when the given node has its own keyframe exactly at the
    * given frame (content merely holding through from an earlier keyframe does
    * not count).
    */
-  hasShapeKeyframeAt(layerId: string, shapeId: string, frame: number): boolean {
+  hasNodeKeyframeAt(layerId: string, nodeId: string, frame: number): boolean {
     const layer = getLayer(this.document, layerId)
     if (!layer) return false
     const keyframe = layer.keyframes.find((keyframe) => keyframe.frame === frame)
-    return keyframe?.shapes.some((s) => s.id === shapeId) ?? false
+    return keyframe?.nodes.some((n) => n.id === nodeId) ?? false
   }
 
   /**
-   * Ensures the shape has its own pose at the current frame: creates the
-   * keyframe when missing — object-level, holding only this shape, so every
-   * other object keeps holding through — and copies the shape in from its
+   * Ensures the node has its own pose at the current frame: creates the
+   * keyframe when missing — object-level, holding only this node, so every
+   * other object keeps holding through — and copies the node in from its
    * nearest keyframe when the keyframe lacks it.
    * Returns true when the document content changed.
    */
-  ensureShapeKeyframe(shapeId: string): boolean {
+  ensureNodeKeyframe(nodeId: string): boolean {
     const layer = this.currentLayer
     if (!layer || layer.locked) return false
-    if (!this.canKeyShape(layer, shapeId)) return false
+    if (!this.canKeyNode(layer, nodeId)) return false
     this.pushHistory()
-    if (!this.ensureShapeKeyframeMutation(layer, shapeId)) return false
+    if (!this.ensureNodeKeyframeMutation(layer, nodeId)) return false
     this.docChanged()
     this.showMessage('New keyframe created')
     return true
@@ -495,41 +495,117 @@ export class Editor {
 
   /**
    * Auto-key primitive for edits of the selection: guarantees every selected
-   * shape has a pose at the current frame. Pushes history unless inside a
+   * node has a pose at the current frame. Pushes history unless inside a
    * coalesced interaction. Returns true when the document content changed.
    */
-  ensureSelectedShapesKeyframes(): boolean {
+  ensureSelectedNodesKeyframes(): boolean {
     const layer = this.currentLayer
     if (!layer || layer.locked) return false
-    const ids = this.selectedShapeIds.filter((id) => this.canKeyShape(layer, id))
+    const ids = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
     if (ids.length === 0) return false
     this.pushHistory()
     let changed = false
     for (const id of ids) {
-      if (this.ensureShapeKeyframeMutation(layer, id)) changed = true
+      if (this.ensureNodeKeyframeMutation(layer, id)) changed = true
     }
     if (changed) this.docChanged()
     return changed
   }
 
-  private canKeyShape(layer: Layer, shapeId: string): boolean {
+  private canKeyNode(layer: Layer, nodeId: string): boolean {
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
-    if (keyframe?.shapes.some((s) => s.id === shapeId)) return false
-    return findNearestShapeKeyframeIndex(layer, shapeId, this.currentFrame) !== -1
+    if (keyframe?.nodes.some((n) => n.id === nodeId)) return false
+    return findNearestNodeKeyframeIndex(layer, nodeId, this.currentFrame) !== -1
   }
 
-  private ensureShapeKeyframeMutation(layer: Layer, shapeId: string): boolean {
+  private ensureNodeKeyframeMutation(layer: Layer, nodeId: string): boolean {
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
-    if (keyframe?.shapes.some((s) => s.id === shapeId)) return false
-    const sourceIndex = findNearestShapeKeyframeIndex(layer, shapeId, this.currentFrame)
-    const sourceShape =
+    if (keyframe?.nodes.some((n) => n.id === nodeId)) return false
+    const sourceIndex = findNearestNodeKeyframeIndex(layer, nodeId, this.currentFrame)
+    const sourceNode =
       sourceIndex === -1
         ? undefined
-        : layer.keyframes[sourceIndex].shapes.find((s) => s.id === shapeId)
-    if (!sourceShape) return false
+        : layer.keyframes[sourceIndex].nodes.find((n) => n.id === nodeId)
+    if (!sourceNode) return false
     const target = keyframe ?? insertBlankKeyframe(layer, this.currentFrame)
     if (!target) return false
-    target.shapes.push(cloneShape(sourceShape))
+    target.nodes.push(cloneNode(sourceNode))
+    return true
+  }
+
+  /**
+   * Groups the selected nodes of the current layer into one group node
+   * (Ctrl+G): every selected node is auto-keyed first, then the nodes present
+   * in the keyframe at the current frame are replaced by the group at the
+   * topmost grouped child's index (z-order preserved). One undo step.
+   * Returns true when a group was created.
+   */
+  groupSelection(): boolean {
+    const layer = this.currentLayer
+    if (!layer || layer.locked) return false
+    const keyable = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
+    this.pushHistory()
+    for (const id of keyable) {
+      this.ensureNodeKeyframeMutation(layer, id)
+    }
+    const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe) {
+      this.showMessage('Select objects on the stage to group them')
+      return false
+    }
+    const selected = new Set(this.selectedNodeIds)
+    let topmostIndex = -1
+    const members: SceneNode[] = []
+    keyframe.nodes.forEach((node, index) => {
+      if (selected.has(node.id)) {
+        members.push(node)
+        topmostIndex = index
+      }
+    })
+    if (members.length === 0) {
+      this.showMessage('Select objects on the stage to group them')
+      return false
+    }
+    const group = groupNodes(members, createId('node'))
+    // Remove the members highest-index first so earlier indexes stay valid,
+    // then place the group where its topmost child was (z-order preserved).
+    for (let index = keyframe.nodes.length - 1; index >= 0; index--) {
+      if (selected.has(keyframe.nodes[index].id)) keyframe.nodes.splice(index, 1)
+    }
+    keyframe.nodes.splice(topmostIndex - members.length + 1, 0, group)
+    this.selectedNodeIds = [group.id]
+    this.docChanged()
+    this.uiChanged()
+    return true
+  }
+
+  /**
+   * Ungroups every selected group present in the keyframe at the current
+   * frame (Ctrl+Shift+G): each group is replaced by its children composed
+   * back into the layer space, which become the new selection. One undo step
+   * for the whole set. Returns true when a group was dissolved.
+   */
+  ungroupSelection(): boolean {
+    const layer = this.currentLayer
+    if (!layer || layer.locked) return false
+    const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe) return false
+    const groups = keyframe.nodes.filter(
+      (node): node is GroupNode => node.type === 'group' && this.selectedNodeIds.includes(node.id)
+    )
+    if (groups.length === 0) return false
+    this.pushHistory()
+    const insertedIds: string[] = []
+    for (const group of groups) {
+      const index = keyframe.nodes.indexOf(group)
+      if (index === -1) continue
+      const children = ungroupNode(group)
+      keyframe.nodes.splice(index, 1, ...children)
+      insertedIds.push(...children.map((child) => child.id))
+    }
+    this.selectedNodeIds = insertedIds
+    this.docChanged()
+    this.uiChanged()
     return true
   }
 
@@ -559,17 +635,17 @@ export class Editor {
   }
 
   /**
-   * Removes this shape's keyframe at the current frame: the shape then holds
+   * Removes this node's keyframe at the current frame: the node then holds
    * its previous pose — or, when this was its last keyframe, leaves the stage
-   * after the previous one. Only the shape's own keyframe at exactly the
+   * after the previous one. Only the node's own keyframe at exactly the
    * current frame is removed. Returns true when content changed.
    */
-  removeShapeKeyframe(shapeId: string): boolean {
+  removeNodeKeyframe(nodeId: string): boolean {
     const layer = this.currentLayer
     if (!layer || layer.locked) return false
-    if (!this.hasShapeKeyframeAt(this.currentLayerId, shapeId, this.currentFrame)) return false
+    if (!this.hasNodeKeyframeAt(this.currentLayerId, nodeId, this.currentFrame)) return false
     this.pushHistory()
-    if (!removeShapeFromLayer(layer, this.currentFrame, shapeId)) return false
+    if (!removeNodeFromLayer(layer, this.currentFrame, nodeId)) return false
     this.docChanged()
     return true
   }
@@ -580,9 +656,9 @@ export class Editor {
    * keyframe was its last one. Returns true when content changed.
    */
   removeKeyframeHere(): boolean {
-    const primary = this.primarySelectedShapeId
+    const primary = this.primarySelectedNodeId
     if (!primary) return false
-    return this.removeShapeKeyframe(primary)
+    return this.removeNodeKeyframe(primary)
   }
 
   toggleTweenHere(): void {
@@ -659,37 +735,29 @@ export class Editor {
     this.docChanged()
   }
 
-  /** Deletes a shape from every keyframe of its layer. */
-  deleteShape(layerId: string, shapeId: string): void {
+  /** Deletes a node from every keyframe of its layer. */
+  deleteNode(layerId: string, nodeId: string): void {
     const layer = getLayer(this.document, layerId)
     if (!layer || layer.locked) return
-    if (
-      !layer.keyframes.some((keyframe) =>
-        keyframe.shapes.some((shape) => shape.id === shapeId)
-      )
-    ) {
+    if (!layer.keyframes.some((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))) {
       return
     }
     this.pushHistory()
-    removeShapeFromAllKeyframes(layer, shapeId)
-    this.selectedShapeIds = this.selectedShapeIds.filter((id) => id !== shapeId)
+    removeNodeFromAllKeyframes(layer, nodeId)
+    this.selectedNodeIds = this.selectedNodeIds.filter((id) => id !== nodeId)
     this.docChanged()
     this.uiChanged()
   }
 
-  /** Renames a shape in every keyframe of its layer. */
-  renameShape(layerId: string, shapeId: string, name: string): void {
+  /** Renames a node in every keyframe of its layer. */
+  renameNode(layerId: string, nodeId: string, name: string): void {
     const layer = getLayer(this.document, layerId)
     if (!layer) return
-    if (
-      !layer.keyframes.some((keyframe) =>
-        keyframe.shapes.some((shape) => shape.id === shapeId)
-      )
-    ) {
+    if (!layer.keyframes.some((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))) {
       return
     }
     this.pushHistory()
-    renameShapeInLayer(layer, shapeId, name)
+    renameNodeInLayer(layer, nodeId, name)
     this.docChanged()
   }
 

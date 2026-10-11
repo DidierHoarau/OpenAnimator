@@ -2,10 +2,10 @@ import { formatHexColor, parseHexColor } from '@shared/color'
 import {
   findKeyframeAtFrame,
   findKeyframeIndexForFrame,
-  findNearestShapeKeyframeIndex
+  findNearestNodeKeyframeIndex
 } from '@shared/document'
 import type { EasingName } from '@shared/easing'
-import type { Shape } from '@shared/model'
+import type { SceneNode } from '@shared/model'
 
 import type { Editor } from './editor'
 import { el } from './dom'
@@ -65,11 +65,14 @@ class PanelSection {
 
 /**
  * Right panel with collapsible sections: "Layer" operations on the selected
- * object (keyframe add/remove and tweening at the current frame) and the
- * "Shape" properties of the selected shape. Playback and frame controls live
- * at the top of the timeline; layers and per-object keyframes are managed in
- * the timeline tree (add line, context menu, drag and drop). The "Shape"
- * section only appears while a shape is selected.
+ * object (keyframe add/remove and tweening at the current frame), the node
+ * properties of the selection — the "Shape" section for primitives (fill and
+ * outline rows) and the "Group" section for groups (ungroup and the upcoming
+ * symbol action). Both node sections share the same transform inputs
+ * (position, size, rotation, opacity). Playback and frame controls live at
+ * the top of the timeline; layers and per-object keyframes are managed in the
+ * timeline tree. The node sections only appear while a matching node is
+ * selected.
  */
 export class PropertiesView {
   private readonly editor: Editor
@@ -81,6 +84,8 @@ export class PropertiesView {
   private readonly tweenButton: HTMLButtonElement
   private readonly easingSelect: HTMLSelectElement
 
+  /** Shared transform rows, parked in whichever node section is visible. */
+  private readonly transformRows: HTMLDivElement
   private readonly posX: HTMLInputElement
   private readonly posY: HTMLInputElement
   private readonly width: HTMLInputElement
@@ -92,7 +97,8 @@ export class PropertiesView {
   private readonly strokeToggle: HTMLInputElement
   private readonly strokeColor: HTMLInputElement
   private readonly strokeWidth: HTMLInputElement
-  private lastShapeId: string | null = null
+  private readonly ungroupButton: HTMLButtonElement
+  private lastNodeId: string | null = null
 
   constructor(editor: Editor, container: HTMLElement) {
     this.editor = editor
@@ -133,20 +139,22 @@ export class PropertiesView {
     tweenRow.append(this.tweenButton, this.easingSelect)
     layer.content.append(layerButtons, tweenRow)
 
-    // Shape properties, visible only while a shape is selected.
-    const shape = this.createSection('shape', 'Shape')
-    const rows = el('div', 'panel-rows')
-    this.posX = this.numberInput(rows, 'Position', 'x', () => this.applyPosition('x'))
-    this.posY = this.numberInput(rows, '', 'y', () => this.applyPosition('y'))
-    this.width = this.numberInput(rows, 'Size', 'w', () => this.applySize('width'))
-    this.height = this.numberInput(rows, '', 'h', () => this.applySize('height'))
-    this.rotation = this.numberInput(rows, 'Rotation', '°', () => this.applyRotation())
-    this.opacity = this.numberInput(rows, 'Opacity', '', () => this.applyOpacity())
+    // Shared transform inputs of the selected node (shape or group).
+    this.transformRows = el('div', 'panel-rows')
+    this.posX = this.numberInput(this.transformRows, 'Position', 'x', () => this.applyPosition('x'))
+    this.posY = this.numberInput(this.transformRows, '', 'y', () => this.applyPosition('y'))
+    this.width = this.numberInput(this.transformRows, 'Size', 'w', () => this.applySize('width'))
+    this.height = this.numberInput(this.transformRows, '', 'h', () => this.applySize('height'))
+    this.rotation = this.numberInput(this.transformRows, 'Rotation', '°', () => this.applyRotation())
+    this.opacity = this.numberInput(this.transformRows, 'Opacity', '', () => this.applyOpacity())
     this.opacity.min = '0'
     this.opacity.max = '1'
     this.opacity.step = '0.1'
 
-    const fillRow = this.row(rows, 'Fill')
+    // Shape properties, visible only while a primitive is selected.
+    const shape = this.createSection('shape', 'Shape')
+    const fillRows = el('div', 'panel-rows')
+    const fillRow = this.row(fillRows, 'Fill')
     this.fillColor = el('input', 'color-swatch') as HTMLInputElement
     this.fillColor.type = 'color'
     this.fillColor.title = 'Fill color'
@@ -158,16 +166,16 @@ export class PropertiesView {
     // undo entry, committed on change/cancel of the picker.
     this.fillColor.addEventListener('input', () => {
       editor.beginInteraction()
-      editor.updateSelectedShape((current) => {
-        current.fill = this.fillColor.value
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'primitive') current.fill = this.fillColor.value
       })
     })
     this.fillColor.addEventListener('change', () => editor.endInteraction())
     this.fillColor.addEventListener('cancel', () => editor.endInteraction())
     this.fillHex.addEventListener('change', () => {
       if (parseHexColor(this.fillHex.value)) {
-        editor.updateSelectedShape((current) => {
-          current.fill = normalizeHex(this.fillHex.value, DEFAULT_FILL)
+        editor.updateSelectedNode((current) => {
+          if (current.type === 'primitive') current.fill = normalizeHex(this.fillHex.value, DEFAULT_FILL)
         })
       } else {
         this.render()
@@ -175,13 +183,14 @@ export class PropertiesView {
     })
     fillRow.append(this.fillColor, this.fillHex)
 
-    const outlineRow = this.row(rows, 'Outline')
+    const outlineRow = this.row(fillRows, 'Outline')
     this.strokeToggle = el('input', undefined) as HTMLInputElement
     this.strokeToggle.type = 'checkbox'
     this.strokeToggle.title = 'Enable the outline'
     this.strokeToggle.addEventListener('change', () => {
       const enabled = this.strokeToggle.checked
-      editor.updateSelectedShape((current) => {
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'primitive') return
         if (enabled) {
           current.stroke = current.stroke ?? DEFAULT_STROKE
           current.strokeWidth = current.strokeWidth ?? DEFAULT_STROKE_WIDTH
@@ -197,8 +206,8 @@ export class PropertiesView {
     this.strokeColor.title = 'Outline color'
     this.strokeColor.addEventListener('input', () => {
       editor.beginInteraction()
-      editor.updateSelectedShape((current) => {
-        current.stroke = this.strokeColor.value
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'primitive') current.stroke = this.strokeColor.value
       })
     })
     this.strokeColor.addEventListener('change', () => editor.endInteraction())
@@ -214,14 +223,26 @@ export class PropertiesView {
         this.render()
         return
       }
-      editor.updateSelectedShape((current) => {
-        current.strokeWidth = Math.max(0, value)
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'primitive') current.strokeWidth = Math.max(0, value)
       })
     })
     outlineRow.append(this.strokeToggle, this.strokeColor, this.strokeWidth)
-    shape.content.appendChild(rows)
+    shape.content.append(this.transformRows, fillRows)
 
-    scroll.append(layer.root, shape.root)
+    // Group properties, visible only while a group is selected.
+    const group = this.createSection('group', 'Group')
+    const groupActions = el('div', 'panel-buttons')
+    this.ungroupButton = this.button('Ungroup', 'Ungroup (Ctrl+Shift+G)', () =>
+      editor.ungroupSelection()
+    )
+    const symbolButton = el('button', undefined, 'Save as Symbol… (F8)')
+    symbolButton.title = 'Symbols arrive in a later update'
+    symbolButton.disabled = true
+    groupActions.append(this.ungroupButton, symbolButton)
+    group.content.append(groupActions)
+
+    scroll.append(layer.root, shape.root, group.root)
     container.appendChild(scroll)
 
     editor.onDocChange(() => this.render())
@@ -271,55 +292,55 @@ export class PropertiesView {
     return input
   }
 
-  private applyNumber(input: HTMLInputElement, apply: (shape: Shape, value: number) => void): void {
+  private applyNumber(input: HTMLInputElement, apply: (node: SceneNode, value: number) => void): void {
     const value = Number(input.value)
     if (!Number.isFinite(value)) {
       this.render()
       return
     }
-    this.editor.updateSelectedShape((shape) => apply(shape, value))
+    this.editor.updateSelectedNode((node) => apply(node, value))
   }
 
   private applyPosition(axis: 'x' | 'y'): void {
-    this.applyNumber(axis === 'x' ? this.posX : this.posY, (shape, value) => {
-      if (axis === 'x') shape.center.x = value
-      else shape.center.y = value
+    this.applyNumber(axis === 'x' ? this.posX : this.posY, (node, value) => {
+      if (axis === 'x') node.center.x = value
+      else node.center.y = value
     })
   }
 
   private applySize(field: 'width' | 'height'): void {
-    this.applyNumber(field === 'width' ? this.width : this.height, (shape, value) => {
-      shape[field] = Math.max(2, value)
+    this.applyNumber(field === 'width' ? this.width : this.height, (node, value) => {
+      node[field] = Math.max(2, value)
     })
   }
 
   private applyRotation(): void {
-    this.applyNumber(this.rotation, (shape, value) => {
-      shape.rotation = value
+    this.applyNumber(this.rotation, (node, value) => {
+      node.rotation = value
     })
   }
 
   private applyOpacity(): void {
-    this.applyNumber(this.opacity, (shape, value) => {
-      shape.opacity = Math.min(1, Math.max(0, value))
+    this.applyNumber(this.opacity, (node, value) => {
+      node.opacity = Math.min(1, Math.max(0, value))
     })
   }
 
   render(): void {
     this.renderLayerSection()
-    this.renderShapeSection()
+    this.renderNodeSection()
   }
 
   private renderLayerSection(): void {
     const editor = this.editor
     const layer = editor.currentLayer
     const editable = layer !== undefined && !layer.locked
-    const selected = editor.primarySelectedShapeId
+    const selected = editor.primarySelectedNodeId
     // Object-level: the buttons act on the selected object's own keyframe.
     const ownsKeyframe =
       layer !== undefined &&
       selected !== null &&
-      editor.hasShapeKeyframeAt(layer.id, selected, editor.currentFrame)
+      editor.hasNodeKeyframeAt(layer.id, selected, editor.currentFrame)
     this.keyframeButton.disabled = !editable || selected === null || ownsKeyframe
     this.removeKeyframeButton.disabled = !editable || !ownsKeyframe
     this.tweenButton.disabled = !editable || !ownsKeyframe
@@ -329,76 +350,81 @@ export class PropertiesView {
     if (keyframe?.tween) this.easingSelect.value = keyframe.tween.easing
   }
 
-  private renderShapeSection(): void {
+  private renderNodeSection(): void {
     const editor = this.editor
-    const shape = this.selectedShapePose()
+    const node = this.selectedNodePose()
     const layer = editor.currentLayer
-    const editable = shape !== null && layer !== undefined && !layer.locked && layer.visible
-    this.sections.get('shape')?.setVisible(shape !== null)
-    if (!shape) {
-      this.lastShapeId = null
+    const editable = node !== null && layer !== undefined && !layer.locked && layer.visible
+    const isPrimitive = node?.type === 'primitive'
+    const isGroup = node?.type === 'group'
+    // Mutually exclusive: the section matches the primary selected node kind.
+    this.sections.get('shape')?.setVisible(isPrimitive)
+    this.sections.get('group')?.setVisible(isGroup)
+    if (!node) {
+      this.lastNodeId = null
       return
     }
 
-    const inputs = [
-      this.posX,
-      this.posY,
-      this.width,
-      this.height,
-      this.rotation,
-      this.opacity,
-      this.fillColor,
-      this.fillHex,
-      this.strokeToggle,
-      this.strokeColor,
-      this.strokeWidth
-    ]
-    for (const input of inputs) input.disabled = !editable
+    // The transform rows are shared by both node sections; park them in the
+    // one that is currently visible.
+    const host = isGroup ? this.sections.get('group')!.content : this.sections.get('shape')!.content
+    if (this.transformRows.parentElement !== host) {
+      host.insertBefore(this.transformRows, host.firstChild)
+    }
+
+    for (const input of [this.posX, this.posY, this.width, this.height, this.rotation, this.opacity]) {
+      input.disabled = !editable
+    }
 
     const keepFocused = (input: HTMLInputElement): boolean =>
-      document.activeElement === input && this.lastShapeId === shape.id
+      document.activeElement === input && this.lastNodeId === node.id
 
-    if (!keepFocused(this.posX)) this.posX.value = String(round(shape.center.x))
-    if (!keepFocused(this.posY)) this.posY.value = String(round(shape.center.y))
-    if (!keepFocused(this.width)) this.width.value = String(round(shape.width))
-    if (!keepFocused(this.height)) this.height.value = String(round(shape.height))
-    if (!keepFocused(this.rotation)) this.rotation.value = String(round(shape.rotation))
-    if (!keepFocused(this.opacity)) this.opacity.value = String(shape.opacity)
-    const fill = normalizeHex(shape.fill, DEFAULT_FILL)
-    if (!keepFocused(this.fillColor)) this.fillColor.value = fill
-    if (!keepFocused(this.fillHex)) this.fillHex.value = shape.fill
-    const outlined = shape.stroke !== undefined
-    if (!keepFocused(this.strokeToggle)) this.strokeToggle.checked = outlined
-    if (!keepFocused(this.strokeColor)) {
-      this.strokeColor.value = normalizeHex(shape.stroke ?? DEFAULT_STROKE, DEFAULT_STROKE)
+    if (!keepFocused(this.posX)) this.posX.value = String(round(node.center.x))
+    if (!keepFocused(this.posY)) this.posY.value = String(round(node.center.y))
+    if (!keepFocused(this.width)) this.width.value = String(round(node.width))
+    if (!keepFocused(this.height)) this.height.value = String(round(node.height))
+    if (!keepFocused(this.rotation)) this.rotation.value = String(round(node.rotation))
+    if (!keepFocused(this.opacity)) this.opacity.value = String(node.opacity)
+
+    this.ungroupButton.disabled = !editable
+
+    if (node.type === 'primitive') {
+      const fill = normalizeHex(node.fill, DEFAULT_FILL)
+      if (!keepFocused(this.fillColor)) this.fillColor.value = fill
+      if (!keepFocused(this.fillHex)) this.fillHex.value = node.fill
+      const outlined = node.stroke !== undefined
+      if (!keepFocused(this.strokeToggle)) this.strokeToggle.checked = outlined
+      if (!keepFocused(this.strokeColor)) {
+        this.strokeColor.value = normalizeHex(node.stroke ?? DEFAULT_STROKE, DEFAULT_STROKE)
+      }
+      if (!keepFocused(this.strokeWidth)) {
+        this.strokeWidth.value = String(node.strokeWidth ?? DEFAULT_STROKE_WIDTH)
+      }
+      this.strokeColor.disabled = !editable || !outlined
+      this.strokeWidth.disabled = !editable || !outlined
     }
-    if (!keepFocused(this.strokeWidth)) {
-      this.strokeWidth.value = String(shape.strokeWidth ?? DEFAULT_STROKE_WIDTH)
-    }
-    this.strokeColor.disabled = !editable || !outlined
-    this.strokeWidth.disabled = !editable || !outlined
-    this.lastShapeId = shape.id
+    this.lastNodeId = node.id
   }
 
   /**
-   * Pose shown for the selected shape: the one in the keyframe active at the
+   * Pose shown for the selected node: the one in the keyframe active at the
    * current frame when present, otherwise its nearest existing pose (e.g. a
-   * shape picked from the timeline tree that only exists in another keyframe).
+   * node picked from the timeline tree that only exists in another keyframe).
    * The first edit materialises the pose at the current frame via auto-key.
    */
-  private selectedShapePose(): Shape | null {
+  private selectedNodePose(): SceneNode | null {
     const editor = this.editor
-    const shapeId = editor.primarySelectedShapeId
-    if (!shapeId) return null
+    const nodeId = editor.primarySelectedNodeId
+    if (!nodeId) return null
     const layer = editor.currentLayer
     if (!layer) return null
     const activeIndex = findKeyframeIndexForFrame(layer, editor.currentFrame)
     if (activeIndex !== -1) {
-      const shape = layer.keyframes[activeIndex].shapes.find((shape) => shape.id === shapeId)
-      if (shape) return shape
+      const node = layer.keyframes[activeIndex].nodes.find((node) => node.id === nodeId)
+      if (node) return node
     }
-    const nearestIndex = findNearestShapeKeyframeIndex(layer, shapeId, editor.currentFrame)
+    const nearestIndex = findNearestNodeKeyframeIndex(layer, nodeId, editor.currentFrame)
     if (nearestIndex === -1) return null
-    return layer.keyframes[nearestIndex].shapes.find((shape) => shape.id === shapeId) ?? null
+    return layer.keyframes[nearestIndex].nodes.find((node) => node.id === nodeId) ?? null
   }
 }

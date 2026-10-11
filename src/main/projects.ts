@@ -18,7 +18,7 @@ import type {
   SaveAsResult,
   SaveToResult
 } from '../shared/api'
-import { isAnimatorDocument } from '../shared/document'
+import { MigrationError, migrateDocument } from '../shared/migrate'
 import type { AnimatorDocument } from '../shared/model'
 import { mergeRecentProject } from '../shared/recentProjects'
 
@@ -64,10 +64,14 @@ async function readProjectFile(
     }
     const raw = await readFile(path, 'utf8')
     const parsed: unknown = JSON.parse(raw)
-    if (!isAnimatorDocument(parsed)) {
-      return { document: null, error: 'This file is not a valid OpenAnimator project.' }
+    try {
+      return { document: migrateDocument(parsed), error: null }
+    } catch (error) {
+      if (error instanceof MigrationError) {
+        return { document: null, error: `This file is not a valid OpenAnimator project. ${error.message}` }
+      }
+      throw error
     }
-    return { document: parsed, error: null }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     return { document: null, error: `Could not read the project file: ${message}` }

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import { evaluateDocumentAtFrame } from './render'
-import type { AnimatorDocument, Layer, Shape } from './model'
+import type { AnimatorDocument, Layer, PrimitiveNode } from './model'
 
-function rect(id: string, x: number, overrides: Partial<Shape> = {}): Shape {
+function rect(id: string, x: number, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
   return {
+    type: 'primitive',
+    primitive: 'rect',
     id,
-    kind: 'rect',
     center: { x, y: 0 },
     width: 10,
     height: 10,
@@ -31,15 +32,16 @@ function layer(id: string, overrides: Partial<Layer>): Layer {
 describe('evaluateDocumentAtFrame', () => {
   it('returns layers in paint order (bottom of the stack first)', () => {
     const doc: AnimatorDocument = {
+      schemaVersion: 2,
       name: 't',
       width: 100,
       height: 100,
       fps: 24,
       background: '#000',
       layers: [
-        layer('top', { keyframes: [{ frame: 0, shapes: [rect('a', 0)] }] }),
-        layer('mid', { keyframes: [{ frame: 0, shapes: [rect('b', 1)] }] }),
-        layer('bottom', { keyframes: [{ frame: 0, shapes: [rect('c', 2)] }] })
+        layer('top', { keyframes: [{ frame: 0, nodes: [rect('a', 0)] }] }),
+        layer('mid', { keyframes: [{ frame: 0, nodes: [rect('b', 1)] }] }),
+        layer('bottom', { keyframes: [{ frame: 0, nodes: [rect('c', 2)] }] })
       ]
     }
     const rendered = evaluateDocumentAtFrame(doc, 0)
@@ -48,7 +50,7 @@ describe('evaluateDocumentAtFrame', () => {
       'mid',
       'top'
     ])
-    expect(rendered.map((renderLayer) => renderLayer.shapes.map((shape) => shape.id))).toEqual([
+    expect(rendered.map((renderLayer) => renderLayer.nodes.map((node) => node.id))).toEqual([
       ['c'],
       ['b'],
       ['a']
@@ -57,6 +59,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('skips hidden layers but keeps empty visible ones', () => {
     const doc: AnimatorDocument = {
+      schemaVersion: 2,
       name: 't',
       width: 100,
       height: 100,
@@ -64,18 +67,19 @@ describe('evaluateDocumentAtFrame', () => {
       background: '#000',
       layers: [
         layer('visible-empty', {}),
-        layer('hidden', { visible: false, keyframes: [{ frame: 0, shapes: [rect('a', 0)] }] })
+        layer('hidden', { visible: false, keyframes: [{ frame: 0, nodes: [rect('a', 0)] }] })
       ]
     }
     const rendered = evaluateDocumentAtFrame(doc, 0)
     expect(rendered).toHaveLength(1)
     expect(rendered[0].layerId).toBe('visible-empty')
-    expect(rendered[0].shapes).toEqual([])
+    expect(rendered[0].nodes).toEqual([])
     expect(rendered[0].name).toBe('visible-empty')
   })
 
-  it('hides a shape after its last keyframe (per-object span)', () => {
+  it('hides a node after its last keyframe (per-object span)', () => {
     const doc: AnimatorDocument = {
+      schemaVersion: 2,
       name: 't',
       width: 100,
       height: 100,
@@ -84,21 +88,22 @@ describe('evaluateDocumentAtFrame', () => {
       layers: [
         layer('l', {
           keyframes: [
-            { frame: 0, shapes: [rect('a', 0), rect('b', 1)] },
-            { frame: 3, shapes: [rect('a', 2)] }
+            { frame: 0, nodes: [rect('a', 0), rect('b', 1)] },
+            { frame: 3, nodes: [rect('a', 2)] }
           ]
         })
       ]
     }
     // b's span ends at its keyframe on frame 0, so it is gone from frame 1 on;
     // a holds through.
-    expect(evaluateDocumentAtFrame(doc, 0)[0].shapes.map((shape) => shape.id)).toEqual(['a', 'b'])
-    expect(evaluateDocumentAtFrame(doc, 1)[0].shapes.map((shape) => shape.id)).toEqual(['a'])
-    expect(evaluateDocumentAtFrame(doc, 2)[0].shapes.map((shape) => shape.id)).toEqual(['a'])
+    expect(evaluateDocumentAtFrame(doc, 0)[0].nodes.map((node) => node.id)).toEqual(['a', 'b'])
+    expect(evaluateDocumentAtFrame(doc, 1)[0].nodes.map((node) => node.id)).toEqual(['a'])
+    expect(evaluateDocumentAtFrame(doc, 2)[0].nodes.map((node) => node.id)).toEqual(['a'])
   })
 
-  it('interpolates a tweened shape toward the next keyframe containing it', () => {
+  it('interpolates a tweened node toward the next keyframe containing it', () => {
     const doc: AnimatorDocument = {
+      schemaVersion: 2,
       name: 't',
       width: 100,
       height: 100,
@@ -109,21 +114,22 @@ describe('evaluateDocumentAtFrame', () => {
           keyframes: [
             {
               frame: 0,
-              shapes: [rect('a', 0)],
+              nodes: [rect('a', 0)],
               tween: { easing: 'linear' }
             },
-            { frame: 10, shapes: [rect('a', 100)] }
+            { frame: 10, nodes: [rect('a', 100)] }
           ]
         })
       ]
     }
-    const shape = evaluateDocumentAtFrame(doc, 5)[0].shapes[0]
-    expect(shape.id).toBe('a')
-    expect(shape.center.x).toBeCloseTo(50)
+    const node = evaluateDocumentAtFrame(doc, 5)[0].nodes[0]
+    expect(node.id).toBe('a')
+    expect(node.center.x).toBeCloseTo(50)
   })
 
   it('returns an empty tree for a document without layers', () => {
     const doc: AnimatorDocument = {
+      schemaVersion: 2,
       name: 't',
       width: 100,
       height: 100,
