@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
 import type { AnimatorDocument, AudioLayer } from '@shared/model'
@@ -14,6 +14,7 @@ class FakeGain {
 class FakeSource {
   buffer: unknown = null
   onended: (() => void) | null = null
+  readonly playbackRate = { value: 1 }
   started: { when: number; offset: number } | null = null
   stoppedAt: number | null = null
   connectedGain: FakeGain | null = null
@@ -84,18 +85,28 @@ function audioDoc(overrides: Partial<AudioLayer> = {}): AnimatorDocument {
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
 
+/** Systems created by a test; their scrub idle timers are cleared afterwards
+ * so no test leaks a pending auto-stop into the next one. */
+const systems: AudioSystem[] = []
+
+afterEach(() => {
+  for (const system of systems.splice(0)) system.endScrub()
+})
+
 function createSystem(overrides: {
   context?: FakeAudioContext | null
   blob?: Blob | null
-  scrubSeconds?: number
+  scrubIdleSeconds?: number
 } = {}) {
   const context = overrides.context === undefined ? new FakeAudioContext() : overrides.context
   const getBlob = vi.fn(() => (overrides.blob === undefined ? new Blob([new Uint8Array([1, 2, 3])]) : overrides.blob))
   const system = new AudioSystem({
     getBlob,
     createContext: () => context as unknown as AudioContext,
-    scrubSeconds: overrides.scrubSeconds
+    // Effectively disabled by default so only the idle test exercises it.
+    scrubIdleSeconds: overrides.scrubIdleSeconds ?? 60
   })
+  systems.push(system)
   return { context, system, getBlob }
 }
 
@@ -198,35 +209,169 @@ describe('AudioSystem', () => {
     expect(context.resume).toHaveBeenCalled()
   })
 
-  it('plays a throttled scrub blip at the clip position while paused', async () => {
-    const { context, system } = createSystem({ scrubSeconds: 0.12 })
+  it('opens a scrub session at the clip offset with rate 1', async () => {
+    const { context, system } = createSystem()
     const document = audioDoc({ startFrame: 24, volume: 1 })
 
-    // Frame 48 is 1s into the clip; the first scrub only triggers the decode.
+    // The first call starts the decode; the clip joins the session when it
+    // lands (frame 48 is 1s into the clip).
     system.scrub(document, 48, 24)
     await flush()
-    context.sources.length = 0
-
-    system.scrub(document, 48, 24)
     expect(context.sources).toHaveLength(1)
     expect(context.sources[0].started).toEqual({ when: 0, offset: 1 })
-    expect(context.sources[0].stoppedAt).toBe(0.12)
-    // The blip gain is a fraction of the clip volume.
-    expect(context.sources[0].connectedGain?.gain.value).toBeLessThan(1)
+    expect(context.sources[0].playbackRate.value).toBe(1)
+    expect(context.sources[0].stoppedAt).toBeNull()
+  })
 
-    // Throttled: a scrub within the blip length is ignored.
-    context.currentTime = 0.05
-    system.scrub(document, 48, 24)
+  it('maps scrub velocity onto playbackRate without restarting the clips', async () => {
+    const { context, system } = createSystem()
+    const document = audioDoc({ startFrame: 0, volume: 1 })
+    system.scrub(document, 0, 24)
+    await flush()
     expect(context.sources).toHaveLength(1)
 
-    // After the blip length a new blip fires.
-    context.currentTime = 0.2
-    system.scrub(document, 48, 24)
+    // The first update snaps (rate 1 ran while the pointer was idle): 1 frame
+    // in 0.1s at 24fps → 5/12× at the frame's exact offset.
+    context.currentTime = 0.1
+    system.scrub(document, 1, 24)
     expect(context.sources).toHaveLength(2)
+    const clip = context.sources[1]
+    expect(clip.playbackRate.value).toBeCloseTo(5 / 12, 6)
+    expect(clip.started).toEqual({ when: 0.1, offset: 1 / 24 })
 
-    // Scrubbing before the clip starts plays nothing.
-    system.scrub(document, 0, 24)
+    // From there the running clip tracks the velocity in place — no new
+    // sources, just playbackRate.
+    context.currentTime = 0.2
+    system.scrub(document, 2, 24)
+    context.currentTime = 0.3
+    system.scrub(document, 3, 24)
     expect(context.sources).toHaveLength(2)
+    expect(clip.playbackRate.value).toBeCloseTo(5 / 12, 6)
+  })
+
+  it('clamps the mapped rate to 0.25×–4×', async () => {
+    const { context, system } = createSystem()
+    context.decode = async () => fakeBuffer(30)
+    const document = audioDoc({ startFrame: 0, volume: 1 })
+    system.scrub(document, 0, 24)
+    await flush()
+
+    // 24 frames in 0.5s → 2×.
+    context.currentTime = 0.5
+    system.scrub(document, 24, 24)
+    expect(context.sources.at(-1)?.playbackRate.value).toBe(2)
+
+    // 240 frames in 0.25s → 40× clamps to 4×.
+    context.currentTime = 0.75
+    system.scrub(document, 264, 24)
+    expect(context.sources.at(-1)?.playbackRate.value).toBe(4)
+
+    // 1 frame in 0.5s → ~0.08× clamps to 0.25×.
+    context.currentTime = 1.25
+    system.scrub(document, 265, 24)
+    expect(context.sources.at(-1)?.playbackRate.value).toBe(0.25)
+  })
+
+  it('snaps to the exact offset when the audible position drifts over a frame', async () => {
+    const { context, system } = createSystem()
+    const document = audioDoc({ startFrame: 0, volume: 1 })
+    system.scrub(document, 0, 24)
+    await flush()
+    const first = context.sources[0]
+
+    // Velocity 1× in step with the playhead: no restart, no extra sources.
+    context.currentTime = 0.25
+    system.scrub(document, 6, 24)
+    expect(context.sources).toHaveLength(1)
+    expect(first.playbackRate.value).toBe(1)
+
+    // Two seconds later the playhead barely moved: the clamped 0.25× lagged
+    // far behind, so the session snaps to frame 7's exact offset.
+    context.currentTime = 1.25
+    system.scrub(document, 7, 24)
+    expect(first.stoppedAt).toBe(1.25)
+    const snapped = context.sources.at(-1)!
+    expect(snapped.started).toEqual({ when: 1.25, offset: 7 / 24 })
+    expect(snapped.playbackRate.value).toBe(0.25)
+  })
+
+  it('stays silent outside the clip range', async () => {
+    const { context, system } = createSystem()
+    const document = audioDoc({ startFrame: 24, volume: 1 })
+
+    system.scrub(document, 0, 24) // before the clip starts
+    await flush()
+    expect(context.sources).toHaveLength(0)
+
+    context.currentTime = 1
+    system.scrub(document, 24 + 48 + 2, 24) // 2 frames past the 2s clip's end
+    expect(context.sources).toHaveLength(0)
+  })
+
+  it('plays scrub clips at a fraction of the layer volume', async () => {
+    const { context, system } = createSystem()
+    const document = audioDoc({ startFrame: 0, volume: 0.5 })
+    system.scrub(document, 6, 24)
+    await flush()
+    expect(context.sources[0].connectedGain?.gain.value).toBeCloseTo(0.35 * 0.5, 6)
+  })
+
+  it('endScrub stops the session immediately and the next scrub starts fresh', async () => {
+    const { context, system } = createSystem()
+    const document = audioDoc({ startFrame: 0, volume: 1 })
+    system.scrub(document, 12, 24)
+    await flush()
+    const clip = context.sources[0]
+    expect(clip.stoppedAt).toBeNull()
+
+    context.currentTime = 0.3
+    system.endScrub()
+    expect(clip.stoppedAt).toBe(0.3)
+    system.endScrub() // idempotent
+
+    context.sources.length = 0
+    system.scrub(document, 12, 24)
+    expect(context.sources).toHaveLength(1)
+    expect(context.sources[0].started).toEqual({ when: 0.3, offset: 0.5 })
+  })
+
+  it('auto-stops the session after the idle window', async () => {
+    const { context, system } = createSystem({ scrubIdleSeconds: 0.05 })
+    const document = audioDoc({ startFrame: 0, volume: 1 })
+    system.scrub(document, 6, 24)
+    await flush()
+    expect(context.sources).toHaveLength(1)
+    expect(context.sources[0].stoppedAt).toBeNull()
+
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(context.sources[0].stoppedAt).toBe(0)
+
+    // A later scrub opens a new session from scratch.
+    system.scrub(document, 6, 24)
+    expect(context.sources).toHaveLength(2)
+  })
+
+  it('scrub while playing is ignored, and playback start ends a scrub session', async () => {
+    const { context, system } = createSystem()
+    const document = audioDoc({ startFrame: 0, volume: 1 })
+    system.scrub(document, 6, 24)
+    await flush()
+    const scrubbed = context.sources[0]
+
+    // Playback start supersedes the paused session.
+    context.currentTime = 0.4
+    system.start(document, 0, 24)
+    expect(scrubbed.stoppedAt).toBe(0.4)
+
+    // While the playback session owns the clock, scrub calls are ignored.
+    await flush()
+    const playing = context.sources.at(-1)!
+    expect(playing.stoppedAt).toBeNull()
+    context.currentTime = 1
+    system.scrub(document, 24, 24)
+    expect(context.sources.at(-1)).toBe(playing)
+    expect(playing.stoppedAt).toBeNull()
+    expect(playing.playbackRate.value).toBe(1)
   })
 
   it('reports the decoded duration, memoized peaks, and notifies on decode', async () => {

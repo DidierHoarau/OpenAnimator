@@ -531,8 +531,8 @@ export class Editor {
     this.currentFrame = clamped
     this.frameChanged()
     // Seeks are the audio latency baseline: during playback the mix re-aligns
-    // to the new position; while paused a short blip previews the clip content
-    // under the playhead (opt-in session flag).
+    // to the new position; while paused a frame-locked scrub session previews
+    // the clip content under the playhead (opt-in session flag).
     if (this.playing) this.audio.sync(this.document, this.currentFrame, this.document.fps)
     else if (this.scrubAudio) this.audio.scrub(this.document, this.currentFrame, this.document.fps)
   }
@@ -669,10 +669,11 @@ export class Editor {
     this.uiChanged()
   }
 
-  /** Enables/disables the paused scrub audio blip (session state). */
+  /** Enables/disables the paused scrub audio preview (session state). */
   setScrubAudio(enabled: boolean): void {
     if (this.scrubAudio === enabled) return
     this.scrubAudio = enabled
+    if (!enabled) this.audio.endScrub()
     this.uiChanged()
   }
 

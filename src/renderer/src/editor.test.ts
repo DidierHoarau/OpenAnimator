@@ -1029,7 +1029,7 @@ function liveAudioLayer(editor: Editor, id: string): AudioLayer {
 
 describe('Editor — audio playback bridge', () => {
   function stubAudio() {
-    return { start: vi.fn(), stop: vi.fn(), sync: vi.fn(), scrub: vi.fn() }
+    return { start: vi.fn(), stop: vi.fn(), sync: vi.fn(), scrub: vi.fn(), endScrub: vi.fn() }
   }
 
   /** Manual animation-frame pump for the playback loop (node environment). */
@@ -1090,7 +1090,7 @@ describe('Editor — audio playback bridge', () => {
     }
   })
 
-  it('the paused scrub blip fires only while the flag is on', () => {
+  it('the paused scrub preview fires only while the flag is on', () => {
     const audio = stubAudio()
     const editor = new Editor(createDocument('test', 960, 540, 24), { audio })
     editor.insertFrameHere()
@@ -1104,6 +1104,8 @@ describe('Editor — audio playback bridge', () => {
 
     editor.toggleScrubAudio()
     expect(editor.scrubAudio).toBe(false)
+    // Disabling also ends any session the last seek started.
+    expect(audio.endScrub).toHaveBeenCalled()
     audio.scrub.mockClear()
     editor.seekToFrame(1)
     expect(audio.scrub).not.toHaveBeenCalled()
