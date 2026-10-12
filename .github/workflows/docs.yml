@@ -27,6 +27,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages: ${{ steps.pages.outcome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,17 +47,30 @@ jobs:
         run: npm run docs:build
 
       # `enablement: true` turns Pages on (build type: workflow) on the first
-      # run; afterwards it is a no-op.
-      - uses: actions/configure-pages@v5
+      # run; afterwards it is a no-op. If the repository does not allow the
+      # workflow token to enable Pages, warn loudly and skip the deploy rather
+      # than failing every docs change.
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+        continue-on-error: true
         with:
           enablement: true
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Warn when GitHub Pages is unavailable
+        if: steps.pages.outcome != 'success'
+        run: |
+          echo "::warning title=Deploy skipped: GitHub Pages is not enabled::The docs site was built but not deployed because GitHub Pages is not enabled and this token cannot enable it. A repository admin must enable it under Settings -> Pages -> Source: GitHub Actions (or grant the token the Pages: write permission); the next push to main then deploys automatically."
+
+      - name: Upload site
+        if: steps.pages.outcome == 'success'
+        uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
   deploy:
     needs: build
+    if: needs.build.outputs.pages == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
