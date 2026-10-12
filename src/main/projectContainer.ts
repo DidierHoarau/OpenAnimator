@@ -27,6 +27,14 @@ function resourceEntryName(resourceId: string, resource: ProjectResource): strin
   return `${RESOURCE_PREFIX}${resourceId}.${ext}`
 }
 
+/** ZIP timestamp option for `packProject`: pinning `mtime` makes the output
+ * byte-for-byte reproducible, which generated artifacts (committed docs
+ * samples) rely on; interactive saves keep the default wall-clock time. */
+export interface PackProjectOptions {
+  /** Fixed modification time for every ZIP entry. */
+  mtime?: Date
+}
+
 /**
  * Serializes a document and its referenced resources into the ZIP v2
  * `.oanim` container: `document.json` (deflated) plus one stored (level 0,
@@ -34,7 +42,11 @@ function resourceEntryName(resourceId: string, resource: ProjectResource): strin
  * drops resources no node points at. Saving is always a ZIP file, even with
  * no resources at all.
  */
-export function packProject(document: AnimatorDocument, resources: ProjectResourceMap): Uint8Array {
+export function packProject(
+  document: AnimatorDocument,
+  resources: ProjectResourceMap,
+  options: PackProjectOptions = {}
+): Uint8Array {
   const referenced = collectResourceCounts(document)
   const files: Record<string, [Uint8Array, { level: 0 | 6 }]> = {
     [DOCUMENT_ENTRY]: [strToU8(JSON.stringify(document, null, 2)), { level: 6 }]
@@ -43,7 +55,7 @@ export function packProject(document: AnimatorDocument, resources: ProjectResour
     if (!referenced.has(resourceId)) continue
     files[resourceEntryName(resourceId, resource)] = [resource.bytes, { level: 0 }]
   }
-  return zipSync(files)
+  return zipSync(files, options.mtime ? { mtime: options.mtime } : {})
 }
 
 function parseResourceName(entryName: string): { id: string; ext: string } | null {

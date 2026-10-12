@@ -29,32 +29,56 @@ straight back to a model for a validate-and-retry loop.
 
 ## Command reference
 
+The full, always-current field-by-field table lives in
+**[docs/scripting-reference.md](scripting-reference.md)** — generated from
+the same `COMMANDS_SCHEMA` that validates payloads, so it cannot drift from
+the implementation. The command families:
+
+- **Document & timeline** — `addLayer`, `renameLayer`, `removeLayer`,
+  `setDuration`, `setFps`, `setPalette`, `seek`, `insertFrames`,
+  `removeFrames`, `setHoldStep`, `setCell`, `moveCell`.
+- **Nodes & keyframes** — `addNode`, `updateNode`, `deleteNode`,
+  `setKeyframe`, `removeNodeKeyframe`, `moveKeyframe`, `copyKeyframes`,
+  `moveNodeToFrame`.
+- **Grouping & symbols** — `group`, `ungroup`, `breakApart`,
+  `createSymbol`, `placeAsset`, `editSymbol`, `endSymbolEdit`,
+  `renameAsset`, `duplicateAsset`, `deleteAsset`.
+- **Camera & audio** — `setCameraKeyframe`, `removeCameraKeyframe`,
+  `setAudio`.
+- **Tweening** — `setTween`.
+
 All commands accept optional `layerId` where a layer context is needed; when
 omitted the executor resolves it from the node or falls back to the current
 layer. Frames are 0-based.
 
-| Command | Fields | Behavior |
-| --- | --- | --- |
-| `addLayer` | `kind?` (`object`\|`drawing`\|`camera`\|`audio`), `name?`, `resourceId?` (audio), `startFrame?` (audio) | Appends a layer at the bottom and selects it. `camera` creates the one camera layer (error when it exists); `audio` needs an existing `resourceId` of the session and starts its clip at `startFrame` (default 0). |
-| `renameLayer` | `layerId`, `name` | Renames a layer. |
-| `removeLayer` | `layerId` | Removes a layer. |
-| `addNode` | `node`, `layerId?`, `frame?` | Adds a scene node with auto-key at the frame. |
-| `updateNode` | `nodeId`, `layerId?`, `frame?`, `patch` | Auto-keys a pose at the frame, then applies the patch. This is how you animate: one `updateNode` per pose. |
-| `deleteNode` | `nodeId`, `layerId?` | Removes the node from the layer. |
-| `setKeyframe` | `nodeId`, `layerId?`, `frame?`, `patch?` | Ensures the node has its own pose at the frame, optionally patching it. Warns if a pose already exists there. |
-| `removeNodeKeyframe` | `nodeId`, `layerId?`, `frame?` | Removes the node's own pose at the frame. |
-| `setTween` | `layerId?`, `frame?`, `easing`, `path?` | Turns a classic tween on the keyframe at `frame` on/off (`easing: null` removes it). Works on object layers and on the camera layer (tweening the camera pose toward the next camera keyframe). Easings: `linear`, `ease-in`, `ease-out`, `ease-in-out`, or a custom cubic bezier `{x1, y1, x2, y2}` (x ∈ 0..1). `path: 'smooth'` swings the tweened center along a curve through the neighbouring poses; `'linear'` (default) keeps it straight. |
-| `moveKeyframe` | `nodeId`, `layerId?`, `fromFrame`, `toFrame` | Moves the node's own pose from one frame to another (the timeline drag). Keyframes emptied by the move are dropped; the destination keeps its tween. |
-| `copyKeyframes` | `nodeId`, `layerId?`, `fromFrame`, `toFrame?`, `targetFrame` | Copies the node's poses in `[fromFrame, toFrame]` (default: `fromFrame` only) to `targetFrame + offset`, merging into existing keyframes; a copied tween is restored only where none exists. |
-| `setHoldStep` | `step` (1–16) | Sets the non-destructive hold step: playback, onion skinning and export evaluate every frame at `frame - frame % step` ("animation on n's"). `1` turns it off. |
-| `setCell` | `layerId?`, `frame?`, `resourceId` | Places a raster cell on a drawing layer. |
-| `setDuration` | `frames` | Sets the authored timeline length. |
-| `setFps` | `fps` | Sets frames per second. |
-| `setPalette` | `colors` | Replaces the document palette with up to 48 hex colors (`#rgb`/`#rrggbb`); entries are normalized, deduplicated and invalid ones dropped (warned). |
-| `seek` | `frame` | Moves the playhead (warnings when clamped). |
-| `setCameraKeyframe` | `frame`, `center?`, `zoom?`, `rotation?`, `tween?` | Creates or updates a camera keyframe at `frame` (creating the camera layer on demand, keying the held pose when the frame has none) and applies the given pose fields. `tween: true/false` ensures/removes the tween on that keyframe. |
-| `removeCameraKeyframe` | `frame` | Removes the camera keyframe at `frame` (warns when there is none). |
-| `setAudio` | `layerId`, `startFrame?`, `volume?`, `muted?` | Updates an audio layer's clip start, volume (0..1) or mute; at least one field should be given. |
+### Grouping, symbols and the global library
+
+`group` groups nodes into one group node; `ungroup` dissolves a group back
+into its children; `breakApart` replaces a symbol instance with an editable
+group (decoupled from the asset). `createSymbol` saves the selection as a
+symbol asset and leaves an instance behind; `placeAsset` drops more
+instances on the current layer, optionally at `{x, y}`.
+
+`editSymbol` enters symbol edit mode (the stage shows the asset's contents,
+undo works inside); `endSymbolEdit` with `commit: true` writes the changes
+back into every instance, `commit: false` discards them. `renameAsset`,
+`duplicateAsset` and `deleteAsset` manage document assets; deleting an asset
+whose instances remain on stage warns and leaves placeholders.
+
+`saveToLibrary` copies a symbol asset into the global **My Library** and
+`insertFromLibrary` places one back (matched by `assetId` or exact `name`),
+copying its resources into the document. Both commands need the app's
+library bridge: the script console passes `window.api` automatically; a
+headless executor without a library reports a clear error per command and
+keeps running.
+
+### Timeline frames
+
+`insertFrames` / `removeFrames` insert or remove hold frames at a `frame`
+(default: the playhead), shifting later keyframes, cells and audio clips on
+every layer — the timeline's insert/remove-frame buttons as commands.
+`moveCell` retimes a drawing cell and `moveNodeToFrame` shifts a node's
+whole keyframe track so it starts at `targetFrame` (the retiming gestures).
 
 ### Node kinds
 
@@ -150,8 +174,9 @@ The same loop works without a running editor via the CLI `validate` command.
 
 ## Examples
 
-Three complete payloads ship in `src/shared/scripting/examples.ts` and are
-loadable in the script console:
+Five complete payloads ship in `src/shared/scripting/examples.ts` and are
+loadable in the script console (the full JSON of each is embedded in
+[docs/scripting-reference.md](scripting-reference.md)):
 
 - **Bouncing ball** — a layer, an ellipse, poses at frames 0/11/23 via
   `updateNode`, tweens with `ease-in` (fall) and `ease-out` (rise).
@@ -159,6 +184,12 @@ loadable in the script console:
   `opacity: 1`.
 - **Retimed slide** — a custom bezier tween with `path: 'smooth'`, a middle
   pose retimed with `moveKeyframe`, and `setHoldStep: 2` playback on twos.
+- **Walk cycle** — a stick figure built from an ellipse body and four limb
+  paths; the limb joints sit at the path origins, so the poses only patch
+  `rotation` per frame — a classic flip-book cycle with no tweens.
+- **Lip-sync text** — a face whose mouth is a `path` node; the `d` and box
+  height swap between closed/mid/open shapes on an audition cadence, ready
+  to be retimed against an audio track (with a caption text node).
 
 ## Headless CLI
 
@@ -169,6 +200,7 @@ render <project.oanim|document.json> --out out.gif
     [--format png-sequence|gif|webm|mp4|lottie|dotlottie|svg-animation|spritesheet]
     [--scale 0.25..4] [--fps 1..60] [--from N] [--to N] [--transparent]
 validate <payload.json> [--kind commands|document]
+schema [--kind commands|document] [--out file]
 ```
 
 - `render` evaluates frames through the same shared SVG path as the in-app
@@ -193,6 +225,11 @@ validate <payload.json> [--kind commands|document]
   and the per-format degradation diagnostics.
 - `validate` prints schema errors and exits 1 on an invalid payload — the
   machine surface for CI checks and LLM tooling.
+- `schema` prints the JSON Schema itself (draft-07) — `--kind commands`
+  (default) or `--kind document` — either to stdout or to `--out file`.
+  Point your LLM tooling or editor at the output for autocomplete and
+  validation; the published copies (`commands-v1.json`, `document-v7.json`)
+  are generated by the docs site from the same source.
 
 ## Safety
 

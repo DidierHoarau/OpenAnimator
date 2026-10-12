@@ -163,6 +163,16 @@ describe('packProject / parseProject — round trip', () => {
     expect(parsed.resources.has('c'.repeat(64))).toBe(false)
   })
 
+  it('produces byte-identical output when the mtime is pinned', () => {
+    // Generated artifacts (docs samples) are committed and gated on
+    // `git diff --exit-code`, so the writer must be reproducible.
+    const document = documentWithNodes([imageNode('img-1', 'a'.repeat(64))])
+    const mtime = new Date('2026-01-01T00:00:00Z')
+    const first = packProject(document, resources([['a'.repeat(64), PNG_BYTES, 'png']]), { mtime })
+    const second = packProject(document, resources([['a'.repeat(64), PNG_BYTES, 'png']]), { mtime })
+    expect(Array.from(first)).toEqual(Array.from(second))
+  })
+
   it('keeps resources referenced only by document assets', () => {
     // Regression: the refcount walk must include document.assets, or the
     // resources behind library-only symbol content would be dropped on save.

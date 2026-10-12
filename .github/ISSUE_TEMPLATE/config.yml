@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://didierhoarau.github.io/OpenAnimator/
+    about: Getting started, feature guides, the generated scripting reference and sample projects.
+  - name: Contributing guide
+    url: https://github.com/DidierHoarau/OpenAnimator/blob/main/CONTRIBUTING.md
+    about: Development setup, the npm scripts, and the PR rules CI enforces.
+  - name: Releases and downloads
+    url: https://github.com/DidierHoarau/OpenAnimator/releases
+    about: Installers for Linux, Windows and macOS, and the release notes per version.

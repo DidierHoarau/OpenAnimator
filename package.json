@@ -1,7 +1,7 @@
 {
   "name": "openanimator",
   "productName": "OpenAnimator",
-  "version": "0.19.1",
+  "version": "0.20.0",
   "description": "OpenAnimator is an open-source vector-based animation tool.",
   "main": "./out/main/index.js",
   "bin": {
@@ -27,8 +27,11 @@
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
     "lint": "eslint .",
     "cli": "tsx src/cli/main.ts",
+    "docs:build": "tsx scripts/build-docs.ts",
+    "samples:build": "tsx scripts/make-samples.ts",
     "dist:linux": "electron-builder --linux --publish never",
     "dist:win": "electron-builder --win --publish never",
     "dist:mac": "electron-builder --mac --publish never",
@@ -37,6 +40,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@expo-google-fonts/noto-sans": "^0.4.2",
+    "@playwright/test": "^1.64.0",
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^24.10.1",
     "@types/opentype.js": "^1.3.10",
@@ -52,6 +56,7 @@
     "gifenc": "^1.0.3",
     "happy-dom": "^20.14.6",
     "lottie-web": "^5.13.0",
+    "marked": "^18.1.0",
     "mediabunny": "^1.61.3",
     "opentype.js": "^2.0.0",
     "pngjs": "^7.0.0",
@@ -64,5 +69,10 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
+  },
+  "allowScripts": {
+    "electron@44.7.0": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true
   }
 }

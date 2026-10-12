@@ -185,6 +185,87 @@ describe('validateScriptPayload', () => {
     expect(joined).toContain('/commands/9/muted')
     expect(joined).toContain('/commands/10/surprise')
   })
+
+  it('accepts the group, symbol and library ops and rejects their bad shapes', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        { op: 'group', nodeIds: ['a', 'b'], frame: 0 },
+        { op: 'ungroup', nodeIds: ['g'], layerId: 'l1' },
+        { op: 'breakApart', nodeId: 's', frame: 2 },
+        { op: 'createSymbol', nodeIds: ['a'], name: 'Star' },
+        { op: 'placeAsset', assetId: 'asset-1', at: { x: 10, y: 20 } },
+        { op: 'editSymbol', assetId: 'asset-1' },
+        { op: 'endSymbolEdit', commit: true },
+        { op: 'renameAsset', assetId: 'asset-1', name: 'Comet' },
+        { op: 'duplicateAsset', assetId: 'asset-1' },
+        { op: 'deleteAsset', assetId: 'asset-1' },
+        { op: 'saveToLibrary', assetId: 'asset-1' },
+        { op: 'insertFromLibrary', name: 'Star', at: { x: 5, y: 5 } },
+        { op: 'insertFromLibrary', assetId: 'asset-1' }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+    expect(ok.commands).toHaveLength(13)
+
+    const bad = validateScriptPayload({
+      commands: [
+        { op: 'group', nodeIds: [] },
+        { op: 'group', layerId: 'l1' },
+        { op: 'breakApart' },
+        { op: 'createSymbol', nodeIds: ['a'], extra: 1 },
+        { op: 'placeAsset', at: { x: 1, y: 2 } },
+        { op: 'placeAsset', assetId: 'a', at: { x: 1 } },
+        { op: 'endSymbolEdit' },
+        { op: 'endSymbolEdit', commit: 'yes' },
+        { op: 'insertFromLibrary', layerId: 'l1' },
+        { op: 'renameAsset', assetId: 'a' }
+      ]
+    })
+    const joined = bad.errors.join('\n')
+    expect(joined).toContain('/commands/0/nodeIds')
+    expect(joined).toContain('/commands/1/nodeIds')
+    expect(joined).toContain('/commands/2/nodeId')
+    expect(joined).toContain('/commands/3/extra')
+    expect(joined).toContain('/commands/4/assetId')
+    expect(joined).toContain('/commands/5/at/y')
+    expect(joined).toContain('/commands/6/commit')
+    expect(joined).toContain('/commands/7/commit')
+    expect(joined).toContain('/commands/8/assetId')
+    expect(joined).toContain('/commands/9/name')
+  })
+
+  it('accepts the timeline-frame ops and rejects their bad shapes', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        { op: 'insertFrames', layerId: 'l1', frame: 3, count: 2 },
+        { op: 'removeFrames' },
+        { op: 'moveCell', fromFrame: 0, toFrame: 4 },
+        { op: 'moveNodeToFrame', nodeId: 'ball', targetFrame: 6 }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+    expect(ok.commands).toHaveLength(4)
+
+    const bad = validateScriptPayload({
+      commands: [
+        { op: 'insertFrames', count: 0 },
+        { op: 'insertFrames', count: 1000 },
+        { op: 'insertFrames', count: 1.5 },
+        { op: 'insertFrames', frame: -1 },
+        { op: 'moveCell', fromFrame: 0 },
+        { op: 'moveNodeToFrame', targetFrame: 3 },
+        { op: 'moveNodeToFrame', nodeId: 'x' }
+      ]
+    })
+    const joined = bad.errors.join('\n')
+    expect(joined).toContain('/commands/0/count')
+    expect(joined).toContain('/commands/1/count')
+    expect(joined).toContain('/commands/2/count')
+    expect(joined).toContain('/commands/3/frame')
+    expect(joined).toContain('/commands/4/toFrame')
+    expect(joined).toContain('/commands/5/nodeId')
+    expect(joined).toContain('/commands/6/targetFrame')
+  })
 })
 
 describe('validateDocumentPayload', () => {
@@ -487,7 +568,51 @@ describe('hand-rolled validator vs JSON Schema', () => {
     { commands: [{ op: 'setAudio', layerId: 'l1', volume: 1.5 }] },
     { commands: [{ op: 'setAudio', layerId: 'l1', volume: -0.1 }] },
     { commands: [{ op: 'setAudio', layerId: 'l1', muted: 'no' }] },
-    { commands: [{ op: 'setAudio', layerId: 'l1', extra: 1 }] }
+    { commands: [{ op: 'setAudio', layerId: 'l1', extra: 1 }] },
+    { commands: [{ op: 'group', nodeIds: ['a', 'b'], frame: 0 }] },
+    { commands: [{ op: 'group', nodeIds: [] }] },
+    { commands: [{ op: 'group', layerId: 'l1' }] },
+    { commands: [{ op: 'group', nodeIds: [1, 2] }] },
+    { commands: [{ op: 'ungroup', nodeIds: ['g'], surprise: 1 }] },
+    { commands: [{ op: 'breakApart', nodeId: 's' }] },
+    { commands: [{ op: 'breakApart' }] },
+    { commands: [{ op: 'breakApart', nodeId: 's', frame: 2 }] },
+    { commands: [{ op: 'createSymbol', nodeIds: ['a'], name: 'Star', frame: 0 }] },
+    { commands: [{ op: 'createSymbol', nodeIds: ['a'], extra: 1 }] },
+    { commands: [{ op: 'placeAsset', assetId: 'a', at: { x: 1, y: 2 } }] },
+    { commands: [{ op: 'placeAsset', at: { x: 1, y: 2 } }] },
+    { commands: [{ op: 'placeAsset', assetId: 'a', at: { x: 1 } }] },
+    { commands: [{ op: 'placeAsset', assetId: 'a', at: { x: 1, y: 2, z: 3 } }] },
+    { commands: [{ op: 'editSymbol', assetId: 'a' }] },
+    { commands: [{ op: 'editSymbol' }] },
+    { commands: [{ op: 'endSymbolEdit', commit: true }] },
+    { commands: [{ op: 'endSymbolEdit' }] },
+    { commands: [{ op: 'endSymbolEdit', commit: 'yes' }] },
+    { commands: [{ op: 'renameAsset', assetId: 'a', name: 'B' }] },
+    { commands: [{ op: 'renameAsset', assetId: 'a' }] },
+    { commands: [{ op: 'duplicateAsset', assetId: 'a' }] },
+    { commands: [{ op: 'duplicateAsset' }] },
+    { commands: [{ op: 'deleteAsset', assetId: 'a' }] },
+    { commands: [{ op: 'saveToLibrary', assetId: 'a' }] },
+    { commands: [{ op: 'insertFromLibrary', assetId: 'a' }] },
+    { commands: [{ op: 'insertFromLibrary', name: 'Star' }] },
+    { commands: [{ op: 'insertFromLibrary' }] },
+    { commands: [{ op: 'insertFromLibrary', layerId: 'l1' }] },
+    { commands: [{ op: 'insertFromLibrary', name: 'Star', at: { x: 5, y: 5 } }] },
+    { commands: [{ op: 'insertFrames' }] },
+    { commands: [{ op: 'insertFrames', count: 2 }] },
+    { commands: [{ op: 'insertFrames', count: 0 }] },
+    { commands: [{ op: 'insertFrames', count: 1000 }] },
+    { commands: [{ op: 'insertFrames', count: 2.5 }] },
+    { commands: [{ op: 'insertFrames', frame: -1 }] },
+    { commands: [{ op: 'removeFrames', layerId: 'l1', frame: 3, count: 1 }] },
+    { commands: [{ op: 'removeFrames', count: 3 }] },
+    { commands: [{ op: 'moveCell', fromFrame: 0, toFrame: 3 }] },
+    { commands: [{ op: 'moveCell', fromFrame: 0 }] },
+    { commands: [{ op: 'moveCell', toFrame: 3 }] },
+    { commands: [{ op: 'moveNodeToFrame', nodeId: 'x', targetFrame: 3 }] },
+    { commands: [{ op: 'moveNodeToFrame', targetFrame: 3 }] },
+    { commands: [{ op: 'moveNodeToFrame', nodeId: 'x' }] }
   ]
 
   it('agrees with the compiled schema on every corpus entry', () => {

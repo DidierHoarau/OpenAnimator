@@ -108,7 +108,7 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   })
   const scriptButton = el('button', undefined, 'Script…')
   scriptButton.title = 'Run a JSON command payload through the editor'
-  scriptButton.addEventListener('click', () => showScriptConsole(editor))
+  scriptButton.addEventListener('click', () => showScriptConsole(editor, { library: window.api }))
   docs.append(importButton, importAudioButton, newButton, openButton, saveButton, saveAsButton, exportButton, purgeButton, scriptButton)
   toolbar.appendChild(docs)
 

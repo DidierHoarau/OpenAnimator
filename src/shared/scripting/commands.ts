@@ -73,6 +73,35 @@ export type ScriptCommand =
     }
   | { op: 'removeCameraKeyframe'; frame: number }
   | { op: 'setAudio'; layerId: string; startFrame?: number; volume?: number; muted?: boolean }
+  | { op: 'group'; nodeIds: string[]; layerId?: string; frame?: number }
+  | { op: 'ungroup'; nodeIds: string[]; layerId?: string; frame?: number }
+  | { op: 'breakApart'; nodeId: string; layerId?: string; frame?: number }
+  | { op: 'createSymbol'; nodeIds: string[]; layerId?: string; frame?: number; name?: string }
+  | {
+      op: 'placeAsset'
+      assetId: string
+      layerId?: string
+      frame?: number
+      at?: { x: number; y: number }
+    }
+  | { op: 'editSymbol'; assetId: string }
+  | { op: 'endSymbolEdit'; commit: boolean }
+  | { op: 'renameAsset'; assetId: string; name: string }
+  | { op: 'duplicateAsset'; assetId: string }
+  | { op: 'deleteAsset'; assetId: string }
+  | { op: 'saveToLibrary'; assetId: string }
+  | {
+      op: 'insertFromLibrary'
+      assetId?: string
+      name?: string
+      layerId?: string
+      frame?: number
+      at?: { x: number; y: number }
+    }
+  | { op: 'insertFrames'; layerId?: string; frame?: number; count?: number }
+  | { op: 'removeFrames'; layerId?: string; frame?: number; count?: number }
+  | { op: 'moveCell'; layerId?: string; fromFrame: number; toFrame: number }
+  | { op: 'moveNodeToFrame'; nodeId: string; targetFrame: number; layerId?: string }
 
 /** One validation or application outcome, designed to be fed back to a model. */
 export interface ScriptIssue {
@@ -132,6 +161,8 @@ export const COMMANDS_SCHEMA = {
       }
     },
     frameNumber: { type: 'integer', minimum: 0 },
+    /** Non-empty list of node ids (group-style commands). */
+    stringList: { type: 'array', minItems: 1, items: { type: 'string' } },
     command: {
       type: 'object',
       required: ['op'],
@@ -157,13 +188,31 @@ export const COMMANDS_SCHEMA = {
             'seek',
             'setCameraKeyframe',
             'removeCameraKeyframe',
-            'setAudio'
+            'setAudio',
+            'group',
+            'ungroup',
+            'breakApart',
+            'createSymbol',
+            'placeAsset',
+            'editSymbol',
+            'endSymbolEdit',
+            'renameAsset',
+            'duplicateAsset',
+            'deleteAsset',
+            'saveToLibrary',
+            'insertFromLibrary',
+            'insertFrames',
+            'removeFrames',
+            'moveCell',
+            'moveNodeToFrame'
           ]
         },
         kind: { enum: ['object', 'drawing', 'camera', 'audio'] },
         name: { type: 'string' },
         layerId: { type: 'string' },
         nodeId: { type: 'string' },
+        nodeIds: { $ref: '#/definitions/stringList' },
+        assetId: { type: 'string' },
         node: { $ref: '#/definitions/sceneNode' },
         patch: { $ref: '#/definitions/nodePatch' },
         frame: { $ref: '#/definitions/frameNumber' },
@@ -172,6 +221,9 @@ export const COMMANDS_SCHEMA = {
         targetFrame: { $ref: '#/definitions/frameNumber' },
         startFrame: { $ref: '#/definitions/frameNumber' },
         step: { type: 'integer', minimum: 1, maximum: 16 },
+        count: { type: 'integer', minimum: 1, maximum: 999 },
+        commit: { type: 'boolean' },
+        at: { $ref: '#/definitions/vec2' },
         path: { enum: ['linear', 'smooth'] },
         resourceId: { type: 'string' },
         frames: { type: 'integer', minimum: 1 },
@@ -304,6 +356,132 @@ export const COMMANDS_SCHEMA = {
             additionalProperties: false,
             properties: { op: {}, layerId: {}, startFrame: {}, volume: {}, muted: {} }
           }
+        },
+        {
+          if: { properties: { op: { const: 'group' } }, required: ['op'] },
+          then: {
+            required: ['nodeIds'],
+            additionalProperties: false,
+            properties: { op: {}, nodeIds: {}, layerId: {}, frame: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'ungroup' } }, required: ['op'] },
+          then: {
+            required: ['nodeIds'],
+            additionalProperties: false,
+            properties: { op: {}, nodeIds: {}, layerId: {}, frame: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'breakApart' } }, required: ['op'] },
+          then: {
+            required: ['nodeId'],
+            additionalProperties: false,
+            properties: { op: {}, nodeId: {}, layerId: {}, frame: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'createSymbol' } }, required: ['op'] },
+          then: {
+            required: ['nodeIds'],
+            additionalProperties: false,
+            properties: { op: {}, nodeIds: {}, layerId: {}, frame: {}, name: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'placeAsset' } }, required: ['op'] },
+          then: {
+            required: ['assetId'],
+            additionalProperties: false,
+            properties: { op: {}, assetId: {}, layerId: {}, frame: {}, at: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'editSymbol' } }, required: ['op'] },
+          then: {
+            required: ['assetId'],
+            additionalProperties: false,
+            properties: { op: {}, assetId: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'endSymbolEdit' } }, required: ['op'] },
+          then: {
+            required: ['commit'],
+            additionalProperties: false,
+            properties: { op: {}, commit: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'renameAsset' } }, required: ['op'] },
+          then: {
+            required: ['assetId', 'name'],
+            additionalProperties: false,
+            properties: { op: {}, assetId: {}, name: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'duplicateAsset' } }, required: ['op'] },
+          then: {
+            required: ['assetId'],
+            additionalProperties: false,
+            properties: { op: {}, assetId: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'deleteAsset' } }, required: ['op'] },
+          then: {
+            required: ['assetId'],
+            additionalProperties: false,
+            properties: { op: {}, assetId: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'saveToLibrary' } }, required: ['op'] },
+          then: {
+            required: ['assetId'],
+            additionalProperties: false,
+            properties: { op: {}, assetId: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'insertFromLibrary' } }, required: ['op'] },
+          then: {
+            anyOf: [{ required: ['assetId'] }, { required: ['name'] }],
+            additionalProperties: false,
+            properties: { op: {}, assetId: {}, name: {}, layerId: {}, frame: {}, at: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'insertFrames' } }, required: ['op'] },
+          then: {
+            additionalProperties: false,
+            properties: { op: {}, layerId: {}, frame: {}, count: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'removeFrames' } }, required: ['op'] },
+          then: {
+            additionalProperties: false,
+            properties: { op: {}, layerId: {}, frame: {}, count: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'moveCell' } }, required: ['op'] },
+          then: {
+            required: ['fromFrame', 'toFrame'],
+            additionalProperties: false,
+            properties: { op: {}, layerId: {}, fromFrame: {}, toFrame: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'moveNodeToFrame' } }, required: ['op'] },
+          then: {
+            required: ['nodeId', 'targetFrame'],
+            additionalProperties: false,
+            properties: { op: {}, nodeId: {}, layerId: {}, targetFrame: {} }
+          }
         }
       ]
     }
@@ -311,7 +489,7 @@ export const COMMANDS_SCHEMA = {
 } as const
 
 /** Field shape table mirrored from `COMMANDS_SCHEMA.definitions.command`. */
-interface FieldSpec {
+export interface FieldSpec {
   type: 'string' | 'number' | 'integer' | 'boolean' | 'object' | 'array'
   required?: boolean
   min?: number
@@ -327,10 +505,11 @@ interface FieldSpec {
   hexColors?: boolean
   /** Array items must be strings (the item shape of loose string lists). */
   stringItems?: boolean
+  minItems?: number
   maxItems?: number
 }
 
-const OPS = [
+export const OPS = [
   'addLayer',
   'renameLayer',
   'removeLayer',
@@ -350,10 +529,29 @@ const OPS = [
   'seek',
   'setCameraKeyframe',
   'removeCameraKeyframe',
-  'setAudio'
+  'setAudio',
+  'group',
+  'ungroup',
+  'breakApart',
+  'createSymbol',
+  'placeAsset',
+  'editSymbol',
+  'endSymbolEdit',
+  'renameAsset',
+  'duplicateAsset',
+  'deleteAsset',
+  'saveToLibrary',
+  'insertFromLibrary',
+  'insertFrames',
+  'removeFrames',
+  'moveCell',
+  'moveNodeToFrame'
 ] as const
 
-const OP_FIELDS: Record<(typeof OPS)[number], Record<string, FieldSpec>> = {
+/** One scripting op name. */
+export type Op = (typeof OPS)[number]
+
+export const OP_FIELDS: Record<Op, Record<string, FieldSpec>> = {
   addLayer: {
     kind: { type: 'string', enum: ['object', 'drawing', 'camera', 'audio'] },
     name: { type: 'string' },
@@ -430,6 +628,69 @@ const OP_FIELDS: Record<(typeof OPS)[number], Record<string, FieldSpec>> = {
     startFrame: { type: 'integer', min: 0 },
     volume: { type: 'number', min: 0, max: 1 },
     muted: { type: 'boolean' }
+  },
+  group: {
+    nodeIds: { type: 'array', stringItems: true, minItems: 1, required: true },
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 }
+  },
+  ungroup: {
+    nodeIds: { type: 'array', stringItems: true, minItems: 1, required: true },
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 }
+  },
+  breakApart: {
+    nodeId: { type: 'string', required: true },
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 }
+  },
+  createSymbol: {
+    nodeIds: { type: 'array', stringItems: true, minItems: 1, required: true },
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 },
+    name: { type: 'string' }
+  },
+  placeAsset: {
+    assetId: { type: 'string', required: true },
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 },
+    at: { type: 'object' }
+  },
+  editSymbol: { assetId: { type: 'string', required: true } },
+  endSymbolEdit: { commit: { type: 'boolean', required: true } },
+  renameAsset: {
+    assetId: { type: 'string', required: true },
+    name: { type: 'string', required: true }
+  },
+  duplicateAsset: { assetId: { type: 'string', required: true } },
+  deleteAsset: { assetId: { type: 'string', required: true } },
+  saveToLibrary: { assetId: { type: 'string', required: true } },
+  insertFromLibrary: {
+    assetId: { type: 'string' },
+    name: { type: 'string' },
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 },
+    at: { type: 'object' }
+  },
+  insertFrames: {
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 },
+    count: { type: 'integer', min: 1, max: 999 }
+  },
+  removeFrames: {
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 },
+    count: { type: 'integer', min: 1, max: 999 }
+  },
+  moveCell: {
+    layerId: { type: 'string' },
+    fromFrame: { type: 'integer', min: 0, required: true },
+    toFrame: { type: 'integer', min: 0, required: true }
+  },
+  moveNodeToFrame: {
+    nodeId: { type: 'string', required: true },
+    layerId: { type: 'string' },
+    targetFrame: { type: 'integer', min: 0, required: true }
   }
 }
 
@@ -542,6 +803,9 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
       return
     }
     const items = value as unknown[]
+    if (spec.minItems !== undefined && items.length < spec.minItems) {
+      collector.at(path, `must have at least ${spec.minItems} item${spec.minItems === 1 ? '' : 's'}`)
+    }
     if (spec.maxItems !== undefined && items.length > spec.maxItems) {
       collector.at(path, `must have at most ${spec.maxItems} items`)
     }
@@ -580,7 +844,7 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
       collector.at(path, `must be object (got ${kind})`)
       return
     }
-    if (path.endsWith('/center')) checkVec2(collector, path, value)
+    if (path.endsWith('/center') || path.endsWith('/at')) checkVec2(collector, path, value)
     else if (path.endsWith('/node')) validateSceneNode(collector, path, value)
     else if (path.endsWith('/patch')) validateNodePatch(collector, path, value)
     return
@@ -820,6 +1084,9 @@ export function validateScriptPayload(value: unknown): { commands: ScriptCommand
     }
     if (op === 'addLayer' && command.kind === 'audio' && command.resourceId === undefined) {
       collector.at(`${path}/resourceId`, 'is required when kind is "audio"')
+    }
+    if (op === 'insertFromLibrary' && command.assetId === undefined && command.name === undefined) {
+      collector.at(`${path}/assetId`, 'is required (or provide "name")')
     }
   })
   if (collector.errors.length > 0) return { commands: [], errors: collector.errors }

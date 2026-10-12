@@ -1,7 +1,9 @@
 import type { ScriptCommand, ScriptIssue } from '@shared/scripting/commands'
+import type { LibraryListResult, ResourceAddResult } from '@shared/api'
 import type { Vec2 } from '@shared/geometry'
-import type { SceneNode, NodeBase } from '@shared/model'
+import type { Asset, Layer, SceneNode, NodeBase } from '@shared/model'
 import { MAX_PALETTE_COLORS, createId, extractKeyframeChunk } from '@shared/document'
+import { collectAssetResourceIds } from '@shared/assets'
 import { isAudioLayer, isCameraLayer, isObjectLayer } from '@shared/model'
 
 import type { Editor } from '../editor'
@@ -11,13 +13,29 @@ import type { Easing } from '@shared/easing'
 
 const NODE_KINDS = new Set(['primitive', 'path', 'text', 'image', 'group', 'symbol'])
 
+/** Subset of the preload API the library commands need (`window.api` in the
+ * renderer, a fake in unit tests). Without a bridge those commands fail with
+ * a clear error instead of crashing — `src/shared/` stays Electron-free. */
+export type ScriptLibraryBridge = {
+  listLibrary(): Promise<LibraryListResult>
+  addLibraryAsset(asset: Asset, contextAssets?: Asset[]): Promise<void>
+  addResource(bytes: Uint8Array, fileName: string): Promise<ResourceAddResult>
+}
+
+export interface ScriptRunOptions {
+  /** Global "My Library" bridge for the save/insert-library commands. */
+  library?: ScriptLibraryBridge
+}
+
 /**
  * Executes validated script commands through the public Editor API — the
  * exact pipeline UI gestures use (same validation, same undo entries). Each
  * command runs in its own coalesced interaction, so it is atomic: either all
  * of its editor mutations land as one undo entry, or a failure leaves the
  * document untouched. Every outcome is collected as a warning or error so a
- * calling LLM can repair and retry (validate-and-repair flow).
+ * calling LLM can repair and retry (validate-and-repair flow). Warnings also
+ * report the ids commands created (groups, symbols, assets, duplicated
+ * assets) so a payload can chain follow-up commands on them.
  */
 export interface ScriptRunResult {
   /** Commands that mutated the document (best effort count on success). */
@@ -25,13 +43,18 @@ export interface ScriptRunResult {
   issues: ScriptIssue[]
 }
 
-export function executeScriptCommands(editor: Editor, commands: readonly ScriptCommand[]): ScriptRunResult {
+export async function executeScriptCommands(
+  editor: Editor,
+  commands: readonly ScriptCommand[],
+  options: ScriptRunOptions = {}
+): Promise<ScriptRunResult> {
   const issues: ScriptIssue[] = []
   let applied = 0
-  commands.forEach((command, index) => {
+  for (let index = 0; index < commands.length; index += 1) {
+    const command = commands[index]
     try {
       editor.beginInteraction()
-      const changed = applyCommand(editor, command, index, issues)
+      const changed = await applyCommand(editor, command, index, issues, options)
       if (changed) applied += 1
     } catch (error) {
       issues.push({
@@ -42,7 +65,7 @@ export function executeScriptCommands(editor: Editor, commands: readonly ScriptC
     } finally {
       editor.endInteraction()
     }
-  })
+  }
   if (applied > 0) editor.showMessage(`Script: applied ${applied} of ${commands.length} command(s)`)
   return { applied, issues }
 }
@@ -51,12 +74,13 @@ function issue(issues: ScriptIssue[], index: number, message: string, severity: 
   issues.push({ index, message, severity })
 }
 
-function applyCommand(
+async function applyCommand(
   editor: Editor,
   command: ScriptCommand,
   index: number,
-  issues: ScriptIssue[]
-): boolean {
+  issues: ScriptIssue[],
+  options: ScriptRunOptions
+): Promise<boolean> {
   switch (command.op) {
     case 'addLayer': {
       if (command.kind === 'camera') {
@@ -366,6 +390,256 @@ function applyCommand(
       }
       return true
     }
+    case 'group': {
+      if (!selectEditableLayer(editor, command.layerId, command.frame, index, issues, 'group')) return false
+      editor.selectNodes(command.nodeIds, 'replace')
+      if (!editor.groupSelection()) {
+        issue(
+          issues,
+          index,
+          `group: none of the given nodes are on layer ${editor.currentLayerId} at frame ${editor.currentFrame}`,
+          'warning'
+        )
+        return false
+      }
+      issue(issues, index, `group: grouped into node ${editor.selectedNodeIds[0]}`, 'warning')
+      return true
+    }
+    case 'ungroup': {
+      if (!selectEditableLayer(editor, command.layerId, command.frame, index, issues, 'ungroup')) return false
+      editor.selectNodes(command.nodeIds, 'replace')
+      if (!editor.ungroupSelection()) {
+        issue(
+          issues,
+          index,
+          `ungroup: none of the given nodes are groups at frame ${editor.currentFrame} on layer ${editor.currentLayerId}`,
+          'warning'
+        )
+        return false
+      }
+      issue(issues, index, `ungroup: dissolved into nodes ${editor.selectedNodeIds.join(', ')}`, 'warning')
+      return true
+    }
+    case 'breakApart': {
+      const layerId =
+        command.layerId ?? findLayerOfNode(editor, command.nodeId) ?? editor.currentLayerId
+      if (!selectEditableLayer(editor, layerId, command.frame, index, issues, 'breakApart')) return false
+      editor.selectNodes([command.nodeId], 'replace')
+      if (!editor.breakApartSelection()) {
+        issue(
+          issues,
+          index,
+          `breakApart: node ${command.nodeId} is not a symbol instance at frame ${editor.currentFrame} on layer ${editor.currentLayerId}`,
+          'warning'
+        )
+        return false
+      }
+      issue(issues, index, `breakApart: replaced by group ${editor.selectedNodeIds.join(', ')}`, 'warning')
+      return true
+    }
+    case 'createSymbol': {
+      if (!selectEditableLayer(editor, command.layerId, command.frame, index, issues, 'createSymbol')) return false
+      editor.selectNodes(command.nodeIds, 'replace')
+      if (!editor.saveSelectionAsSymbol()) {
+        issue(
+          issues,
+          index,
+          `createSymbol: none of the given nodes are on layer ${editor.currentLayerId} at frame ${editor.currentFrame}`,
+          'warning'
+        )
+        return false
+      }
+      const layer = findLayer(editor, editor.currentLayerId)
+      const instance =
+        layer && isObjectLayer(layer)
+          ? findNodeAtFrame(layer, editor.currentFrame, editor.selectedNodeIds[0])
+          : undefined
+      const assetId = instance?.type === 'symbol' ? instance.assetId : undefined
+      if (command.name && assetId) editor.renameAsset(assetId, command.name)
+      issue(
+        issues,
+        index,
+        `createSymbol: created symbol asset ${assetId ?? '(unknown)'} — instance node ${editor.selectedNodeIds[0]}`,
+        'warning'
+      )
+      return true
+    }
+    case 'placeAsset': {
+      resolveCommandTarget(editor, command.layerId, command.frame, index, issues, 'placeAsset')
+      if (!editor.placeAsset(command.assetId, command.at)) {
+        issue(
+          issues,
+          index,
+          `placeAsset: asset ${command.assetId} not found, or the target layer is missing/locked/hidden`
+        )
+        return false
+      }
+      issue(issues, index, `placeAsset: placed as node ${editor.selectedNodeIds[0]}`, 'warning')
+      return true
+    }
+    case 'editSymbol': {
+      if (editor.editingAssetId) {
+        issue(
+          issues,
+          index,
+          `editSymbol: already editing symbol ${editor.editingAssetId} — run endSymbolEdit first`
+        )
+        return false
+      }
+      if (!editor.beginSymbolEdit(command.assetId)) {
+        issue(issues, index, `editSymbol: asset ${command.assetId} is not a symbol asset (or unknown)`)
+        return false
+      }
+      return true
+    }
+    case 'endSymbolEdit': {
+      if (!editor.editingAssetId) {
+        issue(issues, index, 'endSymbolEdit: not editing a symbol')
+        return false
+      }
+      editor.endSymbolEdit(command.commit)
+      return true
+    }
+    case 'renameAsset': {
+      const asset = editor.document.assets.find((entry) => entry.id === command.assetId)
+      if (!asset) {
+        issue(issues, index, `renameAsset: asset ${command.assetId} not found in the document`)
+        return false
+      }
+      editor.renameAsset(command.assetId, command.name)
+      return true
+    }
+    case 'duplicateAsset': {
+      const newId = editor.duplicateAsset(command.assetId)
+      if (!newId) {
+        issue(issues, index, `duplicateAsset: asset ${command.assetId} not found in the document`)
+        return false
+      }
+      issue(issues, index, `duplicateAsset: created asset ${newId}`, 'warning')
+      return true
+    }
+    case 'deleteAsset': {
+      const asset = editor.document.assets.find((entry) => entry.id === command.assetId)
+      if (!asset) {
+        issue(issues, index, `deleteAsset: asset ${command.assetId} not found in the document`)
+        return false
+      }
+      const instances = editor.deleteAsset(command.assetId)
+      if (instances > 0) {
+        issue(
+          issues,
+          index,
+          `deleteAsset: removed "${asset.name}" — ${instances} instance(s) on the stage become placeholders`,
+          'warning'
+        )
+      }
+      return true
+    }
+    case 'saveToLibrary': {
+      const asset = editor.document.assets.find((entry) => entry.id === command.assetId)
+      if (!asset) {
+        issue(issues, index, `saveToLibrary: asset ${command.assetId} not found in the document`)
+        return false
+      }
+      if (!options.library) {
+        issue(issues, index, 'saveToLibrary: the global library is not available in this context')
+        return false
+      }
+      await options.library.addLibraryAsset(asset, editor.document.assets)
+      return true
+    }
+    case 'insertFromLibrary': {
+      const library = options.library
+      if (!library) {
+        issue(issues, index, 'insertFromLibrary: the global library is not available in this context')
+        return false
+      }
+      const listing = await library.listLibrary()
+      const asset =
+        command.assetId !== undefined
+          ? listing.assets.find((entry) => entry.id === command.assetId)
+          : listing.assets.find((entry) => entry.name === command.name)
+      if (!asset) {
+        const known = listing.assets.map((entry) => `"${entry.name}" (${entry.id})`)
+        const query = command.assetId !== undefined ? `id ${command.assetId}` : `name "${command.name ?? ''}"`
+        issue(
+          issues,
+          index,
+          `insertFromLibrary: no library asset matches ${query} — known assets: ${
+            known.length > 0 ? known.join(', ') : '(the library is empty)'
+          }`
+        )
+        return false
+      }
+      resolveCommandTarget(editor, command.layerId, command.frame, index, issues, 'insertFromLibrary')
+      const cache: Record<string, Uint8Array> = {}
+      for (const resourceId of collectAssetResourceIds(asset, listing.assets)) {
+        const resource = listing.resources[resourceId]
+        if (!resource) continue
+        await library.addResource(resource.bytes, `${resourceId}.${resource.ext}`)
+        cache[resourceId] = resource.bytes
+      }
+      if (!editor.importAndPlaceAsset(asset, cache, command.at)) {
+        issue(
+          issues,
+          index,
+          `insertFromLibrary: could not place "${asset.name}" — the target layer is missing/locked/hidden`
+        )
+        return false
+      }
+      return true
+    }
+    case 'insertFrames': {
+      const layer = ensureEditableLayer(editor, command.layerId, index, issues, 'insertFrames')
+      if (!layer) return false
+      editor.setCurrentLayer(layer.id)
+      editor.setFrame(command.frame ?? editor.currentFrame)
+      const count = command.count ?? 1
+      for (let step = 0; step < count; step += 1) editor.insertFrameHere()
+      return true
+    }
+    case 'removeFrames': {
+      const layer = ensureEditableLayer(editor, command.layerId, index, issues, 'removeFrames')
+      if (!layer) return false
+      editor.setCurrentLayer(layer.id)
+      editor.setFrame(command.frame ?? editor.currentFrame)
+      const count = command.count ?? 1
+      for (let step = 0; step < count; step += 1) {
+        if (!editor.removeFrameHere()) break
+      }
+      return true
+    }
+    case 'moveCell': {
+      const layer = ensureEditableLayer(editor, command.layerId, index, issues, 'moveCell')
+      if (!layer) return false
+      editor.setCurrentLayer(layer.id)
+      if (!editor.moveCellToFrame(command.fromFrame, command.toFrame)) {
+        issue(
+          issues,
+          index,
+          `moveCell: layer ${layer.id} is not a drawing layer, or it has no cell covering frame ${command.fromFrame} (or the move is a no-op)`,
+          'warning'
+        )
+        return false
+      }
+      return true
+    }
+    case 'moveNodeToFrame': {
+      const layerId = command.layerId ?? findLayerOfNode(editor, command.nodeId)
+      const layer = ensureEditableLayer(editor, layerId, index, issues, 'moveNodeToFrame')
+      if (!layer) return false
+      editor.setCurrentLayer(layer.id)
+      if (!editor.moveNodeToFrame(command.nodeId, command.targetFrame)) {
+        issue(
+          issues,
+          index,
+          `moveNodeToFrame: node ${command.nodeId} has no keyframes on layer ${layer.id} (or the move would leave the timeline)`,
+          'warning'
+        )
+        return false
+      }
+      return true
+    }
   }
 }
 
@@ -507,6 +781,83 @@ function selectAndSeek(editor: Editor, layerId: string, nodeId: string, frame: n
 
 function findLayer(editor: Editor, layerId: string) {
   return editor.document.layers.find((layer) => layer.id === layerId)
+}
+
+/**
+ * Resolves the layer for the selection-based commands (group family): the
+ * given layer or the current one, validated as an unlocked object layer,
+ * with the playhead moved to the command's frame.
+ */
+function selectEditableLayer(
+  editor: Editor,
+  layerId: string | undefined,
+  frame: number | undefined,
+  index: number,
+  issues: ScriptIssue[],
+  op: string
+): boolean {
+  const resolved = layerId ?? editor.currentLayerId
+  const layer = findLayer(editor, resolved)
+  if (!layer || !isObjectLayer(layer)) {
+    issue(issues, index, `${op}: layer ${resolved} is not an object layer`)
+    return false
+  }
+  if (layer.locked) {
+    issue(issues, index, `${op}: layer ${resolved} is locked`)
+    return false
+  }
+  editor.setCurrentLayer(resolved)
+  if (frame !== undefined) editor.setFrame(frame)
+  return true
+}
+
+/** Resolves the layer for the timeline-edit commands (any kind, unlocked). */
+function ensureEditableLayer(
+  editor: Editor,
+  layerId: string | undefined,
+  index: number,
+  issues: ScriptIssue[],
+  op: string
+): Layer | null {
+  const resolved = layerId ?? editor.currentLayerId
+  const layer = findLayer(editor, resolved)
+  if (!layer) {
+    issue(issues, index, `${op}: layer ${resolved} not found`)
+    return null
+  }
+  if (layer.locked) {
+    issue(issues, index, `${op}: layer ${resolved} is locked`)
+    return null
+  }
+  return layer
+}
+
+/** Resolves layer/frame like addNode does: an unknown layer warns and falls
+ * back to the current one instead of failing the command. */
+function resolveCommandTarget(
+  editor: Editor,
+  layerId: string | undefined,
+  frame: number | undefined,
+  index: number,
+  issues: ScriptIssue[],
+  op: string
+): void {
+  if (layerId !== undefined) {
+    const layer = findLayer(editor, layerId)
+    if (!layer) {
+      issue(issues, index, `${op}: layer ${layerId} not found`, 'warning')
+    } else {
+      editor.setCurrentLayer(layer.id)
+    }
+  }
+  if (frame !== undefined) editor.setFrame(frame)
+}
+
+function findNodeAtFrame(layer: Layer, frame: number, nodeId: string): SceneNode | undefined {
+  if (!isObjectLayer(layer)) return undefined
+  return layer.keyframes
+    .find((keyframe) => keyframe.frame === frame)
+    ?.nodes.find((node) => node.id === nodeId)
 }
 
 function findLayerOfNode(editor: Editor, nodeId: string): string | undefined {
