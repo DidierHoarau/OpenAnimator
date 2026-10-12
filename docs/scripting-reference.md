@@ -12,7 +12,7 @@ Machine-readable schema: `commands-v1.json` (export it with `npm run cli -- sche
 
 ## Commands at a glance
 
-- [`addLayer`](#addlayer) — Add a layer (`object`, `drawing`, `camera` or `audio`) and select it.
+- [`addLayer`](#addlayer) — Add a layer (`object`, `drawing`, `camera` or `audio`) and select it; an explicit `layerId` is applied when it is still free (script replay).
 - [`renameLayer`](#renamelayer) — Rename an existing layer.
 - [`removeLayer`](#removelayer) — Delete a layer and everything on it.
 - [`addNode`](#addnode) — Add a scene node (primitive, path, text, image, group or symbol) to a layer, optionally at a frame.
@@ -53,6 +53,13 @@ Machine-readable schema: `commands-v1.json` (export it with `npm run cli -- sche
 - [`distribute`](#distribute) — Space the selected objects evenly along `h` or `v` (outermost two fixed; needs at least three objects).
 - [`setPreferences`](#setpreferences) — Merge a partial preferences patch (sanitized and persisted) into the application settings.
 - [`setPathAnchors`](#setpathanchors) — Replace the full anchor/subpath geometry of a path node (one undo entry; covers add, move, remove and corner/smooth toggles).
+- [`export`](#export) — Export the document to a file in the given format.
+- [`importImage`](#importimage) — Import an image file and add it as a node on a layer.
+- [`importAudio`](#importaudio) — Import an audio file and add it as an audio layer.
+- [`setOnionSkin`](#setonionskin) — Toggle onion skinning and set the number of ghost frames shown before/after the playhead.
+- [`setBrush`](#setbrush) — Set the brush color, size and stroke opacity.
+- [`setGlobalPalette`](#setglobalpalette) — Replace the global (cross-document) color palette (1–48 `#rgb`/`#rrggbb` colors).
+- [`addGlobalPaletteColor`](#addglobalpalettecolor) — Append one color to the global palette (rejected when it is already there or full).
 
 ## Conventions
 
@@ -60,7 +67,7 @@ Machine-readable schema: `commands-v1.json` (export it with `npm run cli -- sche
 - `frame`: 0-based frame; defaults to the playhead and the executor warns.
 - `at`: stage position `{x,y}` for placed assets.
 - `nodeIds`: non-empty list of node ids on the target layer.
-- `patch`: partial node update: only known fields, unknown ones are rejected.
+- `patch`: partial node update: only known fields, unknown ones are rejected; optional fields may be `null` to clear them.
 - Created or chosen ids are reported back as warnings so a model can chain later commands.
 - Colors accept `#rgb`/`#rrggbb` or a gradient object; see `paint` in the schema for the exact shape.
 
@@ -68,7 +75,7 @@ Machine-readable schema: `commands-v1.json` (export it with `npm run cli -- sche
 
 ### addLayer
 
-Add a layer (`object`, `drawing`, `camera` or `audio`) and select it.
+Add a layer (`object`, `drawing`, `camera` or `audio`) and select it; an explicit `layerId` is applied when it is still free (script replay).
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
@@ -76,6 +83,7 @@ Add a layer (`object`, `drawing`, `camera` or `audio`) and select it.
 | `name` | string | no | — |
 | `resourceId` | string | no | — |
 | `startFrame` | integer | no | min 0 |
+| `layerId` | string | no | — |
 
 ### renameLayer
 
@@ -454,6 +462,81 @@ Replace the full anchor/subpath geometry of a path node (one undo entry; covers 
 | `layerId` | string | no | — |
 | `frame` | integer | no | min 0 |
 | `subpaths` | array | yes | at least 1 item |
+
+### export
+
+Export the document to a file in the given format.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `format` | string | yes | one of `png-sequence`, `gif`, `webm`, `mp4`, `lottie`, `dotlottie`, `svg-animation`, `spritesheet` |
+| `out` | string | no | — |
+| `fromFrame` | integer | no | min 0 |
+| `toFrame` | integer | no | min 0 |
+| `scale` | number | no | — |
+| `fps` | integer | no | min 1 |
+| `transparent` | boolean | no | — |
+| `gifPalette` | string | no | one of `perFrame`, `global` |
+| `gifDither` | boolean | no | — |
+| `gifLoop` | integer | no | min -1 |
+| `videoQuality` | string | no | one of `low`, `medium`, `high` |
+
+### importImage
+
+Import an image file and add it as a node on a layer.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `frame` | integer | no | min 0 |
+| `layerId` | string | no | — |
+| `at` | object | no | — |
+| `width` | number | no | greater than 0 |
+| `height` | number | no | greater than 0 |
+| `name` | string | no | — |
+
+### importAudio
+
+Import an audio file and add it as an audio layer.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `startFrame` | integer | no | min 0 |
+
+### setOnionSkin
+
+Toggle onion skinning and set the number of ghost frames shown before/after the playhead.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `enabled` | boolean | no | — |
+| `before` | integer | no | min 0; max 5 |
+| `after` | integer | no | min 0; max 5 |
+
+### setBrush
+
+Set the brush color, size and stroke opacity.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `color` | string | no | — |
+| `size` | number | no | greater than 0 |
+| `opacity` | number | no | min 0; max 1 |
+
+### setGlobalPalette
+
+Replace the global (cross-document) color palette (1–48 `#rgb`/`#rrggbb` colors).
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `colors` | array | yes | `#rgb`/`#rrggbb` strings; at least 1 item; at most 48 items |
+
+### addGlobalPaletteColor
+
+Append one color to the global palette (rejected when it is already there or full).
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `color` | string | yes | — |
 
 ## Examples
 

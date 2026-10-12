@@ -1,19 +1,35 @@
 import { el } from './dom'
 import type { Editor } from './editor'
-import { defaultExportOptions, sanitizeExportOptions, EXPORT_FORMATS } from '@shared/exportOptions'
+import {
+  defaultExportOptions,
+  sanitizeExportOptions,
+  EXPORT_FORMATS,
+  GIF_PALETTES,
+  VIDEO_QUALITIES
+} from '@shared/exportOptions'
 import type { ExportOptions } from '@shared/exportOptions'
+import {
+  emptyExportPresets,
+  normalizeExportPresetName,
+  removeExportPreset,
+  upsertExportPreset,
+  withLastUsed,
+  EXPORT_PRESET_NAME_MAX
+} from '@shared/exportPresets'
+import type { ExportPresetsData } from '@shared/exportPresets'
 import { createModal } from './modal'
 import type { ModalHandle } from './modal'
 import { createDefaultExportRunnerDeps, runExport } from './export/runExport'
 
 /**
  * Export dialog: format, resolution scale, fps, frame range and transparent
- * background, with a progress bar and a Cancel button while the export runs.
- * All values are sanitized through the shared export-options module before
- * the runner sees them. Cancel (button, × or Escape) mid-export sets the
- * runner's cancel signal; the dialog closes once the runner settles. A
- * successful export carrying diagnostics stays open in a done state with a
- * collapsible list of them.
+ * background — plus format-specific controls (GIF palette/dither/loop, video
+ * quality) and named export presets backed by the userData store (the last
+ * used settings reapply when the dialog opens). All values are sanitized
+ * through the shared export-options module before the runner sees them.
+ * Cancel (button, × or Escape) mid-export sets the runner's cancel signal;
+ * the dialog closes once the runner settles. A successful export carrying
+ * diagnostics stays open in a done state with a collapsible list of them.
  */
 export function showExportDialog(editor: Editor): void {
   const initial = defaultExportOptions(editor.document)
@@ -22,6 +38,9 @@ export function showExportDialog(editor: Editor): void {
   let running = false
   let diagnostics: string[] = []
   let modalHandle: ModalHandle | null = null
+  let presetsData: ExportPresetsData = emptyExportPresets()
+  /** Set on the first user edit; blocks the async last-used application. */
+  let touched = false
 
   const cancelExport = (): void => {
     if (signal.canceled) return
@@ -48,6 +67,29 @@ export function showExportDialog(editor: Editor): void {
   header.append(el('h2', 'modal-title', 'Export animation'), closeButton)
 
   const form = el('div', 'export-form')
+  form.addEventListener('input', () => {
+    touched = true
+  })
+  form.addEventListener('change', () => {
+    touched = true
+  })
+
+  // Presets: the dropdown loads a named preset, Save stores the current
+  // settings under the typed name, Delete drops the selected preset.
+  const presetSelect = el('select', 'export-preset-select') as HTMLSelectElement
+  const presetNameInput = document.createElement('input')
+  presetNameInput.type = 'text'
+  presetNameInput.className = 'export-preset-name'
+  presetNameInput.placeholder = 'Preset name'
+  presetNameInput.maxLength = EXPORT_PRESET_NAME_MAX
+  const savePresetButton = el('button', 'export-preset-save', 'Save preset')
+  const deletePresetButton = el('button', 'export-preset-delete', 'Delete')
+  const presetsField = el('div', 'export-field')
+  presetsField.append(
+    el('span', 'export-field-label', 'Presets'),
+    row(presetSelect, deletePresetButton),
+    row(presetNameInput, savePresetButton)
+  )
 
   const formatSelect = el('select', 'export-format') as HTMLSelectElement
   for (const entry of EXPORT_FORMATS) {
@@ -77,6 +119,51 @@ export function showExportDialog(editor: Editor): void {
   transparentInput.checked = initial.transparent
   const transparentField = labeledField('Transparent background', transparentInput)
 
+  const gifPaletteSelect = el('select', 'export-gif-palette') as HTMLSelectElement
+  const gifPaletteLabels: Record<(typeof GIF_PALETTES)[number], string> = {
+    perFrame: 'Per-frame palette (best quality)',
+    global: 'Global palette (smaller, steady)'
+  }
+  for (const palette of GIF_PALETTES) {
+    const option = document.createElement('option')
+    option.value = palette
+    option.textContent = gifPaletteLabels[palette]
+    gifPaletteSelect.appendChild(option)
+  }
+  gifPaletteSelect.value = initial.gifPalette
+
+  const gifDitherInput = document.createElement('input')
+  gifDitherInput.type = 'checkbox'
+  gifDitherInput.checked = initial.gifDither
+
+  const gifLoopInput = numberInput(initial.gifLoop, -1, 65535, 1)
+  const gifLoopField = labeledField(
+    'GIF loop count (0 = forever)',
+    row(gifLoopInput, el('span', 'export-range-sep', '−1 plays once'))
+  )
+
+  const gifFields = el('div', 'export-gif-fields')
+  gifFields.append(
+    labeledField('GIF palette', gifPaletteSelect),
+    labeledField('Dithering (Floyd–Steinberg)', gifDitherInput),
+    gifLoopField
+  )
+
+  const qualitySelect = el('select', 'export-video-quality') as HTMLSelectElement
+  const qualityLabels: Record<(typeof VIDEO_QUALITIES)[number], string> = {
+    low: 'Low (smallest file)',
+    medium: 'Medium',
+    high: 'High (best quality)'
+  }
+  for (const tier of VIDEO_QUALITIES) {
+    const option = document.createElement('option')
+    option.value = tier
+    option.textContent = qualityLabels[tier]
+    qualitySelect.appendChild(option)
+  }
+  qualitySelect.value = initial.videoQuality
+  const qualityField = labeledField('Video quality', qualitySelect)
+
   const transparentHint = el(
     'p',
     'modal-subtitle',
@@ -89,7 +176,18 @@ export function showExportDialog(editor: Editor): void {
     'WebM and MP4 include the mixed audio tracks (audible audio layers); all other formats are silent.'
   )
 
-  form.append(formatField, scaleField, fpsField, rangeField, transparentField, transparentHint, audioHint)
+  form.append(
+    presetsField,
+    formatField,
+    scaleField,
+    fpsField,
+    rangeField,
+    transparentField,
+    gifFields,
+    qualityField,
+    transparentHint,
+    audioHint
+  )
 
   const progressWrap = el('div', 'export-progress hidden')
   const progressBar = el('div', 'export-progress-bar')
@@ -119,9 +217,106 @@ export function showExportDialog(editor: Editor): void {
     transparentInput.disabled = opaqueOnly
     if (opaqueOnly) transparentInput.checked = false
     scaleInput.disabled = format === 'lottie' || format === 'dotlottie'
+    gifFields.classList.toggle('hidden', format !== 'gif')
+    qualityField.classList.toggle('hidden', format !== 'webm' && format !== 'mp4')
   }
   formatSelect.addEventListener('change', syncFormatAvailability)
   syncFormatAvailability()
+
+  const readOptions = (): ExportOptions =>
+    sanitizeExportOptions(
+      {
+        format: formatSelect.value as ExportOptions['format'],
+        scale: Number(scaleInput.value),
+        fps: Number(fpsInput.value),
+        fromFrame: Number(fromInput.value) - 1,
+        toFrame: Number(toInput.value) - 1,
+        transparent: transparentInput.checked,
+        gifPalette: gifPaletteSelect.value as ExportOptions['gifPalette'],
+        gifDither: gifDitherInput.checked,
+        gifLoop: Number(gifLoopInput.value),
+        videoQuality: qualitySelect.value as ExportOptions['videoQuality']
+      },
+      editor.document
+    )
+
+  const applyOptionsToControls = (options: ExportOptions): void => {
+    formatSelect.value = options.format
+    scaleInput.value = String(options.scale)
+    fpsInput.value = String(options.fps)
+    fromInput.value = String(options.fromFrame + 1)
+    toInput.value = String(options.toFrame + 1)
+    transparentInput.checked = options.transparent
+    gifPaletteSelect.value = options.gifPalette
+    gifDitherInput.checked = options.gifDither
+    gifLoopInput.value = String(options.gifLoop)
+    qualitySelect.value = options.videoQuality
+    syncFormatAvailability()
+  }
+
+  const refreshPresetSelect = (selected = presetSelect.value): void => {
+    presetSelect.replaceChildren()
+    const placeholder = document.createElement('option')
+    placeholder.value = ''
+    placeholder.textContent = presetsData.presets.length
+      ? 'Load a preset…'
+      : 'No presets yet'
+    presetSelect.appendChild(placeholder)
+    for (const preset of presetsData.presets) {
+      const option = document.createElement('option')
+      option.value = preset.name
+      option.textContent = preset.name
+      presetSelect.appendChild(option)
+    }
+    presetSelect.value = presetsData.presets.some((preset) => preset.name === selected)
+      ? selected
+      : ''
+  }
+
+  const persistPresets = (): void => {
+    void window.api.saveExportPresets(presetsData).catch(() => undefined)
+  }
+
+  presetSelect.addEventListener('change', () => {
+    const preset = presetsData.presets.find((entry) => entry.name === presetSelect.value)
+    if (!preset) return
+    presetNameInput.value = preset.name
+    applyOptionsToControls(sanitizeExportOptions(preset.options, editor.document))
+  })
+
+  savePresetButton.addEventListener('click', () => {
+    const name = normalizeExportPresetName(presetNameInput.value)
+    if (!name) {
+      presetNameInput.focus()
+      return
+    }
+    presetsData = upsertExportPreset(presetsData, name, readOptions())
+    presetNameInput.value = name
+    refreshPresetSelect(name)
+    persistPresets()
+  })
+
+  deletePresetButton.addEventListener('click', () => {
+    const name = presetSelect.value || normalizeExportPresetName(presetNameInput.value)
+    if (!name) return
+    presetsData = removeExportPreset(presetsData, name)
+    presetNameInput.value = ''
+    refreshPresetSelect('')
+    persistPresets()
+  })
+
+  refreshPresetSelect()
+  void window.api
+    .loadExportPresets()
+    .then((data) => {
+      presetsData = data
+      refreshPresetSelect()
+      // Last-used settings reapply on open unless the user already edited.
+      if (!touched && data.lastUsed) {
+        applyOptionsToControls(sanitizeExportOptions(data.lastUsed, editor.document))
+      }
+    })
+    .catch(() => undefined)
 
   const showDiagnostics = (entries: string[]): void => {
     form.classList.add('hidden')
@@ -137,15 +332,7 @@ export function showExportDialog(editor: Editor): void {
   }
 
   exportButton.addEventListener('click', () => {
-    const raw: Partial<ExportOptions> = {
-      format: formatSelect.value as ExportOptions['format'],
-      scale: Number(scaleInput.value),
-      fps: Number(fpsInput.value),
-      fromFrame: Number(fromInput.value) - 1,
-      toFrame: Number(toInput.value) - 1,
-      transparent: transparentInput.checked
-    }
-    const options = sanitizeExportOptions(raw, editor.document)
+    const options = readOptions()
     diagnostics = []
     running = true
     form.classList.add('hidden')
@@ -162,6 +349,10 @@ export function showExportDialog(editor: Editor): void {
       }
     }, signal).then((written) => {
       running = false
+      if (written && !signal.canceled) {
+        presetsData = withLastUsed(presetsData, options)
+        persistPresets()
+      }
       if (signal.canceled) modalHandle?.close()
       else if (written && diagnostics.length > 0) showDiagnostics(diagnostics)
       else if (written) modalHandle?.close()

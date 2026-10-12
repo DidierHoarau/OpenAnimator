@@ -5,6 +5,9 @@ surfaces: the in-app **Export dialog** (toolbar) and the **headless CLI**
 (`npm run cli -- render …`, see [scripting.md](scripting.md)). Both paths
 evaluate frames through the same shared code, so camera framing, embedded
 fonts and audio timing are identical between the app and the command line.
+The dialog persists named **presets** and the last-used option set in
+`export-presets.json` under the app user data; both load sanitized, so a
+stale or hand-edited entry can never break an export.
 
 ## Format matrix
 
@@ -14,8 +17,8 @@ fonts and audio timing are identical between the app and the command line.
 | `gif` | animated GIF89a | yes | yes (1-bit) | silent | shared GIF encoder |
 | `webm` | VP9 WebM video | yes | yes — VP9 alpha when available, else opaque + notice | yes (mixed) | WebCodecs (app) / ffmpeg (CLI) |
 | `mp4` | H.264 MP4 video | yes | never (always opaque) | yes (mixed) | WebCodecs (app) / ffmpeg (CLI) |
-| `lottie` | bodymovin JSON (v5.7.4) | ignored (pinned 1) | inherently transparent | silent | native vector builder (no rasterization) |
-| `dotlottie` | dotLottie ZIP | ignored (pinned 1) | inherently transparent | silent | native vector builder |
+| `lottie` | bodymovin JSON (v5.7.4) | ignored (pinned 1) | inherently transparent | yes (embedded data URIs) | native vector builder (no rasterization) |
+| `dotlottie` | dotLottie ZIP | ignored (pinned 1) | inherently transparent | yes (archive side files) | native vector builder |
 | `svg-animation` | self-contained animated SVG (CSS keyframes) | display size only | yes | silent | native vector builder |
 | `spritesheet` | ZIP: `atlas.png` + `atlas.json` | yes | yes | silent | resvg (CLI) / canvas (app) + atlas packer |
 
@@ -23,16 +26,29 @@ Options common to every format: `--fps` 1–60 (default: document fps),
 `--from` / `--to` (0-based inclusive range, default the full document) and
 `--transparent`. `sanitizeExportOptions` clamps all of these: transparency is
 dropped for MP4 (no alpha codec in the container) and the Lottie formats pin
-`scale` to 1 (their resolution is inherent to the consuming player). The CLI
-derives the format from the `--out` extension when `--format` is omitted
-(`.zip` → PNG sequence, `.gif`, `.webm`, `.mp4`, `.json` → Lottie,
+`scale` to 1 (their resolution is inherent to the consuming player).
+Format-specific options (same clamps in the dialog, the scripted `export`
+command and the CLI):
+
+| Option | Formats | Effect |
+| --- | --- | --- |
+| `gifPalette` (`--gif-palette`) | `gif` | `perFrame` (default) quantizes each frame to its own 256-color palette; `global` quantizes once from the first ≤16 frames and reuses that palette (smaller, flicker-free; later frames map onto it) |
+| `gifDither` (`--gif-dither`) | `gif` | Floyd–Steinberg error diffusion when mapping pixels to the palette (off by default) |
+| `gifLoop` (`--gif-loop`) | `gif` | NETSCAPE loop count: `0` forever (default), `-1` plays once, `n` repeats n times |
+| `videoQuality` (`--quality`) | `webm`, `mp4` | `low` / `medium` / `high` (default): the app picks the matching mediabunny `Quality` level, the CLI an ffmpeg CRF (VP9 40/33/25, x264 30/23/18 — lower is better) |
+
+The CLI derives the format from the `--out` extension when `--format` is
+omitted (`.zip` → PNG sequence, `.gif`, `.webm`, `.mp4`, `.json` → Lottie,
 `.lottie` → dotLottie, `.svg` → animated SVG); the spritesheet has no unique
-extension and requires `--format spritesheet`.
+extension and requires `--format spritesheet`. `--format` may be repeated to
+render several formats in one invocation (`--format gif --format lottie`):
+`--out` then names a directory and each format lands at `<inputBase>.<ext>`.
 
 The PNG-sequence, GIF and spritesheet exporters were unchanged by the vector
 work: they rasterize each frame through the shared SVG path and keep alpha on
-empty areas. GIF encoding now runs in a worker thread so the dialog stays
-responsive; the output bytes are identical to the inline encoder.
+empty areas. GIF encoding runs in a worker thread so the dialog stays
+responsive (the CLI encodes inline); the palette, dithering and loop options
+apply in both through one shared incremental encoder.
 
 ## Cancelling an export
 
@@ -53,26 +69,30 @@ so they work identically in the app and the CLI. The JSON targets bodymovin
 | Document content | Lottie output |
 | --- | --- |
 | Primitives (rect/ellipse) | `rc`/`el` shape items, stroke items before fill items |
+| Gradients (linear/radial, fill or stroke) | `gf`/`gs` shape items with the geometry baked into the shape's box (`objectBoundingBox` semantics); 2–8 stops as flat `[offset, r, g, b]` values, plus trailing `[offset, alpha]` pairs when any stop has alpha ≠ 1; a gradient that changes across keyframes keys its channels when the stop count holds and keeps the first gradient otherwise |
 | Paths | `sh` bezier shape items (`pathDataToSubpathAnchors` conversion); a `d` that changes across keyframes morphs between poses when the anchor structure matches (subpath and anchor counts, closed flags) and holds the outline where it differs |
 | Groups | nested `gr` items, children reversed to match Lottie's paint order |
 | Images | embedded data-URL image assets (`e: 1`), deduplicated per resource |
 | Drawing layers | one full-stage image asset per cell (natural size = document size × the layer's resolution scale), held until the next cell |
-| Text | outlines via the same font resolution as the app (embedded subset, then bundled Noto Sans); fonts are **never** embedded (licensing) |
+| Text | outlines via the same font resolution as the app (embedded subset, then bundled Noto Sans); fonts are **never** embedded (licensing); a text stroke exports as an `st` item over the outline, its width divided by the outline-to-node scale |
 | Camera layer | wraps the content in a `precomp_main` precomp layer whose position/rotation/zoom are keyframed |
-| Tweens | keyframed bezier channels: the named eases and custom beziers are exact, including per-property easing channels (`transform`/`opacity`/`fill`); `holdStep` playback and hold keyframes are baked as hold keys sampled through the evaluator |
-| Audio layers | dropped — the export is silent |
+| Tweens | keyframed bezier channels: the named eases and custom beziers are exact, including per-property easing channels (`transform`/`opacity`/`fill`); `holdStep` playback, hold keyframes and `smooth` path segments are baked through the evaluator — smooth segments sample every output frame, so those files are denser |
+| Audio layers | `ty: 6` audio layers carrying `au.lv` (volume) and a `tm` time-remap in seconds, so an export range that starts mid-clip seeks into it. Plain Lottie embeds the bytes as a base64 data-URI asset (`e: 1`); dotLottie stores `audio/<id>.<ext>` side files referenced from the archive. Playback needs an audio-capable player — lottie-web is silent unless constructed with an `audioFactory`; every other format is silent |
 
 Degradations (each reported as an export diagnostic, never a crash):
 
-- `A 'smooth' tween path is exported as linear interpolation in the Lottie file.`
 - `The path data of "…" cannot morph between keyframes (the anchor structure differs); the Lottie file holds the outline over those segments.`
 - `The path data of "…" changes shape across keyframes; the Lottie file keeps the first outline.`
-- `A gradient paint is exported as its first stop color in the Lottie file.`
-- `A text stroke is dropped when text is exported as outlines in the Lottie file.`
+- `"…" changes its object type across keyframes; the Lottie file keeps the first pose.`
+- `Group "…" changes its children across keyframes; the Lottie file keeps the first content.`
+- `The paint of "…" changes between solid and gradient across keyframes; the Lottie file keeps the first paint.`
+- `The gradient of "…" changes its stop count across keyframes; the Lottie file keeps the first gradient.`
+- `The radial gradient of "…" sits on a non-square box; the Lottie file approximates its radius.`
+- `Image "…" sits under rotated, non-uniformly scaled groups; its motion is approximated in the Lottie file.`
 - `Text "…" changes across keyframes; the Lottie file outlines the first pose.`
 - `No font could be loaded for "…"; a placeholder box replaces "…" in the Lottie file.`
 - `Image resource "…" could not be resolved; a placeholder is exported.`
-- `Audio is not included in Lottie exports; the exported animation is silent.`
+- `Audio resource "…" could not be embedded; the exported animation is silent.`
 
 Placeholders are the same dashed boxes the SVG renderer draws for missing
 content. Lottie files carry no background: the composition is transparent by
@@ -80,12 +100,16 @@ construction (players paint their own backdrop).
 
 **dotLottie** packs the same animation as a ZIP: `manifest.json`
 (`version: "1.0"`, `generator: "OpenAnimator <app version>"`, one animation
-entry `openanimator`, `loop: true`) plus `animations/animation.json`.
+entry `openanimator`, `loop: true`) plus `animations/animation.json` — and,
+when the document has audible layers, the `audio/<id>.<ext>` side files the
+animation references.
 
 **Render gate**: the CI test suite renders golden Lottie documents with
 lottie-web (SVG renderer, `happy-dom`) and asserts the resulting transform
-matrices and fills — camera decomposition, easings and hold keys are checked
-against a real player, not just the JSON structure.
+matrices, fills and gradient stops — camera decomposition, easings, hold keys
+and gradients are checked against a real player, not just the JSON structure.
+The same shared harness (`test-utils/lottieRender.ts`) backs the
+import-gradient→Lottie E2E golden path.
 
 ## Animated SVG (`svg-animation`)
 
@@ -143,6 +167,10 @@ WebM is the alpha-capable video format; MP4 is always opaque.
   `-auto-alt-ref 0` (libvpx requires the alt-ref feature off for alpha).
   Audio from the document's audible layers is mixed into WebM/MP4 through
   the same `AudioMixEntry` plan the app uses; every other format is silent.
+- **Quality** — the `videoQuality` tier applies to both video formats in
+  both surfaces: the app hands the matching mediabunny `Quality` constant
+  to the encoder, the CLI maps it to an ffmpeg CRF (VP9 40/33/25, x264
+  30/23/18 — lower is better).
 
 ## Spritesheet
 

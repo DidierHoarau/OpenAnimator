@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
 import type { ExportOptions } from '@shared/exportOptions'
+import { emptyExportPresets } from '@shared/exportPresets'
+import type { ExportPresetsData } from '@shared/exportPresets'
 import { Editor } from './editor'
 
 import { showExportDialog } from './exportDialog'
@@ -24,10 +26,23 @@ function editor(frames = 8): Editor {
 const formatSelect = (overlay: HTMLElement): HTMLSelectElement =>
   overlay.querySelector<HTMLSelectElement>('.export-format')!
 
+let storedPresets: ExportPresetsData
+const presetApi = {
+  loadExportPresets: vi.fn(() => Promise.resolve(storedPresets)),
+  saveExportPresets: vi.fn((data: ExportPresetsData) => {
+    storedPresets = data
+    return Promise.resolve(true)
+  })
+}
+
 describe('showExportDialog', () => {
   beforeEach(() => {
     runExport.mockReset()
     document.body.textContent = ''
+    storedPresets = emptyExportPresets()
+    presetApi.loadExportPresets.mockClear()
+    presetApi.saveExportPresets.mockClear()
+    ;(window as unknown as { api: unknown }).api = presetApi
   })
 
   it('renders the fields with document-derived defaults', () => {
@@ -35,10 +50,12 @@ describe('showExportDialog', () => {
     const overlay = document.querySelector('.modal-overlay')!
     expect(overlay).not.toBeNull()
     expect(formatSelect(overlay).value).toBe('gif')
+    // scale, fps, from, to, GIF loop count.
     const numbers = [...overlay.querySelectorAll<HTMLInputElement>('input[type="number"]')]
-    expect(numbers.map((input) => input.value)).toEqual(['1', '12', '1', '8'])
+    expect(numbers.map((input) => input.value)).toEqual(['1', '12', '1', '8', '0'])
     expect(overlay.textContent).toContain('Format')
     expect(overlay.textContent).toContain('Transparent background')
+    expect(overlay.textContent).toContain('Presets')
   })
 
   it('documents which formats carry audio and which stay silent', () => {
@@ -137,6 +154,148 @@ describe('showExportDialog', () => {
     formatSelect(overlay).value = 'svg-animation'
     formatSelect(overlay).dispatchEvent(new Event('change'))
     expect(scale.disabled).toBe(false)
+  })
+
+  it('shows the GIF and video-quality controls only for their formats', () => {
+    showExportDialog(editor())
+    const overlay = document.querySelector('.modal-overlay')!
+    const gifFields = overlay.querySelector('.export-gif-fields')!
+    const qualityLabel = [...overlay.querySelectorAll('.export-field-label')].find(
+      (label) => label.textContent === 'Video quality'
+    )!
+    const qualityField = qualityLabel.closest('.export-field') as HTMLElement
+
+    // GIF is the default: GIF controls visible, quality hidden.
+    expect(gifFields.classList.contains('hidden')).toBe(false)
+    expect(qualityField.classList.contains('hidden')).toBe(true)
+
+    formatSelect(overlay).value = 'webm'
+    formatSelect(overlay).dispatchEvent(new Event('change'))
+    expect(gifFields.classList.contains('hidden')).toBe(true)
+    expect(qualityField.classList.contains('hidden')).toBe(false)
+
+    formatSelect(overlay).value = 'mp4'
+    formatSelect(overlay).dispatchEvent(new Event('change'))
+    expect(qualityField.classList.contains('hidden')).toBe(false)
+
+    formatSelect(overlay).value = 'png-sequence'
+    formatSelect(overlay).dispatchEvent(new Event('change'))
+    expect(gifFields.classList.contains('hidden')).toBe(true)
+    expect(qualityField.classList.contains('hidden')).toBe(true)
+  })
+
+  it('passes the GIF palette, dithering and loop choices to the runner', async () => {
+    runExport.mockResolvedValue(false)
+    showExportDialog(editor())
+    const overlay = document.querySelector('.modal-overlay')!
+
+    const palette = overlay.querySelector<HTMLSelectElement>('.export-gif-palette')!
+    palette.value = 'global'
+    const dither = overlay.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1]
+    dither.checked = true
+    const loop = overlay.querySelectorAll<HTMLInputElement>('input[type="number"]')[4]
+    loop.value = '3'
+    overlay.querySelector<HTMLButtonElement>('.modal-actions .primary')!.click()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const options = runExport.mock.calls[0][1] as ExportOptions
+    expect(options.gifPalette).toBe('global')
+    expect(options.gifDither).toBe(true)
+    expect(options.gifLoop).toBe(3)
+  })
+
+  it('passes the video quality tier to the runner for webm exports', async () => {
+    runExport.mockResolvedValue(false)
+    showExportDialog(editor())
+    const overlay = document.querySelector('.modal-overlay')!
+
+    formatSelect(overlay).value = 'webm'
+    formatSelect(overlay).dispatchEvent(new Event('change'))
+    const quality = overlay.querySelector<HTMLSelectElement>('.export-video-quality')!
+    quality.value = 'low'
+    overlay.querySelector<HTMLButtonElement>('.modal-actions .primary')!.click()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const options = runExport.mock.calls[0][1] as ExportOptions
+    expect(options.videoQuality).toBe('low')
+  })
+
+  it('applies the stored last-used settings when the dialog opens', async () => {
+    storedPresets = {
+      ...emptyExportPresets(),
+      lastUsed: {
+        format: 'webm',
+        scale: 2,
+        fps: 24,
+        fromFrame: 0,
+        toFrame: 3,
+        transparent: true,
+        gifPalette: 'perFrame',
+        gifDither: false,
+        gifLoop: 0,
+        videoQuality: 'low'
+      }
+    }
+    showExportDialog(editor(8))
+    const overlay = document.querySelector('.modal-overlay')!
+
+    await vi.waitFor(() => expect(formatSelect(overlay).value).toBe('webm'))
+    const numbers = [...overlay.querySelectorAll<HTMLInputElement>('input[type="number"]')]
+    expect(numbers.map((input) => input.value)).toEqual(['2', '24', '1', '4', '0'])
+    expect(overlay.querySelector<HTMLSelectElement>('.export-video-quality')!.value).toBe('low')
+    expect(overlay.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true)
+  })
+
+  it('saves, applies and deletes named presets through the store', async () => {
+    showExportDialog(editor())
+    const overlay = document.querySelector('.modal-overlay')!
+    await vi.waitFor(() => expect(presetApi.loadExportPresets).toHaveBeenCalled())
+
+    const scale = overlay.querySelectorAll<HTMLInputElement>('input[type="number"]')[0]
+    scale.value = '2'
+    overlay.querySelector<HTMLInputElement>('.export-preset-name')!.value = 'Teaser'
+    overlay.querySelector<HTMLButtonElement>('.export-preset-save')!.click()
+
+    expect(presetApi.saveExportPresets).toHaveBeenCalledTimes(1)
+    expect(storedPresets.presets.map((preset) => preset.name)).toEqual(['Teaser'])
+    expect(storedPresets.presets[0].options.scale).toBe(2)
+
+    // Reset the form, then load the preset back from the dropdown.
+    scale.value = '1'
+    const select = overlay.querySelector<HTMLSelectElement>('.export-preset-select')!
+    expect([...select.options].map((option) => option.value)).toEqual(['', 'Teaser'])
+    select.value = 'Teaser'
+    select.dispatchEvent(new Event('change'))
+    expect(scale.value).toBe('2')
+
+    // Delete drops it from the store and the dropdown.
+    overlay.querySelector<HTMLButtonElement>('.export-preset-delete')!.click()
+    expect(presetApi.saveExportPresets).toHaveBeenCalledTimes(2)
+    expect(storedPresets.presets).toEqual([])
+    expect([...select.options].map((option) => option.value)).toEqual([''])
+  })
+
+  it('persists the last-used options after a successful export', async () => {
+    runExport.mockResolvedValue(true)
+    showExportDialog(editor())
+    const overlay = document.querySelector('.modal-overlay')!
+    await vi.waitFor(() => expect(presetApi.loadExportPresets).toHaveBeenCalled())
+
+    overlay.querySelector<HTMLButtonElement>('.modal-actions .primary')!.click()
+    await vi.waitFor(() => expect(document.querySelector('.modal-overlay')).toBeNull())
+
+    expect(storedPresets.lastUsed).toMatchObject({
+      format: 'gif',
+      scale: 1,
+      fps: 12,
+      fromFrame: 0,
+      toFrame: 7,
+      transparent: false
+    })
   })
 
   it('closes on the close and cancel buttons without running the export', () => {

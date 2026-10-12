@@ -29,6 +29,7 @@ import { GradientEditor } from './gradientEditor'
 import type { ImageImportDeps } from './imageImport'
 import { pickImageFile, prepareImageResource } from './imageImport'
 import { convertSelectedTextToOutlines } from './textOutlines'
+import { notifyGlobalPaletteSet } from './scripting/scriptRecorder'
 import {
   loadSectionState,
   saveSectionState,
@@ -1575,6 +1576,9 @@ export class PropertiesView {
     void window.api.saveGlobalPalette(this.globalPalette).catch(() => {
       // Persistence is best-effort; the session keeps the working copy.
     })
+    // The palette lives outside the document, so the script recorder taps
+    // this same persistence path to record the swatch edits.
+    notifyGlobalPaletteSet(this.globalPalette)
     this.render()
   }
 

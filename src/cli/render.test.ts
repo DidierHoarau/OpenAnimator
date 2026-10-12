@@ -8,6 +8,7 @@ import { PNG } from 'pngjs'
 import { describe, expect, it } from 'vitest'
 
 import { packProject } from '../main/projectContainer'
+import { createAudioLayer } from '../shared/document'
 import { embeddedFontId } from '../shared/fontPolicy'
 import { subsetFont } from '../shared/fontSubset'
 import type { AnimatorDocument } from '../shared/model'
@@ -256,6 +257,52 @@ describe('renderToFile — vector and spritesheet formats', () => {
     expect(animation.layers.length).toBeGreaterThan(0)
   })
 
+  it('embeds audio resources into Lottie and dotLottie outputs', async () => {
+    const audioBytes = new Uint8Array([0x49, 0x44, 0x33, 1, 2, 3, 4])
+    const document = structuredClone(DOCUMENT)
+    document.layers.push(createAudioLayer('res-song', 'Song'))
+    const resources = new Map([['res-song', { bytes: audioBytes, ext: 'mp3' }]])
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+
+    // Plain Lottie: the clip embeds as a base64 data URI (e:1) asset.
+    const jsonPath = join(dir, 'out.json')
+    await renderToFile(
+      document,
+      sanitizeExportOptions({ format: 'lottie', fromFrame: 0, toFrame: 3 }, document),
+      () => null,
+      jsonPath,
+      [],
+      undefined,
+      resources
+    )
+    const lottie = JSON.parse(await readFile(jsonPath, 'utf8')) as {
+      layers: Array<{ ty: number }>
+      assets: Array<{ e: number; p: string }>
+    }
+    expect(lottie.layers.some((layer) => layer.ty === 6)).toBe(true)
+    expect(lottie.assets).toHaveLength(1)
+    expect(lottie.assets[0].e).toBe(1)
+    expect(lottie.assets[0].p.startsWith('data:audio/mpeg;base64,')).toBe(true)
+
+    // dotLottie: the clip ships as a side file the asset points at.
+    const dotPath = join(dir, 'out.lottie')
+    await renderToFile(
+      document,
+      sanitizeExportOptions({ format: 'dotlottie', fromFrame: 0, toFrame: 3 }, document),
+      () => null,
+      dotPath,
+      [],
+      undefined,
+      resources
+    )
+    const files = unzipSync(new Uint8Array(await readFile(dotPath)))
+    expect(files['audio/aud_1.mp3']).toEqual(audioBytes)
+    const animation = JSON.parse(strFromU8(files['animations/animation.json'])) as {
+      assets: Array<{ id: string; u: string; p: string; e: number }>
+    }
+    expect(animation.assets).toEqual([{ id: 'aud_1', u: 'audio/', p: 'aud_1.mp3', e: 0 }])
+  })
+
   it('writes an animated SVG with a keyframes stylesheet', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
     const outPath = join(dir, 'out.svg')
@@ -312,8 +359,29 @@ describe('buildFfmpegArgs', () => {
     })
     expect(args).toEqual([
       '-y', '-framerate', '10', '-i', framesPattern,
-      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', 'out.webm'
+      '-c:v', 'libvpx-vp9', '-crf', '25', '-pix_fmt', 'yuv420p', 'out.webm'
     ])
+  })
+
+  it('maps the quality tier to the ffmpeg CRF of the container codec', () => {
+    const low = buildFfmpegArgs(
+      [],
+      sanitizeExportOptions(
+        { format: 'webm', fromFrame: 0, toFrame: 3, fps: 10, videoQuality: 'low' },
+        DOCUMENT
+      ),
+      { framesPattern, audioFiles: [], outPath: 'out.webm' }
+    )
+    expect(low[low.indexOf('-crf') + 1]).toBe('40')
+    const mediumMp4 = buildFfmpegArgs(
+      [],
+      sanitizeExportOptions(
+        { format: 'mp4', fromFrame: 0, toFrame: 3, fps: 10, videoQuality: 'medium' },
+        DOCUMENT
+      ),
+      { framesPattern, audioFiles: [], outPath: 'out.mp4' }
+    )
+    expect(mediumMp4[mediumMp4.indexOf('-crf') + 1]).toBe('23')
   })
 
   it('renders transparent WebM onto yuva420p with auto alt-ref disabled', () => {
@@ -328,7 +396,7 @@ describe('buildFfmpegArgs', () => {
     })
     expect(args).toEqual([
       '-y', '-framerate', '10', '-i', framesPattern,
-      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-auto-alt-ref', '0', 'out.webm'
+      '-c:v', 'libvpx-vp9', '-crf', '25', '-pix_fmt', 'yuva420p', '-auto-alt-ref', '0', 'out.webm'
     ])
   })
 
@@ -359,7 +427,7 @@ describe('buildFfmpegArgs', () => {
     })
     expect(args).toEqual([
       '-y', '-framerate', '10', '-i', framesPattern,
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', 'out.mp4'
+      '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p', 'out.mp4'
     ])
   })
 
@@ -375,7 +443,7 @@ describe('buildFfmpegArgs', () => {
       '-filter_complex',
       '[1:a]atrim=start=0:end=0.4,asetpts=PTS-STARTPTS,adelay=600|600,volume=0.5,apad[a0]',
       '-map', '0:v', '-map', '[a0]',
-      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', '-c:a', 'libopus',
+      '-c:v', 'libvpx-vp9', '-crf', '25', '-pix_fmt', 'yuv420p', '-c:a', 'libopus',
       '-shortest', 'out.webm'
     ])
   })

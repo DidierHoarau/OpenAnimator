@@ -180,6 +180,17 @@ interface HistoryEntry {
   label: string
 }
 
+/**
+ * One committed history entry broadcast to observers (the script recorder)
+ * right after `pushSnapshot`: `snapshot` is the document state from before
+ * the entry's mutation. Snapshots never alias the live document, so an
+ * observer may retain this one and diff it later against a newer snapshot.
+ */
+export interface HistoryCommit {
+  label: string
+  snapshot: AnimatorDocument
+}
+
 /** One copied node pose of a keyframe track (frame offset relative to the
  * copy-time playhead). */
 interface NodeClipboardPose {
@@ -277,6 +288,7 @@ export class Editor {
   private readonly messageListeners = new Set<
     (message: string, options: ResolvedMessageOptions) => void
   >()
+  private readonly historyCommitListeners = new Set<(commit: HistoryCommit) => void>()
   private rafId: number | null = null
   private lastTick: number | null = null
   private accumulator = 0
@@ -327,6 +339,18 @@ export class Editor {
 
   onMessage(listener: (message: string, options: ResolvedMessageOptions) => void): void {
     this.messageListeners.add(listener)
+  }
+
+  /**
+   * Observes every committed history entry — one per UI gesture, drags and
+   * script commands included (they run inside `beginInteraction`). The
+   * script recorder uses this as its single mutation feed. Returns the
+   * unsubscribe function; with no observer registered `pushSnapshot` is
+   * unchanged.
+   */
+  onHistoryCommit(listener: (commit: HistoryCommit) => void): () => void {
+    this.historyCommitListeners.add(listener)
+    return () => this.historyCommitListeners.delete(listener)
   }
 
   private docChanged(): void {
@@ -386,12 +410,19 @@ export class Editor {
   }
 
   private pushSnapshot(label: string): void {
-    this.undoStack.push({
-      snapshot: shareSnapshot(this.document, this.undoStack[this.undoStack.length - 1]?.snapshot ?? null),
-      label
-    })
+    const snapshot = shareSnapshot(this.document, this.undoStack[this.undoStack.length - 1]?.snapshot ?? null)
+    this.undoStack.push({ snapshot, label })
     if (this.undoStack.length > this.historyLimit) this.undoStack.shift()
     this.redoStack.length = 0
+    if (this.historyCommitListeners.size === 0) return
+    const commit: HistoryCommit = { label, snapshot }
+    for (const listener of [...this.historyCommitListeners]) {
+      try {
+        listener(commit)
+      } catch (error) {
+        console.error('OpenAnimator: a history commit listener failed', error)
+      }
+    }
   }
 
   /**
@@ -2219,13 +2250,15 @@ export class Editor {
 
   /** Adds a new layer of the given kind at the bottom of the stack and makes
    * it current. Camera and audio layers have dedicated flows
-   * (`addCameraLayer` / `addAudioLayer`). */
-  addLayerAtBottom(kind: 'object' | 'drawing' = 'object'): void {
+   * (`addCameraLayer` / `addAudioLayer`). An explicit `layerId` (script
+   * recorder replays) is applied when that id is still free. */
+  addLayerAtBottom(kind: 'object' | 'drawing' = 'object', layerId?: string): void {
     this.pushHistory('Add layer')
     const layer =
       kind === 'drawing'
         ? addLayerOp(this.document, `Layer ${this.document.layers.length + 1}`, 'bottom', 'drawing')
         : addLayerOp(this.document, `Layer ${this.document.layers.length + 1}`, 'bottom')
+    if (layerId && !getLayer(this.document, layerId)) layer.id = layerId
     this.currentLayerId = layer.id
     this.autoSwitchTool()
     this.docChanged()
@@ -2270,13 +2303,14 @@ export class Editor {
    * bottom of the stack and makes it current. Returns null (with a message)
    * when a camera layer already exists.
    */
-  addCameraLayer(): CameraLayer | null {
+  addCameraLayer(layerId?: string): CameraLayer | null {
     if (this.cameraLayer) {
       this.showMessage('The document already has a camera layer')
       return null
     }
     this.pushHistory('Add camera layer')
     const layer = addLayerOp(this.document, 'Camera', 'bottom', 'camera')
+    if (layerId && !getLayer(this.document, layerId)) layer.id = layerId
     insertCameraKeyframe(this.document, 0, defaultCameraPose(this.document))
     this.currentLayerId = layer.id
     this.autoSwitchTool()
@@ -2463,13 +2497,14 @@ export class Editor {
    * this session) at the bottom of the stack, makes it current and returns
    * it. Returns null (with a status message) when the resource is unknown.
    */
-  addAudioLayer(resourceId: string, name: string, startFrame = 0): AudioLayer | null {
+  addAudioLayer(resourceId: string, name: string, startFrame = 0, layerId?: string): AudioLayer | null {
     if (!resourceId || !this.resources.getBlob(resourceId)) {
       this.showMessage('Audio resource is not available in this session')
       return null
     }
     this.pushHistory('Add audio layer')
     const layer = addLayerOp(this.document, name || 'Audio', 'bottom', 'audio', resourceId)
+    if (layerId && !getLayer(this.document, layerId)) layer.id = layerId
     layer.startFrame = Number.isFinite(startFrame) ? Math.max(0, Math.round(startFrame)) : 0
     this.currentLayerId = layer.id
     this.autoSwitchTool()

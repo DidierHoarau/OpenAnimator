@@ -5,13 +5,15 @@ import {
   Mp4OutputFormat,
   Output,
   QUALITY_HIGH,
+  QUALITY_LOW,
+  QUALITY_MEDIUM,
   WebMOutputFormat,
   canEncodeVideo as canEncodeCodec,
   getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec
 } from 'mediabunny'
 import type { AudioCodec } from 'mediabunny'
-import type { ExportOptions } from '@shared/exportOptions'
+import type { ExportOptions, VideoQuality } from '@shared/exportOptions'
 
 /**
  * Video export through WebCodecs (via mediabunny): frames are drawn onto one
@@ -32,6 +34,13 @@ const CODEC_CANDIDATES = {
   webm: ['vp9', 'vp8'],
   mp4: ['avc']
 } as const
+
+/** Export quality tiers mapped to mediabunny's encoder quality presets. */
+const QUALITY_BY_TIER = {
+  low: QUALITY_LOW,
+  medium: QUALITY_MEDIUM,
+  high: QUALITY_HIGH
+} as const satisfies Record<VideoQuality, unknown>
 
 /** Preferred audio codecs per container, first encodable wins. */
 const AUDIO_CODEC_CANDIDATES: { webm: AudioCodec[]; mp4: AudioCodec[] } = {
@@ -96,9 +105,10 @@ export async function encodeVideo(
   const canvas = globalThis.document.createElement('canvas')
   canvas.width = width
   canvas.height = height
+  const quality = QUALITY_BY_TIER[options.videoQuality]
   const source = new CanvasSource(canvas, {
     codec: codec as 'vp9',
-    quality: QUALITY_HIGH,
+    quality,
     ...(alphaKept ? { alpha: 'keep' as const } : {})
   })
   output.addVideoTrack(source, { frameRate: options.fps })
@@ -106,7 +116,7 @@ export async function encodeVideo(
   if (audio) {
     const audioCodec = await getFirstEncodableAudioCodec(AUDIO_CODEC_CANDIDATES[container])
     if (audioCodec) {
-      audioSource = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_HIGH })
+      audioSource = new AudioBufferSource({ codec: audioCodec, quality })
       output.addAudioTrack(audioSource)
     }
   }

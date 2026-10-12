@@ -11,6 +11,7 @@ import {
   createDocument,
   createDrawingLayer,
   createLayer,
+  evaluateLayerAtFrame,
   insertCameraKeyframe,
   insertKeyframe
 } from './document'
@@ -395,6 +396,60 @@ describe('buildLottieAnimation — structure', () => {
     expect((items[0].it as L[])[0].nm).toBe('c2')
     expect((items[1].it as L[])[0].nm).toBe('c1')
   })
+
+  it('keeps the first pose plus a diagnostic when a node changes its object type', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = objectLayer(document)
+    layer.keyframes[0].nodes.push(rectNode())
+    layer.keyframes[0].tween = { easing: 'linear' }
+    const final = insertKeyframe(layer, 10)
+    if (!final) throw new Error('expected the keyframe to be inserted')
+    // Same id, different node type at the target key.
+    final.nodes[0] = pathNode({ id: 'r1' })
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([
+      '"Layer 1" changes its object type across keyframes; the Lottie file keeps the first pose.'
+    ])
+    // The node collapses to the first key: the rect stays static, no path
+    // shape is emitted.
+    expect(itemsOf(layersOf(lottie)[0]).map((item) => item.ty)).toEqual(['rc', 'fl', 'tr'])
+  })
+
+  it('keeps the first content plus a diagnostic when group children change', async () => {
+    const child = (id: string, x: number): PrimitiveNode =>
+      rectNode({ id, center: { x, y: 10 }, width: 10, height: 10 })
+    const group: GroupNode = {
+      id: 'g1',
+      name: 'group',
+      type: 'group',
+      center: { x: 20, y: 10 },
+      width: 30,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      children: [child('c1', 10)]
+    }
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = objectLayer(document)
+    layer.keyframes[0].nodes.push(group)
+    layer.keyframes[0].tween = { easing: 'linear' }
+    const final = insertKeyframe(layer, 10)
+    if (!final) throw new Error('expected the keyframe to be inserted')
+    ;(final.nodes[0] as GroupNode).children = [child('c1', 10), child('c2', 30)]
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([
+      'Group "group" changes its children across keyframes; the Lottie file keeps the first content.'
+    ])
+    expect(itemsOf(layersOf(lottie)[0]).map((item) => item.nm)).toEqual(['c1', 'transform'])
+  })
 })
 
 describe('buildLottieAnimation — path morphing', () => {
@@ -541,6 +596,33 @@ describe('buildLottieAnimation — images and drawing cells', () => {
     expect(propOf(itemOf(layers[0], 'rc'), 's')).toEqual({ a: 0, k: [200, 100] })
   })
 
+  it('approximates image motion under rotated, non-uniformly scaled groups', async () => {
+    const image = imageNode({ rotation: 45 })
+    const group: GroupNode = {
+      id: 'g1',
+      name: 'group',
+      type: 'group',
+      center: { x: 50, y: 50 },
+      width: 80,
+      height: 20,
+      rotation: 30,
+      opacity: 1,
+      children: [image]
+    }
+    const document = createDocument('demo', 320, 180, 12)
+    objectLayer(document).keyframes[0].nodes.push(group)
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 0, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([
+      'Image "Layer 1" sits under rotated, non-uniformly scaled groups; its motion is approximated in the Lottie file.'
+    ])
+    // The group shape layer plus the flattened image layer still export.
+    expect(layersOf(lottie).map((layer) => layer.ty)).toEqual([2, 4])
+  })
+
   it('exports drawing cells as full-stage image layers spanning their frame ranges', async () => {
     const document = createDocument('demo', 320, 180, 12)
     const drawing = createDrawingLayer('paint')
@@ -670,15 +752,17 @@ describe('buildLottieAnimation — text, paints and diagnostics', () => {
     return document
   }
 
-  it('outlines text through the provider and drops text strokes with a diagnostic', async () => {
+  it('outlines text through the provider and emits its stroke over the outline', async () => {
     const { lottie, diagnostics } = await buildLottieAnimation(
-      textDocument({ stroke: '#333333' }),
+      textDocument({ stroke: '#333333', strokeWidth: 2 }),
       { fromFrame: 0, toFrame: 0, fps: 12 },
       { ...deps(), outlineText: () => Promise.resolve(outline) }
     )
-    expect(diagnostics).toEqual(['A text stroke is dropped when text is exported as outlines in the Lottie file.'])
+    expect(diagnostics).toEqual([])
     const layer = layersOf(lottie)[0]
-    expect(itemsOf(layer).map((item) => item.ty)).toEqual(['sh', 'sh', 'fl', 'tr'])
+    // Stroke items precede fill items so they paint on top, like the SVG
+    // renderer — and both follow the outline geometry items.
+    expect(itemsOf(layer).map((item) => item.ty)).toEqual(['sh', 'sh', 'st', 'fl', 'tr'])
     const shape = itemOf(layer, 'sh')
     expect(shape.nm).toBe('Hi 1')
     expect(propOf(shape, 'ks')).toEqual({
@@ -702,6 +786,11 @@ describe('buildLottieAnimation — text, paints and diagnostics', () => {
         c: true
       }
     })
+    // The outline maps 1:1 onto its natural glyph box, so the stage-space
+    // stroke width passes through unchanged.
+    const stroke = itemOf(layer, 'st')
+    expect(staticKOf(stroke, 'w')).toEqual([2])
+    expect(staticKOf(stroke, 'c')).toEqual([0.2, 0.2, 0.2, 1])
     expect(propOf(itemOf(layer, 'fl'), 'c')).toEqual({ a: 0, k: [1, 0.8, 0, 1] })
     expect(staticKOf(itemOf(layer, 'tr'), 's')).toEqual([100, 100])
   })
@@ -720,7 +809,25 @@ describe('buildLottieAnimation — text, paints and diagnostics', () => {
     expect(propOf(itemOf(layer, 'rc'), 's')).toEqual({ a: 0, k: [60, 30] })
   })
 
-  it('reports gradients as their first stop color', async () => {
+  it('keeps the first outline plus a diagnostic when the text changes across keyframes', async () => {
+    const document = textDocument()
+    const layer = objectLayer(document)
+    layer.keyframes[0].tween = { easing: 'linear' }
+    const final = insertKeyframe(layer, 10)
+    if (!final) throw new Error('expected the keyframe to be inserted')
+    ;(final.nodes[0] as TextNode).text = 'Ho'
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      { ...deps(), outlineText: () => Promise.resolve(outline) }
+    )
+    expect(diagnostics).toEqual([
+      'Text "Hi" changes across keyframes; the Lottie file outlines the first pose.'
+    ])
+    expect(itemsOf(layersOf(lottie)[0])[0].nm).toBe('Hi 1')
+  })
+
+  it('emits gradient fills as gf items with box-space geometry and stops', async () => {
     const document = createDocument('demo', 320, 180, 12)
     objectLayer(document).keyframes[0].nodes.push(
       rectNode({
@@ -739,11 +846,178 @@ describe('buildLottieAnimation — text, paints and diagnostics', () => {
       { fromFrame: 0, toFrame: 0, fps: 12 },
       deps()
     )
-    expect(diagnostics).toEqual(['A gradient paint is exported as its first stop color in the Lottie file.'])
+    expect(diagnostics).toEqual([])
+    const gf = itemOf(layersOf(lottie)[0], 'gf')
+    expect(gf.t).toBe(1)
+    expect(gf.nm).toBe('fill')
+    expect(propOf(gf, 'o')).toEqual({ a: 0, k: 100 })
+    // Rect 20×10, angle 90° (the renderer's y-down clockwise convention):
+    // the axis spans the box height.
+    expect(propOf(gf, 's')).toEqual({ a: 0, k: [0, -5] })
+    expect(propOf(gf, 'e')).toEqual({ a: 0, k: [0, 5] })
+    expect(propOf(gf, 'g')).toEqual({ p: 2, k: { a: 0, k: [0, 1, 0, 0, 1, 0, 0, 1] } })
+  })
+
+  it('folds radial stop alpha into the mirrored opacity section', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    objectLayer(document).keyframes[0].nodes.push(
+      rectNode({
+        fill: {
+          type: 'radial',
+          cx: 0.5,
+          cy: 0.5,
+          r: 0.5,
+          stops: [
+            { offset: 0, color: '#ffffff', alpha: 0.5 },
+            { offset: 1, color: '#000000' }
+          ]
+        }
+      })
+    )
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 0, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([
+      'The radial gradient of "Layer 1" sits on a non-square box; the Lottie file approximates its radius.'
+    ])
+    const gf = itemOf(layersOf(lottie)[0], 'gf')
+    expect(gf.t).toBe(2)
+    // Rect 20×10: center at the box middle, radius (20+10)/2 · 0.5 = 7.5.
+    expect(propOf(gf, 's')).toEqual({ a: 0, k: [0, 0] })
+    expect(propOf(gf, 'e')).toEqual({ a: 0, k: [7.5, 0] })
+    // Colors [offset, r, g, b] × 2, then the mirrored [offset, alpha] × 2.
+    expect(propOf(gf, 'g')).toEqual({
+      p: 2,
+      k: { a: 0, k: [0, 1, 1, 1, 1, 0, 0, 0, 0, 0.5, 1, 1] }
+    })
+  })
+
+  it('bakes a tweened gradient per output frame', async () => {
+    const document = tweenedDocument('linear')
+    const layer = objectLayer(document)
+    ;(layer.keyframes[0].nodes[0] as PrimitiveNode).fill = {
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#000000' },
+        { offset: 1, color: '#ffffff' }
+      ]
+    }
+    ;(layer.keyframes[1]!.nodes[0] as PrimitiveNode).fill = {
+      type: 'linear',
+      angle: 90,
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([])
+    const gf = itemOf(layersOf(lottie)[0], 'gf')
+    const startKeys = keyedOf(gf, 's')
+    expect(startKeys).toHaveLength(11)
+    expect(startKeys[0]).toEqual({ t: 0, s: [-10, 0], o: { x: 0, y: 0 }, i: { x: 1, y: 1 } })
+    // Frame 10: angle 90° → s (0, −5); the final key holds.
+    expect(startKeys[10]).toEqual({ t: 10, s: [0, -5], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } })
+    const stopsProp = propOf(gf, 'g').k as L
+    expect(stopsProp.a).toBe(1)
+    const stopKeys = stopsProp.k as Array<Record<string, unknown>>
+    expect(stopKeys).toHaveLength(11)
+    expect(stopKeys[0].s).toEqual([0, 0, 0, 0, 1, 1, 1, 1])
+    expect(stopKeys[10].s).toEqual([0, 1, 0, 0, 1, 0, 0, 1])
+  })
+
+  it('keeps the first gradient with a diagnostic when the stop count changes', async () => {
+    const document = tweenedDocument('linear')
+    const layer = objectLayer(document)
+    ;(layer.keyframes[0].nodes[0] as PrimitiveNode).fill = {
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#000000' },
+        { offset: 1, color: '#ffffff' }
+      ]
+    }
+    ;(layer.keyframes[1]!.nodes[0] as PrimitiveNode).fill = {
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 0.5, color: '#00ff00' },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([
+      'The gradient of "Layer 1" changes its stop count across keyframes; the Lottie file keeps the first gradient.'
+    ])
+    const gf = itemOf(layersOf(lottie)[0], 'gf')
+    expect(propOf(gf, 'g')).toEqual({ p: 2, k: { a: 0, k: [0, 0, 0, 0, 1, 1, 1, 1] } })
+  })
+
+  it('keeps the first paint with a diagnostic when the paint kind changes', async () => {
+    const document = tweenedDocument('linear')
+    const layer = objectLayer(document)
+    ;(layer.keyframes[1]!.nodes[0] as PrimitiveNode).fill = {
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([
+      'The paint of "Layer 1" changes between solid and gradient across keyframes; the Lottie file keeps the first paint.'
+    ])
+    // The first keyframe's solid fill holds statically.
     expect(propOf(itemOf(layersOf(lottie)[0], 'fl'), 'c')).toEqual({ a: 0, k: [1, 0, 0, 1] })
   })
 
-  it("reports 'smooth' tween paths and still maps the easing", async () => {
+  it('emits gradient strokes as gs items with the width channel', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    objectLayer(document).keyframes[0].nodes.push(
+      rectNode({
+        stroke: {
+          type: 'linear',
+          angle: 0,
+          stops: [
+            { offset: 0, color: '#111111' },
+            { offset: 1, color: '#eeeeee' }
+          ]
+        },
+        strokeWidth: 4
+      })
+    )
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 0, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([])
+    const layer = layersOf(lottie)[0]
+    expect(itemsOf(layer).map((item) => item.ty)).toEqual(['rc', 'gs', 'fl', 'tr'])
+    const gs = itemOf(layer, 'gs')
+    expect(staticKOf(gs, 'w')).toEqual([4])
+    expect(propOf(gs, 's')).toEqual({ a: 0, k: [-10, 0] })
+    expect(propOf(gs, 'e')).toEqual({ a: 0, k: [10, 0] })
+  })
+
+  it('bakes a smooth tween path per output frame from the evaluator', async () => {
     const document = tweenedDocument('ease-out')
     objectLayer(document).keyframes[0].tween = { easing: 'ease-out', path: 'smooth' }
     const { lottie, diagnostics } = await buildLottieAnimation(
@@ -751,23 +1025,118 @@ describe('buildLottieAnimation — text, paints and diagnostics', () => {
       { fromFrame: 0, toFrame: 10, fps: 12 },
       deps()
     )
-    expect(diagnostics).toEqual([
-      "A 'smooth' tween path is exported as linear interpolation in the Lottie file."
-    ])
+    expect(diagnostics).toEqual([])
     const keys = keyedOf(itemOf(layersOf(lottie)[0], 'tr'), 'p')
-    expect(keys[0]).toEqual({ t: 0, s: [40, 40], o: { x: 0.33, y: 1 }, i: { x: 0.68, y: 1 } })
+    expect(keys).toHaveLength(11)
+    expect(keys[0]).toEqual({ t: 0, s: [40, 40], o: { x: 0, y: 0 }, i: { x: 1, y: 1 } })
+    expect(keys[10]).toEqual({ t: 10, s: [200, 100], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } })
+    // Every baked key equals the evaluator's pose at that frame.
+    const pose = evaluateLayerAtFrame(objectLayer(document), 5)[0]
+    const round = (value: number): number => Math.round(value * 1e4) / 1e4
+    expect(keys[5].s).toEqual([round(pose.center.x), round(pose.center.y)])
   })
 
-  it('reports dropped audio once', async () => {
+  it('emits audio layers with an embedded asset and a seconds time-remap ramp', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    objectLayer(document).keyframes[0].nodes.push(rectNode())
+    const audio = createAudioLayer('res-audio', 'Music')
+    audio.volume = 0.5
+    document.layers.push(audio)
+    const bytes = new Uint8Array([1, 2, 3, 4])
+    const { lottie, diagnostics, files } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 4, fps: 12 },
+      { ...deps(), resolveResourceBytes: () => Promise.resolve({ bytes, ext: 'mp3' }) }
+    )
+    expect(diagnostics).toEqual([])
+    expect(files).toBeUndefined()
+    const layers = layersOf(lottie)
+    expect(layers.map((layer) => layer.ty)).toEqual([4, 6])
+    const audioLayer = layers[1]
+    expect(audioLayer.nm).toBe('Music')
+    expect(audioLayer.ind).toBe(2)
+    expect(audioLayer.refId).toBe('aud_1')
+    expect(audioLayer.ip).toBe(0)
+    expect(audioLayer.op).toBe(5)
+    expect(audioLayer.st).toBe(0)
+    expect(audioLayer.au).toEqual({ lv: { a: 0, k: [50] } })
+    // `tm` is the clip position in SECONDS: 0 → 4/12 across the comp.
+    expect(propOf(audioLayer, 'tm')).toEqual({
+      a: 1,
+      k: [
+        { t: 0, s: [0], o: { x: 0, y: 0 }, i: { x: 1, y: 1 } },
+        { t: 4, s: [0.3333], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } }
+      ]
+    })
+    expect(assetsOf(lottie).find((asset) => asset.id === 'aud_1')).toEqual({
+      id: 'aud_1',
+      u: '',
+      p: 'data:audio/mpeg;base64,AQIDBA==',
+      e: 1
+    })
+  })
+
+  it('offsets a clip that starts before the export range into the time remap', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const audio = createAudioLayer('res-audio', 'Music')
+    audio.startFrame = 0
+    document.layers.push(audio)
+    const { lottie } = await buildLottieAnimation(
+      document,
+      { fromFrame: 2, toFrame: 4, fps: 12 },
+      { ...deps(), resolveResourceBytes: () => Promise.resolve({ bytes: new Uint8Array([9]), ext: 'wav' }) }
+    )
+    const audioLayer = layersOf(lottie)[0]
+    expect(audioLayer.ty).toBe(6)
+    expect(audioLayer.ip).toBe(0)
+    expect(propOf(audioLayer, 'tm')).toEqual({
+      a: 1,
+      k: [
+        { t: 0, s: [0.1667], o: { x: 0, y: 0 }, i: { x: 1, y: 1 } },
+        { t: 2, s: [0.3333], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } }
+      ]
+    })
+  })
+
+  it("ships audio as side files in 'files' mode with the bytes in the result", async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    objectLayer(document).keyframes[0].nodes.push(rectNode())
+    const audio = createAudioLayer('res-audio', 'Music')
+    audio.startFrame = 2
+    document.layers.push(audio)
+    const bytes = new Uint8Array([7, 7])
+    const { lottie, diagnostics, files } = await buildLottieAnimation(
+      document,
+      { fromFrame: 0, toFrame: 4, fps: 12, audio: 'files' },
+      { ...deps(), resolveResourceBytes: () => Promise.resolve({ bytes, ext: 'MP3' }) }
+    )
+    expect(diagnostics).toEqual([])
+    expect(files).toEqual({ 'audio/aud_1.mp3': bytes })
+    const audioLayer = layersOf(lottie).find((layer) => layer.ty === 6)!
+    expect(audioLayer.refId).toBe('aud_1')
+    expect(audioLayer.ip).toBe(2)
+    expect(assetsOf(lottie).find((asset) => asset.id === 'aud_1')).toEqual({
+      id: 'aud_1',
+      u: 'audio/',
+      p: 'aud_1.mp3',
+      e: 0
+    })
+  })
+
+  it('reports an unresolvable audio resource once and stays silent', async () => {
     const document = createDocument('demo', 320, 180, 12)
     objectLayer(document).keyframes[0].nodes.push(rectNode())
     document.layers.push(createAudioLayer('res-audio', 'Music'))
-    const { diagnostics } = await buildLottieAnimation(
+    document.layers.push(createAudioLayer('res-audio', 'Music copy'))
+    const { lottie, diagnostics } = await buildLottieAnimation(
       document,
       { fromFrame: 0, toFrame: 0, fps: 12 },
       deps()
     )
-    expect(diagnostics).toEqual(['Audio is not included in Lottie exports; the exported animation is silent.'])
+    expect(diagnostics).toEqual([
+      'Audio resource "res-audio" could not be embedded; the exported animation is silent.'
+    ])
+    expect(layersOf(lottie).map((layer) => layer.ty)).toEqual([4])
   })
 })
 
@@ -803,6 +1172,22 @@ describe('serializeLottie and packDotLottie', () => {
 
     const unnamed = unzipSync(packDotLottie(lottie))
     expect(JSON.parse(strFromU8(unnamed['manifest.json'])).generator).toBe('OpenAnimator')
+  })
+
+  it('merges side files into the dotLottie archive', async () => {
+    const { lottie } = await buildLottieAnimation(
+      tweenedDocument(),
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    const files = { 'audio/aud_1.mp3': new Uint8Array([1, 2, 3]) }
+    const entries = unzipSync(packDotLottie(lottie, '0.26.0', files))
+    expect(Object.keys(entries).sort()).toEqual([
+      'animations/animation.json',
+      'audio/aud_1.mp3',
+      'manifest.json'
+    ])
+    expect(entries['audio/aud_1.mp3']).toEqual(files['audio/aud_1.mp3'])
   })
 })
 
@@ -850,6 +1235,46 @@ function goldenDocument(): AnimatorDocument {
   drawing.cells.push({ frame: 3, resourceId: 'res-draw' })
   document.layers.push(drawing)
 
+  // A gradient that interpolates across keyframes (baked per output frame,
+  // with a fading stop alpha) and an audio layer (embedded data URI).
+  const gradientLayer = createLayer('Grad')
+  const gradientNode = (fill: PrimitiveNode['fill']): PrimitiveNode =>
+    rectNode({ id: 'g1', name: 'grading', center: { x: 60, y: 40 }, width: 40, height: 40, fill })
+  gradientLayer.keyframes.push(
+    {
+      frame: 0,
+      nodes: [
+        gradientNode({
+          type: 'linear',
+          angle: 0,
+          stops: [
+            { offset: 0, color: '#38bdf8' },
+            { offset: 1, color: '#1e3a8a', alpha: 0.5 }
+          ]
+        })
+      ],
+      tween: { easing: 'ease-in-out' }
+    },
+    {
+      frame: 10,
+      nodes: [
+        gradientNode({
+          type: 'linear',
+          angle: 180,
+          stops: [
+            { offset: 0, color: '#f97316' },
+            { offset: 1, color: '#7c2d12' }
+          ]
+        })
+      ]
+    }
+  )
+  document.layers.push(gradientLayer)
+
+  const audio = createAudioLayer('res-song', 'song')
+  audio.volume = 0.8
+  document.layers.push(audio)
+
   const camera = createCameraLayer('Camera')
   document.layers.push(camera)
   const camFirst = insertCameraKeyframe(document, 0, { center: { x: 160, y: 90 }, zoom: 1.2, rotation: 30 })
@@ -865,7 +1290,11 @@ describe('lottie golden file', () => {
     const { lottie, diagnostics } = await buildLottieAnimation(
       goldenDocument(),
       { fromFrame: 0, toFrame: 10, fps: 12 },
-      deps((resourceId) => (resourceId === 'res-draw' ? DRAW_URL : PHOTO_URL))
+      {
+        ...deps((resourceId) => (resourceId === 'res-draw' ? DRAW_URL : PHOTO_URL)),
+        resolveResourceBytes: () =>
+          Promise.resolve({ bytes: new Uint8Array([82, 73, 70, 70]), ext: 'wav' })
+      }
     )
     expect(diagnostics).toEqual([])
     const text = strFromU8(serializeLottie(lottie))

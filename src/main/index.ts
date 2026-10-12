@@ -5,6 +5,7 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { APP_API_CHANNEL, APP_CLOSE_REQUEST_CHANNEL, APP_CLOSE_RESPONSE_CHANNEL, APP_MENU_COMMAND_CHANNEL, APP_OPEN_EXTERNAL_CHANNEL, APP_OPEN_FILE_CHANNEL } from '../shared/api'
 import type { AppVersions, MenuCommand, OpenExternalResult } from '../shared/api'
 import { abortStagedExports, registerExportHandlers } from './exports'
+import { registerExportPresetsHandlers } from './exportPresets'
 import { registerFontHandlers } from './fonts'
 import { registerLibraryHandlers } from './library'
 import { installApplicationMenu } from './menu'
@@ -166,6 +167,7 @@ if (!app.requestSingleInstanceLock()) {
     registerLibraryHandlers()
     registerExportHandlers()
     registerPaletteHandlers()
+    registerExportPresetsHandlers()
     registerPreferencesHandlers()
     registerFontHandlers()
     registerRecoveryHandlers()

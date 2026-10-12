@@ -21,6 +21,12 @@ import { PropertiesView } from './properties'
 import { showExportDialog } from './exportDialog'
 import { checkUntitledRecovery, fileLabel, newDocument, openDocument, openProjectFromPath, saveDocument, saveRecoverySnapshot, showStartupDialog } from './projects'
 import { showScriptConsole } from './scripting/scriptConsole'
+import {
+  createScriptExportBridge,
+  createScriptImportAudioBridge,
+  createScriptImportImageBridge
+} from './scripting/scriptBridges'
+import { notifyGlobalPaletteSet } from './scripting/scriptRecorder'
 import { StageView } from './stage'
 import { TimelineView } from './timeline'
 import { buildToolsPanel } from './toolsPanel'
@@ -121,7 +127,18 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   scriptButton.addEventListener('click', () =>
     showScriptConsole(editor, {
       library: window.api,
-      preferences: { get: getPreferences, update: updatePreferences }
+      preferences: { get: getPreferences, update: updatePreferences },
+      export: createScriptExportBridge(editor),
+      importImage: createScriptImportImageBridge(editor),
+      importAudio: createScriptImportAudioBridge(editor),
+      globalPalette: {
+        get: () => window.api.loadGlobalPalette(),
+        set: async (colors) => {
+          const saved = await window.api.saveGlobalPalette(colors)
+          // Scripted palette sets feed the recorder like the panel edits do.
+          if (saved) notifyGlobalPaletteSet(colors)
+        }
+      }
     })
   )
   docs.append(importButton, importAudioButton, newButton, openButton, saveButton, saveAsButton, exportButton, purgeButton, scriptButton)

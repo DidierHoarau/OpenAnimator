@@ -6,7 +6,8 @@ import {
   exportExtension,
   exportFrameCount,
   exportPixelSize,
-  sanitizeExportOptions
+  sanitizeExportOptions,
+  videoCrfFor
 } from './exportOptions'
 
 describe('export options', () => {
@@ -20,7 +21,11 @@ describe('export options', () => {
       fps: 12,
       fromFrame: 0,
       toFrame: 23,
-      transparent: false
+      transparent: false,
+      gifPalette: 'perFrame',
+      gifDither: false,
+      gifLoop: 0,
+      videoQuality: 'high'
     })
     expect(exportFrameCount(options)).toBe(24)
     expect(exportPixelSize(document, options)).toEqual({ width: 960, height: 540 })
@@ -105,5 +110,45 @@ describe('export options', () => {
     expect(mp4.transparent).toBe(false)
     const webm = sanitizeExportOptions({ format: 'webm', transparent: true }, document)
     expect(webm.transparent).toBe(true)
+  })
+
+  it('passes through valid GIF and video quality options', () => {
+    const document = createDocument('demo', 960, 540, 12)
+    document.frames = 10
+    const options = sanitizeExportOptions(
+      { format: 'gif', gifPalette: 'global', gifDither: true, gifLoop: 3, videoQuality: 'low' },
+      document
+    )
+    expect(options.gifPalette).toBe('global')
+    expect(options.gifDither).toBe(true)
+    expect(options.gifLoop).toBe(3)
+    expect(options.videoQuality).toBe('low')
+  })
+
+  it('clamps GIF loop counts and falls back for garbage option values', () => {
+    const document = createDocument('demo', 960, 540, 12)
+    document.frames = 10
+    const clamped = sanitizeExportOptions(
+      { gifPalette: 'sparkly' as never, gifDither: 1 as never, gifLoop: 1e9, videoQuality: 'ultra' as never },
+      document
+    )
+    expect(clamped.gifPalette).toBe('perFrame')
+    expect(clamped.gifDither).toBe(true)
+    expect(clamped.gifLoop).toBe(65535)
+    expect(clamped.videoQuality).toBe('high')
+
+    const negative = sanitizeExportOptions({ gifLoop: -7.5 }, document)
+    expect(negative.gifLoop).toBe(-1)
+    const nano = sanitizeExportOptions({ gifLoop: Number.NaN }, document)
+    expect(nano.gifLoop).toBe(0)
+  })
+
+  it('maps video quality tiers to ffmpeg CRF values per codec', () => {
+    expect(videoCrfFor('low', 'vp9')).toBe(40)
+    expect(videoCrfFor('medium', 'vp9')).toBe(33)
+    expect(videoCrfFor('high', 'vp9')).toBe(25)
+    expect(videoCrfFor('low', 'x264')).toBe(30)
+    expect(videoCrfFor('medium', 'x264')).toBe(23)
+    expect(videoCrfFor('high', 'x264')).toBe(18)
   })
 })

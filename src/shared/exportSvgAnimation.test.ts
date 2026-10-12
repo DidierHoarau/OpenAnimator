@@ -15,7 +15,7 @@ import {
 } from './document'
 import type { SvgAnimationDeps, SvgAnimationOptions } from './exportSvgAnimation'
 import { exportAnimatedSvg } from './exportSvgAnimation'
-import type { AnimatorDocument, ImageNode, PathNode, PrimitiveNode, TextNode } from './model'
+import type { AnimatorDocument, GroupNode, ImageNode, PathNode, PrimitiveNode, TextNode } from './model'
 
 /**
  * Animated-SVG exporter tests: baked CSS-keyframes output — percentages and
@@ -260,6 +260,160 @@ describe('exportAnimatedSvg', () => {
     ])
     expect(svg).toContain('<linearGradient ')
     expect(svg).toMatch(/fill="url\(#oa-grad-[0-9a-z]+\)"/)
+  })
+
+  it('keeps the first paint order with a diagnostic when group children reorder', async () => {
+    const child = (id: string, x: number): PrimitiveNode =>
+      rectNode({ id, center: { x, y: 10 }, width: 10, height: 10 })
+    const group: GroupNode = {
+      id: 'g1',
+      name: 'stack',
+      type: 'group',
+      center: { x: 20, y: 10 },
+      width: 30,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      children: [child('c1', 10), child('c2', 30)]
+    }
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = objectLayerOf(document)
+    layer.keyframes[0].nodes.push(group)
+    layer.keyframes[0].tween = { easing: 'linear' }
+    const final = insertKeyframe(layer, 10)
+    if (!final) throw new Error('expected the keyframe to be inserted')
+    ;(final.nodes[0] as GroupNode).children = [child('c2', 30), child('c1', 10)]
+
+    const { svg, diagnostics } = await exportAnimatedSvg(document, RANGE, deps())
+    expect(diagnostics).toEqual([
+      'The paint order of "stack" changes across frames; the animated SVG keeps the first order.'
+    ])
+    const c1 = svg.indexOf('translate(10 10)')
+    const c2 = svg.indexOf('translate(30 10)')
+    expect(c1).toBeGreaterThan(-1)
+    expect(c1).toBeLessThan(c2)
+  })
+
+  it('keeps the first appearance with a diagnostic when a node changes its object type', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = objectLayerOf(document)
+    layer.keyframes[0].nodes.push(rectNode())
+    layer.keyframes[0].tween = { easing: 'linear' }
+    const final = insertKeyframe(layer, 10)
+    if (!final) throw new Error('expected the keyframe to be inserted')
+    // Same id, different node type at the target key.
+    final.nodes[0] = {
+      id: 'r1',
+      type: 'path',
+      center: { x: 40, y: 40 },
+      width: 20,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0 L20 0 L20 10 Z',
+      fill: '#ff0000'
+    }
+
+    const { svg, diagnostics } = await exportAnimatedSvg(document, RANGE, deps())
+    expect(diagnostics).toEqual([
+      '"Layer 1" changes its object type across frames; the animated SVG keeps the first appearance.'
+    ])
+    // The rect keeps its first pose and hides at the last frame (the
+    // replacement is not walked); no path data is recorded.
+    expect(svg).toContain(
+      '<rect x="-10" y="-5" width="20" height="10" fill="#ff0000" transform="translate(40 40) rotate(0)" opacity="1" id="oa-i-1"/>'
+    )
+    expect(svg).toContain('@keyframes oa-k-1{0%{visibility:visible}90.9091%{visibility:hidden}100%{visibility:hidden}}')
+    expect(svg).not.toContain('d="M0 0 L20 0 L20 10 Z"')
+  })
+
+  it('keeps the first outline with a diagnostic when text changes across frames', async () => {
+    const outline: PathNode = {
+      id: 't1',
+      type: 'path',
+      center: { x: 100, y: 90 },
+      width: 50,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0 L50 0 L50 20 Z',
+      fill: '#ffcc00'
+    }
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = objectLayerOf(document)
+    layer.keyframes[0].nodes.push({
+      id: 't1',
+      type: 'text',
+      center: { x: 100, y: 90 },
+      width: 60,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 48,
+      fontWeight: 400,
+      fill: '#ffcc00',
+      align: 'left'
+    })
+    layer.keyframes[0].tween = { easing: 'linear' }
+    const final = insertKeyframe(layer, 10)
+    if (!final) throw new Error('expected the keyframe to be inserted')
+    ;(final.nodes[0] as TextNode).text = 'Ho'
+
+    const { svg, diagnostics } = await exportAnimatedSvg(
+      document,
+      RANGE,
+      deps({ outlineText: () => Promise.resolve(outline) })
+    )
+    expect(diagnostics).toEqual([
+      'Text "Hi" changes across frames; the animated SVG keeps the first outline.'
+    ])
+    expect(svg).toContain('d="M0 0 L50 0 L50 20 Z"')
+  })
+
+  it('reports a dropped text stroke when text exports as outlines', async () => {
+    const outline: PathNode = {
+      id: 't1',
+      type: 'path',
+      center: { x: 100, y: 90 },
+      width: 50,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0 L50 0 L50 20 Z',
+      fill: '#ffcc00'
+    }
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = objectLayerOf(document)
+    layer.keyframes[0].nodes.push({
+      id: 't1',
+      type: 'text',
+      center: { x: 100, y: 90 },
+      width: 60,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 48,
+      fontWeight: 400,
+      fill: '#ffcc00',
+      align: 'left',
+      stroke: '#000000',
+      strokeWidth: 2
+    })
+
+    const { svg, diagnostics } = await exportAnimatedSvg(
+      document,
+      { ...RANGE, toFrame: 0 },
+      deps({ outlineText: () => Promise.resolve(outline) })
+    )
+    expect(diagnostics).toEqual([
+      'A text stroke is dropped when text is exported as outlines in the animated SVG.'
+    ])
+    expect(svg).toContain('d="M0 0 L50 0 L50 20 Z"')
+    expect(svg).not.toContain('stroke="#000000"')
   })
 
   it('morphs path data per frame and reports dropped audio', async () => {

@@ -14,7 +14,7 @@ import { SCRIPT_EXAMPLES } from './examples'
 /** One-line summary per op. Typed as a full record so adding an op without a
  * description fails `npm run typecheck`. */
 const OP_SUMMARIES: Record<Op, string> = {
-  addLayer: 'Add a layer (`object`, `drawing`, `camera` or `audio`) and select it.',
+  addLayer: 'Add a layer (`object`, `drawing`, `camera` or `audio`) and select it; an explicit `layerId` is applied when it is still free (script replay).',
   renameLayer: 'Rename an existing layer.',
   removeLayer: 'Delete a layer and everything on it.',
   addNode: 'Add a scene node (primitive, path, text, image, group or symbol) to a layer, optionally at a frame.',
@@ -54,7 +54,14 @@ const OP_SUMMARIES: Record<Op, string> = {
   align: 'Align the selected objects to their union bounds (`left`, `centerH`, `right`, `top`, `middle`, `bottom`; needs at least two objects).',
   distribute: 'Space the selected objects evenly along `h` or `v` (outermost two fixed; needs at least three objects).',
   setPreferences: 'Merge a partial preferences patch (sanitized and persisted) into the application settings.',
-  setPathAnchors: 'Replace the full anchor/subpath geometry of a path node (one undo entry; covers add, move, remove and corner/smooth toggles).'
+  setPathAnchors: 'Replace the full anchor/subpath geometry of a path node (one undo entry; covers add, move, remove and corner/smooth toggles).',
+  export: 'Export the document to a file in the given format.',
+  importImage: 'Import an image file and add it as a node on a layer.',
+  importAudio: 'Import an audio file and add it as an audio layer.',
+  setOnionSkin: 'Toggle onion skinning and set the number of ghost frames shown before/after the playhead.',
+  setBrush: 'Set the brush color, size and stroke opacity.',
+  setGlobalPalette: 'Replace the global (cross-document) color palette (1–48 `#rgb`/`#rrggbb` colors).',
+  addGlobalPaletteColor: 'Append one color to the global palette (rejected when it is already there or full).'
 }
 
 const FIELD_TYPES: Record<FieldSpec['type'], string> = {
@@ -114,7 +121,7 @@ const SHARED_FIELD_NOTES = [
   ['`frame`', '0-based frame; defaults to the playhead and the executor warns.'],
   ['`at`', 'stage position `{x,y}` for placed assets.'],
   ['`nodeIds`', 'non-empty list of node ids on the target layer.'],
-  ['`patch`', 'partial node update: only known fields, unknown ones are rejected.']
+  ['`patch`', 'partial node update: only known fields, unknown ones are rejected; optional fields may be `null` to clear them.']
 ] as const
 
 /** Renders the complete scripting reference as deterministic Markdown. */

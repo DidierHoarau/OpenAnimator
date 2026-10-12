@@ -21,6 +21,7 @@
     "playwright.config.ts",
     "e2e/**/*",
     "scripts/**/*",
+    "test-utils/**/*",
     "src/main/**/*",
     "src/preload/**/*",
     "src/shared/**/*",

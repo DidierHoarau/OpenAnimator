@@ -31,6 +31,15 @@ export const EXPORT_LIMITS = {
   maxHeight: 7680
 } as const
 
+/** GIF color strategies: a 256-color palette per frame (best quality) or
+ * one palette for the whole animation (smaller, flicker-free). */
+export type GifPaletteMode = 'perFrame' | 'global'
+export const GIF_PALETTES: GifPaletteMode[] = ['perFrame', 'global']
+
+/** MP4/WebM quality tiers, mapped to encoder quantizers/CRF values. */
+export type VideoQuality = 'low' | 'medium' | 'high'
+export const VIDEO_QUALITIES: VideoQuality[] = ['low', 'medium', 'high']
+
 export interface ExportOptions {
   format: ExportFormat
   /** Resolution multiplier applied to the document size. */
@@ -42,6 +51,14 @@ export interface ExportOptions {
   toFrame: number
   /** Omits the document background; only honored by alpha-capable formats. */
   transparent: boolean
+  /** GIF color strategy; only meaningful for `gif`. */
+  gifPalette: GifPaletteMode
+  /** Floyd–Steinberg dithering for GIF quantization. */
+  gifDither: boolean
+  /** GIF loop count: 0 loops forever, -1 plays once, n>0 repeats n times. */
+  gifLoop: number
+  /** MP4/WebM quality tier; only meaningful for the video formats. */
+  videoQuality: VideoQuality
 }
 
 /** Default export options for a document: full range, native size and fps. */
@@ -52,7 +69,13 @@ export function defaultExportOptions(document: AnimatorDocument): ExportOptions 
     fps: clampFps(document.fps),
     fromFrame: 0,
     toFrame: documentDuration(document) - 1,
-    transparent: false
+    transparent: false,
+    gifPalette: 'perFrame',
+    gifDither: false,
+    gifLoop: 0,
+    // 'high' preserves the pre-option renderer behavior (QUALITY_HIGH); the
+    // lower tiers are opt-in size/quality trade-offs.
+    videoQuality: 'high'
   }
 }
 
@@ -96,8 +119,21 @@ export function sanitizeExportOptions(
     // Only MP4 is opaque-by-codec: every other format can carry alpha
     // (spritesheets and PNG sequences on empty areas, Lottie/SVG/WebM on
     // supporting players/encoders).
-    transparent: format === 'mp4' ? false : Boolean(raw?.transparent)
+    transparent: format === 'mp4' ? false : Boolean(raw?.transparent),
+    gifPalette: GIF_PALETTES.includes(raw?.gifPalette as GifPaletteMode)
+      ? (raw!.gifPalette as GifPaletteMode)
+      : defaults.gifPalette,
+    gifDither: Boolean(raw?.gifDither),
+    gifLoop: clampGifLoop(Number(raw?.gifLoop)),
+    videoQuality: VIDEO_QUALITIES.includes(raw?.videoQuality as VideoQuality)
+      ? (raw!.videoQuality as VideoQuality)
+      : defaults.videoQuality
   }
+}
+
+function clampGifLoop(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(65535, Math.max(-1, Math.floor(value)))
 }
 
 function clampFrame(value: number, min: number, max: number): number {
@@ -124,4 +160,14 @@ export function exportFrameCount(options: ExportOptions): number {
 /** File extension (without dot) for an export format. */
 export function exportExtension(format: ExportFormat): string {
   return EXPORT_FORMATS.find((entry) => entry.format === format)?.extension ?? 'bin'
+}
+
+/** ffmpeg CRF for a video quality tier: VP9 needs a wider range than x264
+ * for the same perceived quality. Lower = better quality, bigger file. */
+export function videoCrfFor(
+  quality: VideoQuality,
+  codec: 'vp9' | 'x264'
+): number {
+  if (codec === 'vp9') return quality === 'low' ? 40 : quality === 'high' ? 25 : 33
+  return quality === 'low' ? 30 : quality === 'high' ? 18 : 23
 }

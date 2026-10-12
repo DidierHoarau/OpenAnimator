@@ -25,6 +25,7 @@ this page records what landed and what is being considered next.
 | v0.23.0 | Editor UX — full application menu over the existing editor commands, keyboard-shortcut cheat sheet and docs page from one shortcut table (plus the F7 timeline leak fix), scene-object clipboard beside the keyframe clipboard, grid snapping with align/distribute, a Preferences dialog replacing hardcoded defaults, and feedback polish (labeled undo, persistent errors, About dialog) |
 | v0.24.0 | Vector depth — direct-selection anchor editing (`A`) with the `setPathAnchors` scripting op and multi-subpath support, stroke styles (linecap/linejoin/dash) through model, renderer, UI and SVG round-trip, per-stop gradient alpha, path fill/stroke tweening, the eyedropper with a recent-colors row, and GIMP (`.gpl`) palette import/export |
 | v0.25.0 | Motion & Text Depth — path shape morphing between keyframes, per-property tween easing channels (`transform`/`opacity`/`fill`), kerning-true font subsets with italic embedding and a ligature toggle, and frame-locked continuous audio scrub (plus a path-morphing E2E golden path) |
+| v0.26.0 | Interchange & Automation — Lottie gradients (with stop alpha), `ty:6` audio layers (embedded in Lottie JSON, `audio/` files in dotLottie), baked smooth paths and text strokes; SVG gradient import (kept in the native gradient model, rasterize fallback for the rest); export presets with last-used persistence, GIF palette/dithering/loop and MP4/WebM quality tiers; CLI multi-format rendering; scripted `export`/file-import/view ops and the UI-gesture script recorder; a gradient→Lottie E2E golden path |
 
 ## What's next
 
@@ -36,19 +37,22 @@ this page records what landed and what is being considered next.
   unsigned; the in-app updater only checks for releases and links to them.
   Signing the installers unlocks silent in-place updates (README, *Platform
   notes*).
-- **Lottie subset growth.** Unsupported content in Lottie/dotLottie exports
-  degrades to dashed placeholders with per-export diagnostics; the supported
-  subset grows as demand shows up.
+- **Lottie subset growth.** v0.26.0 added gradients (with stop alpha),
+  audio layers, baked smooth paths and text strokes. Unsupported content in
+  Lottie/dotLottie exports still degrades to dashed placeholders with
+  per-export diagnostics; the supported subset grows as demand shows up.
 - **Scripting follows the UI.** Every new editor capability ships with a
   scripted equivalent through the same pipeline — v0.24.0 added
   `setPathAnchors` for anchor editing (v0.23.0 added `duplicateNodes`,
-  `align`, `distribute` and `setPreferences`) — so LLM-driven animation
-  keeps full coverage of the tool.
+  `align`, `distribute` and `setPreferences`) — and since v0.26.0 the script
+  recorder turns UI gestures into the same command JSON, so the invariant
+  stays verifiable as LLM-driven animation keeps full coverage of the tool.
 - **E2E golden paths as features land.** The Playwright suite pins the
   golden paths (drawing/tweening, save/reopen, exports, scripting, startup,
   cancellation, close protection, node clipboard, shortcut help, anchor
-  editing, the eyedropper and path morphing) plus the 500-node performance
-  budget; new major features should add their own golden path.
+  editing, the eyedropper, path morphing and the SVG-gradient→Lottie
+  import/export path) plus the 500-node performance budget; new major
+  features should add their own golden path.
 
 Suggestions are welcome — open an issue (see
 [Contributing](contributing.md)) and describe the workflow you need.

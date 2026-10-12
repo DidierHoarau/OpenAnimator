@@ -11,12 +11,13 @@ import { parse as parseFont } from 'opentype.js'
 import type { Font } from 'opentype.js'
 
 import { documentToSvgString } from '../shared/exportSvg'
-import { exportFrameCount, exportPixelSize } from '../shared/exportOptions'
+import { exportFrameCount, exportPixelSize, videoCrfFor } from '../shared/exportOptions'
 import type { ExportFormat, ExportOptions } from '../shared/exportOptions'
 import { embeddedFamilyResolverFor } from '../shared/fontPolicy'
 import { encodeGif, gifDelayMs } from '../shared/gifEncode'
 import { packPngSequence } from '../shared/pngSequence'
 import { buildLottieAnimation, packDotLottie, serializeLottie } from '../shared/lottieExport'
+import type { LottieAudioResource } from '../shared/lottieExport'
 import { exportAnimatedSvg } from '../shared/exportSvgAnimation'
 import {
   blitFrameIntoAtlas,
@@ -201,7 +202,13 @@ export async function renderDocument(
     return {
       frames,
       bytes: encodeGif(
-        frames.map((entry) => ({ data: entry.rgba, width: entry.width, height: entry.height, delayMs }))
+        frames.map((entry) => ({
+          data: entry.rgba,
+          width: entry.width,
+          height: entry.height,
+          delayMs
+        })),
+        { palette: options.gifPalette, dither: options.gifDither, loop: options.gifLoop }
       )
     }
   }
@@ -254,6 +261,10 @@ async function renderVectorToFile(
   const deps = {
     resolveResourceDataUrl: (resourceId: string): Promise<string | null> =>
       Promise.resolve(resolveResource(resourceId)),
+    resolveResourceBytes: (resourceId: string): Promise<LottieAudioResource | null> => {
+      const resource = resources.get(resourceId)
+      return Promise.resolve(resource ? { bytes: resource.bytes, ext: resource.ext } : null)
+    },
     outlineText: createCliTextOutlineProvider(document, resources)
   }
   if (options.format === 'svg-animation') {
@@ -274,12 +285,17 @@ async function renderVectorToFile(
   }
   const built = await buildLottieAnimation(
     document,
-    { fromFrame: options.fromFrame, toFrame: options.toFrame, fps: options.fps },
+    {
+      fromFrame: options.fromFrame,
+      toFrame: options.toFrame,
+      fps: options.fps,
+      audio: options.format === 'dotlottie' ? 'files' : 'embed'
+    },
     deps
   )
   const bytes =
     options.format === 'dotlottie'
-      ? packDotLottie(built.lottie, APP_VERSION)
+      ? packDotLottie(built.lottie, APP_VERSION, built.files)
       : serializeLottie(built.lottie)
   await writeFile(outPath, bytes)
   return { frames: [], bytes, diagnostics: built.diagnostics }
@@ -421,13 +437,16 @@ export function buildFfmpegArgs(
   inputs: FfmpegBuildInputs
 ): string[] {
   const codec = options.format === 'webm' ? 'libvpx-vp9' : 'libx264'
+  const crf = String(
+    videoCrfFor(options.videoQuality, options.format === 'webm' ? 'vp9' : 'x264')
+  )
   const alpha = options.format === 'webm' && options.transparent
   const pixelFormat = alpha ? 'yuva420p' : 'yuv420p'
   const alphaArgs = alpha ? ['-auto-alt-ref', '0'] : []
   const args = ['-y', '-framerate', String(options.fps), '-i', inputs.framesPattern]
   for (const file of inputs.audioFiles) args.push('-i', file)
   if (plan.length === 0) {
-    args.push('-c:v', codec, '-pix_fmt', pixelFormat, ...alphaArgs, inputs.outPath)
+    args.push('-c:v', codec, '-crf', crf, '-pix_fmt', pixelFormat, ...alphaArgs, inputs.outPath)
     return args
   }
   const windowSeconds = exportFrameCount(options) / options.fps
@@ -458,6 +477,8 @@ export function buildFfmpegArgs(
     `[${audioLabel}]`,
     '-c:v',
     codec,
+    '-crf',
+    crf,
     '-pix_fmt',
     pixelFormat,
     ...alphaArgs,
