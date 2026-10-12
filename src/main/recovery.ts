@@ -16,7 +16,7 @@ import type { AnimatorDocument } from '../shared/model'
 import { isRecoverySnapshotInfo, shouldOfferRecovery } from '../shared/recovery'
 import type { RecoveryInfo } from '../shared/recovery'
 import type { ProjectResourceMap } from './projectContainer'
-import { packProject, parseProject } from './projectContainer'
+import { packProjectIncremental, parseProject, ProjectPackCache } from './projectContainer'
 import { resourceStore } from './resources'
 
 /** Untitled (never-saved) snapshots kept before the oldest is pruned. */
@@ -36,6 +36,9 @@ function slotId(path: string): string {
  */
 export class RecoveryStore {
   private readonly baseDir: string
+  /** Session pack cache: unchanged resource bytes survive autosave rewrites
+   * without being reframed or re-checksummed. */
+  private readonly packCache = new ProjectPackCache()
 
   constructor(baseDir: string) {
     this.baseDir = baseDir
@@ -59,7 +62,7 @@ export class RecoveryStore {
   ): Promise<void> {
     await mkdir(this.baseDir, { recursive: true })
     const snapshot = this.snapshotPath(path)
-    await writeFile(`${snapshot}.tmp`, packProject(document, resources))
+    await writeFile(`${snapshot}.tmp`, packProjectIncremental(document, resources, this.packCache).bytes)
     await rename(`${snapshot}.tmp`, snapshot)
     const info: RecoveryInfo = { path, name: document.name, savedAt, untitled }
     const infoPath = this.infoPath(path)

@@ -1,5 +1,6 @@
 import './style.css'
 
+import { AUTOSAVE_IDLE_MS, AUTOSAVE_MAX_WAIT_MS, IdleDebouncer } from '@shared/idleDebounce'
 import { createStarterDocument } from '@shared/starterDocument'
 
 import { AudioSystem } from './audio'
@@ -285,18 +286,17 @@ async function bootstrap(): Promise<void> {
     if (editor.playing) preloadDrawingCells(editor)
   })
 
-  // Debounced autosave to a recovery snapshot; the project file itself is
+  // Idle-debounced autosave to a recovery snapshot (trailing 2.5 s, forced at
+  // most 20 s after the first unsaved change); the project file itself is
   // only written by an explicit save. Untitled documents are covered too —
   // their session-keyed snapshot is the only protection they have. The
-  // scratch document of a symbol edit session is never autosaved.
-  let saveTimer: number | undefined
-  editor.onDocChange(() => {
-    window.clearTimeout(saveTimer)
-    saveTimer = window.setTimeout(() => {
-      if (editor.editingAssetId) return
-      if (editor.dirty) void saveRecoverySnapshot(editor)
-    }, 400)
+  // scratch document of a symbol edit session is never autosaved; the guards
+  // are evaluated at run time.
+  const autosave = new IdleDebouncer(AUTOSAVE_IDLE_MS, AUTOSAVE_MAX_WAIT_MS, () => {
+    if (editor.editingAssetId) return
+    if (editor.dirty) void saveRecoverySnapshot(editor)
   })
+  editor.onDocChange(() => autosave.schedule())
 }
 
 void bootstrap()

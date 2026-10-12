@@ -99,6 +99,18 @@ describe('RecoveryStore', () => {
     await expect(readdir(baseDir)).resolves.toHaveLength(2)
   })
 
+  it('round-trips repeated autosaves through the incremental pack cache', async () => {
+    const resourceMap = resources([['hash-a', PNG_BYTES, 'png']])
+    await store.write(projectPath, documentWithImage('draft-v1', 'hash-a'), resourceMap, 1)
+    // The second write reuses the first write's cached resource records.
+    await store.write(projectPath, documentWithImage('draft-v2', 'hash-a'), resourceMap, 2)
+
+    const snapshot = await store.read(projectPath)
+    expect(snapshot.document.name).toBe('draft-v2')
+    expect(snapshot.resources.get('hash-a')).toEqual({ bytes: PNG_BYTES, ext: 'png' })
+    await expect(store.info(projectPath)).resolves.toMatchObject({ name: 'draft-v2', savedAt: 2 })
+  })
+
   it('offers a pending snapshot only while it is newer than the project file', async () => {
     const savedAt = Date.now()
     await store.write(projectPath, documentWithImage('recovery-test', 'hash-a'), resources([]), savedAt)

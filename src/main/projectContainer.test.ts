@@ -8,7 +8,14 @@ import { describe, expect, it } from 'vitest'
 import { evaluateDocumentAtFrame } from '../shared/render'
 import { MigrationError, migrateDocument } from '../shared/migrate'
 import type { AnimatorDocument, ImageNode, SceneNode } from '../shared/model'
-import { isZipContainer, packProject, parseProject } from './projectContainer'
+import {
+  crc32,
+  isZipContainer,
+  packProject,
+  packProjectIncremental,
+  parseProject,
+  ProjectPackCache
+} from './projectContainer'
 import type { ProjectResourceMap } from './projectContainer'
 
 function loadV1Fixture(name: string): unknown {
@@ -199,6 +206,135 @@ describe('packProject / parseProject — round trip', () => {
       packProject(document, resources([['c'.repeat(64), JPG_BYTES, 'jpg']]))
     )
     expect(parsed.resources.get('c'.repeat(64))).toEqual({ bytes: JPG_BYTES, ext: 'jpg' })
+  })
+})
+
+describe('crc32', () => {
+  it('matches the standard IEEE test vectors', () => {
+    expect(crc32(strToU8('123456789'))).toBe(0xcbf43926)
+    expect(crc32(new Uint8Array())).toBe(0)
+  })
+})
+
+describe('packProjectIncremental', () => {
+  it('round-trips documents and resources identically to packProject', () => {
+    const document = documentWithNodes([imageNode('img-1', 'a'.repeat(64))])
+    const resourceMap = resources([
+      ['a'.repeat(64), PNG_BYTES, 'png'],
+      ['b'.repeat(64), JPG_BYTES, 'jpg']
+    ])
+    const incremental = parseProject(
+      packProjectIncremental(document, resourceMap, new ProjectPackCache()).bytes
+    )
+    const oracle = parseProject(packProject(document, resourceMap))
+    expect(incremental.document).toEqual(oracle.document)
+    expect(incremental.document).toEqual(document)
+    expect([...incremental.resources.keys()].sort()).toEqual([...oracle.resources.keys()].sort())
+    expect(incremental.resources.get('a'.repeat(64))).toEqual({ bytes: PNG_BYTES, ext: 'png' })
+  })
+
+  it('writes stored resource entries whose bytes survive verbatim', () => {
+    const document = documentWithNodes([imageNode('img-1', 'a'.repeat(64))])
+    const parsed = parseProject(
+      packProjectIncremental(document, resources([['a'.repeat(64), PNG_BYTES, 'png']]), new ProjectPackCache())
+        .bytes
+    )
+    expect(Array.from(parsed.resources.get('a'.repeat(64))!.bytes)).toEqual(Array.from(PNG_BYTES))
+  })
+
+  it('always writes a ZIP, even with no resources', () => {
+    const packed = packProjectIncremental(documentWithNodes([]), new Map(), new ProjectPackCache())
+    expect(isZipContainer(packed.bytes)).toBe(true)
+    expect(parseProject(packed.bytes).resources.size).toBe(0)
+    expect(packed.stats).toEqual({ reused: 0, rebuilt: 0 })
+  })
+
+  it('skips unreferenced resources and reports stats', () => {
+    const document = documentWithNodes([imageNode('img-1', 'a'.repeat(64))])
+    const packed = packProjectIncremental(
+      document,
+      resources([['a'.repeat(64), PNG_BYTES, 'png'], ['c'.repeat(64), JPG_BYTES, 'jpg']]),
+      new ProjectPackCache()
+    )
+    expect(packed.stats).toEqual({ reused: 0, rebuilt: 1 })
+    const parsed = parseProject(packed.bytes)
+    expect(parsed.resources.size).toBe(1)
+    expect(parsed.resources.has('c'.repeat(64))).toBe(false)
+  })
+
+  it('reuses every cached entry on a warm second pack with a changed document', () => {
+    const cache = new ProjectPackCache()
+    const resourceMap = resources([['a'.repeat(64), PNG_BYTES, 'png']])
+    packProjectIncremental(documentWithNodes([imageNode('img-1', 'a'.repeat(64))]), resourceMap, cache)
+
+    const changed = documentWithNodes([imageNode('img-1', 'a'.repeat(64))])
+    changed.name = 'changed-name'
+    const second = packProjectIncremental(changed, resourceMap, cache)
+    expect(second.stats).toEqual({ reused: 1, rebuilt: 0 })
+    expect(parseProject(second.bytes).document.name).toBe('changed-name')
+    expect(parseProject(second.bytes).resources.get('a'.repeat(64))).toEqual({
+      bytes: PNG_BYTES,
+      ext: 'png'
+    })
+  })
+
+  it('rebuilds only the newly added resource', () => {
+    const cache = new ProjectPackCache()
+    const idA = 'a'.repeat(64)
+    const idB = 'b'.repeat(64)
+    packProjectIncremental(
+      documentWithNodes([imageNode('img-1', idA)]),
+      resources([[idA, PNG_BYTES, 'png']]),
+      cache
+    )
+
+    const both = documentWithNodes([imageNode('img-1', idA), imageNode('img-2', idB)])
+    const second = packProjectIncremental(
+      both,
+      resources([[idA, PNG_BYTES, 'png'], [idB, JPG_BYTES, 'jpg']]),
+      cache
+    )
+    expect(second.stats).toEqual({ reused: 1, rebuilt: 1 })
+    const parsed = parseProject(second.bytes)
+    expect(parsed.resources.size).toBe(2)
+    expect(parsed.resources.get(idB)).toEqual({ bytes: JPG_BYTES, ext: 'jpg' })
+  })
+
+  it('round-trips camera and audio layers through the incremental packer', () => {
+    const document = documentWithNodes([])
+    document.layers.push(
+      {
+        kind: 'camera',
+        id: 'cam',
+        name: 'Camera',
+        visible: true,
+        locked: false,
+        keyframes: [
+          { frame: 0, pose: { center: { x: 10, y: 20 }, zoom: 1.5, rotation: 0 }, tween: { easing: 'linear' } },
+          { frame: 10, pose: { center: { x: 90, y: 80 }, zoom: 2, rotation: 30 } }
+        ]
+      },
+      {
+        kind: 'audio',
+        id: 'sound',
+        name: 'Sound',
+        visible: true,
+        locked: false,
+        resourceId: 'e'.repeat(64),
+        startFrame: 3,
+        volume: 0.4
+      }
+    )
+    const parsed = parseProject(
+      packProjectIncremental(
+        document,
+        resources([['e'.repeat(64), AUDIO_BYTES, 'wav']]),
+        new ProjectPackCache()
+      ).bytes
+    )
+    expect(parsed.document).toEqual(document)
+    expect(parsed.resources.get('e'.repeat(64))).toEqual({ bytes: AUDIO_BYTES, ext: 'wav' })
+    expect(evaluateDocumentAtFrame(parsed.document, 5).camera!.center).toEqual({ x: 50, y: 50 })
   })
 })
 
