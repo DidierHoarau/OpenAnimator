@@ -452,7 +452,10 @@ test('runs a script payload from the console', async () => {
 
   const output = modal.locator('.script-output')
   await expect(output).toContainText('with no issues')
-  await expect(page.locator('.tl-row', { hasText: 'Ball' })).toHaveCount(1)
+  // The script selects the created ball, so its layer auto-expands beside the
+  // layer row itself: both rows carry "Ball" (the layer and the object row).
+  await expect(page.locator('.tl-row', { hasText: 'Ball' })).toHaveCount(2)
+  await expect(page.locator('.tl-shape-row', { hasText: 'Ball' })).toHaveCount(1)
 })
 
 test('startup dialog starts a fresh project', async () => {
