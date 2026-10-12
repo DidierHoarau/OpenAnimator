@@ -262,7 +262,7 @@ describe('exportAnimatedSvg', () => {
     expect(svg).toMatch(/fill="url\(#oa-grad-[0-9a-z]+\)"/)
   })
 
-  it('reports path-data changes and dropped audio', async () => {
+  it('morphs path data per frame and reports dropped audio', async () => {
     const document = createDocument('demo', 320, 180, 12)
     const layer = objectLayerOf(document)
     const path = (d: string): PathNode => ({
@@ -286,12 +286,71 @@ describe('exportAnimatedSvg', () => {
 
     const { svg, diagnostics } = await exportAnimatedSvg(document, RANGE, deps())
     expect(diagnostics).toEqual([
-      'The path data of "blob" changes shape across frames; the animated SVG keeps the first shape.',
       'Audio is not included in animated SVG exports; the exported animation is silent.'
     ])
-    // The first shape is kept and animated as a whole.
+    // The first shape stays as the static fallback; the morph is a SMIL
+    // series of canonical (centered, explicitly-closed) per-frame strings.
     expect(svg).toContain('d="M0 0 L20 0 L20 10 Z"')
-    expect(svg).not.toContain('M0 0 L30 0 L30 10 Z')
+    expect(svg).not.toContain('d="M0 0 L30 0 L30 10 Z"')
+    expect(svg).toContain('<animate attributeName="d"')
+    expect(svg).toContain('calcMode="linear"')
+    const values = /<animate[^>]*values="([^"]+)"/.exec(svg)?.[1].split(';')
+    expect(values).toHaveLength(11)
+    expect(values?.[0]).toBe('M-10 -5L10 -5L10 5L-10 -5Z')
+    expect(values?.[5]).toBe('M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z')
+    expect(values?.[10]).toBe('M-15 -5L15 -5L15 5L-15 -5Z')
+  })
+
+  it('steps incompatible path changes discretely', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = objectLayerOf(document)
+    const path = (d: string): PathNode => ({
+      id: 'p1',
+      name: 'blob',
+      type: 'path',
+      center: { x: 10, y: 5 },
+      width: 20,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d,
+      fill: '#0000ff'
+    })
+    layer.keyframes[0].nodes.push(path('M0 0 L20 0 L20 10 Z'))
+    layer.keyframes[0].tween = { easing: 'linear' }
+    const final = insertKeyframe(layer, 10)
+    if (!final) throw new Error('expected the keyframe to be inserted')
+    final.nodes[0] = path('M0 0 L30 0')
+    const { svg, diagnostics } = await exportAnimatedSvg(document, RANGE, deps())
+    expect(diagnostics).toEqual([])
+    expect(svg).toContain('calcMode="discrete"')
+    const values = /<animate[^>]*values="([^"]+)"/.exec(svg)?.[1].split(';')
+    expect(values).toHaveLength(11)
+    // The snap fallback holds `from` through the tween and jumps at the end.
+    expect(values?.[0]).toBe('M0 0 L20 0 L20 10 Z')
+    expect(values?.[9]).toBe('M0 0 L20 0 L20 10 Z')
+    expect(values?.[10]).toBe('M0 0 L30 0')
+  })
+
+  it('leaves static path documents without a SMIL element', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = objectLayerOf(document)
+    layer.keyframes[0].nodes.push({
+      id: 'p1',
+      name: 'tri',
+      type: 'path',
+      center: { x: 10, y: 5 },
+      width: 20,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0 L20 0 L20 10 Z',
+      fill: '#0000ff'
+    })
+    const { svg, diagnostics } = await exportAnimatedSvg(document, RANGE, deps())
+    expect(diagnostics).toEqual([])
+    expect(svg).not.toContain('<animate')
+    expect(svg).toContain('d="M0 0 L20 0 L20 10 Z"')
   })
 })
 

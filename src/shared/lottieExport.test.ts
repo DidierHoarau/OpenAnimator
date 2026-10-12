@@ -74,6 +74,53 @@ function imageNode(overrides: Partial<ImageNode> = {}): ImageNode {
   }
 }
 
+function pathNode(overrides: Partial<PathNode> = {}): PathNode {
+  return {
+    id: 'p1',
+    name: 'tri',
+    type: 'path',
+    center: { x: 10, y: 5 },
+    width: 20,
+    height: 10,
+    rotation: 0,
+    opacity: 1,
+    d: 'M0 0 L20 0 L20 10 Z',
+    fill: '#0000ff',
+    ...overrides
+  }
+}
+
+/** A document with one path tweening from `TRIANGLE_D` toward `toD` over 0..10. */
+function morphedPathDocument(toD: string, endFrame = 10): AnimatorDocument {
+  const document = createDocument('demo', 320, 180, 12)
+  const layer = objectLayer(document)
+  layer.keyframes[0].nodes.push(pathNode())
+  layer.keyframes[0].tween = { easing: 'ease-in' }
+  const final = insertKeyframe(layer, endFrame)
+  if (!final) throw new Error('expected the keyframe to be inserted')
+  ;(final.nodes[0] as PathNode).d = toD
+  return document
+}
+
+const TRIANGLE_SHAPE = {
+  i: [
+    [0, 0],
+    [0, 0],
+    [0, 0]
+  ],
+  o: [
+    [0, 0],
+    [0, 0],
+    [0, 0]
+  ],
+  v: [
+    [0, 0],
+    [20, 0],
+    [20, 10]
+  ],
+  c: true
+}
+
 /** A document with one rect tweening from (40,40) to (200,100) over 0..10. */
 function tweenedDocument(easing: Easing = 'linear'): AnimatorDocument {
   const document = createDocument('demo', 320, 180, 12)
@@ -347,6 +394,104 @@ describe('buildLottieAnimation — structure', () => {
     expect(items.map((item) => item.ty)).toEqual(['gr', 'gr', 'tr'])
     expect((items[0].it as L[])[0].nm).toBe('c2')
     expect((items[1].it as L[])[0].nm).toBe('c1')
+  })
+})
+
+describe('buildLottieAnimation — path morphing', () => {
+  const morphedShape = {
+    i: [
+      [0, 0],
+      [0, 0],
+      [0, 0]
+    ],
+    o: [
+      [0, 0],
+      [0, 0],
+      [0, 0]
+    ],
+    v: [
+      [0, 0],
+      [30, 0],
+      [30, 10]
+    ],
+    c: true
+  }
+
+  it('morphs a compatible path with s/e keys and the segment easing', async () => {
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      morphedPathDocument('M0 0 L30 0 L30 10 Z'),
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([])
+    const layer = layersOf(lottie)[0]
+    expect(itemsOf(layer).map((item) => item.ty)).toEqual(['sh', 'fl', 'tr'])
+    const shape = itemOf(layer, 'sh')
+    expect(shape.d).toBe(1)
+    expect(shape.nm).toBe('tri')
+    const keys = keyedOf(shape, 'ks')
+    expect(keys).toEqual([
+      { t: 0, s: [TRIANGLE_SHAPE], e: [morphedShape], o: { x: 0.32, y: 0 }, i: { x: 0.67, y: 0 } },
+      { t: 10, s: [morphedShape], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } }
+    ])
+  })
+
+  it('holds the outline with a diagnostic when the anchor structures differ', async () => {
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      morphedPathDocument('M0 0 L30 0'),
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([
+      'The path data of "tri" cannot morph between keyframes (the anchor structure differs); the Lottie file holds the outline over those segments.'
+    ])
+    const shape = itemOf(layersOf(lottie)[0], 'sh')
+    const open = {
+      i: [
+        [0, 0],
+        [0, 0]
+      ],
+      o: [
+        [0, 0],
+        [0, 0]
+      ],
+      v: [
+        [0, 0],
+        [30, 0]
+      ],
+      c: false
+    }
+    expect(keyedOf(shape, 'ks')).toEqual([
+      { t: 0, s: [TRIANGLE_SHAPE], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } },
+      { t: 10, s: [open], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } }
+    ])
+  })
+
+  it('keeps the first outline plus a diagnostic when the subpath count changes', async () => {
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      morphedPathDocument('M0 0 L30 0 L30 10 Z M50 50 L60 50 L60 60 Z'),
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([
+      'The path data of "tri" changes shape across keyframes; the Lottie file keeps the first outline.'
+    ])
+    const shape = itemOf(layersOf(lottie)[0], 'sh')
+    expect(propOf(shape, 'ks')).toEqual({ a: 0, k: TRIANGLE_SHAPE })
+  })
+
+  it('morphs the clipped final segment through the successor key', async () => {
+    const { lottie, diagnostics } = await buildLottieAnimation(
+      morphedPathDocument('M0 0 L30 0 L30 10 Z', 20),
+      { fromFrame: 0, toFrame: 10, fps: 12 },
+      deps()
+    )
+    expect(diagnostics).toEqual([])
+    const shape = itemOf(layersOf(lottie)[0], 'sh')
+    expect(keyedOf(shape, 'ks')).toEqual([
+      { t: 0, s: [TRIANGLE_SHAPE], e: [morphedShape], o: { x: 0.32, y: 0 }, i: { x: 0.67, y: 0 } },
+      { t: 20, s: [morphedShape], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } }
+    ])
   })
 })
 

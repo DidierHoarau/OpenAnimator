@@ -1,16 +1,20 @@
 import { lerp } from './geometry'
 import type { Vec2 } from './geometry'
-import type { SceneNode, StrokeStyle } from './model'
+import type { PathAnchor, SceneNode, StrokeStyle } from './model'
 import { cloneNode } from './model'
 import { cubicBezierPoint } from './motionPath'
 import { lerpPaint } from './paint'
+import { buildPathData, normalizePathData, pathDataToSubpathAnchors } from './pathModel'
 
 /**
  * Interpolates a node between two keyframe contents matched by id. Every node
  * type lerps transform + opacity; primitives and paths additionally lerp
  * fill, stroke and stroke width (paints through `lerpPaint`: solid↔solid
  * lerps the color, matching gradients lerp geometry and stops, any mismatch
- * snaps). Authored
+ * snaps). Path geometry morphs between keyframes when both outlines are
+ * morph-compatible (`morphPathData`: same subpath count, equal per-subpath
+ * anchor counts, equal closed flags) and snaps from `from` otherwise — the
+ * historical behavior (see `morphPathData`). Authored
  * stroke-style fields are carried through so they never vanish mid-tween:
  * linecap, linejoin and the dash pattern hold `from`, the dash offset
  * interpolates when both ends define it. Identity fields (id, name, type,
@@ -35,6 +39,52 @@ function strokeStyleTween(from: StrokeStyle, to: Partial<StrokeStyle>, t: number
       : (to.strokeDashoffset ?? from.strokeDashoffset)
   if (dashoffset !== undefined) style.strokeDashoffset = dashoffset
   return style
+}
+
+/**
+ * Morphs two path geometries: compatible outlines have the same subpath
+ * count, equal per-subpath anchor counts and equal closed flags; every
+ * on-curve point and bezier handle (relative offsets) then lerps linearly. A
+ * corner pose's missing handle counts as a zero-length handle at its anchor,
+ * so corner↔smooth pairs morph smoothly. Both inputs are re-centered on
+ * their own bounding box first (the `PathNode` normalization invariant), so
+ * the interpolation carries shape only — the node's center travels
+ * separately. Incompatible or unparseable (`A`-arc) geometry returns null;
+ * callers keep today's snap behavior. `t === 0`/`t === 1` reproduce the
+ * parsed end geometry (within path-data rounding).
+ */
+export function morphPathData(fromD: string, toD: string, t: number): string | null {
+  const from = pathDataToSubpathAnchors(normalizePathData(fromD))
+  const to = pathDataToSubpathAnchors(normalizePathData(toD))
+  if (!from || !to || from.length !== to.length) return null
+  const subpaths: string[] = []
+  for (let index = 0; index < from.length; index++) {
+    const source = from[index]
+    const target = to[index]
+    if (source.closed !== target.closed) return null
+    if (source.anchors.length !== target.anchors.length) return null
+    const anchors: PathAnchor[] = source.anchors.map((anchor, anchorIndex) => {
+      const other = target.anchors[anchorIndex]
+      const handle = (
+        start: { x: number; y: number } | undefined,
+        end: { x: number; y: number } | undefined
+      ): { x: number; y: number } => {
+        const a = start ?? { x: 0, y: 0 }
+        const b = end ?? { x: 0, y: 0 }
+        return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) }
+      }
+      const inHandle = handle(anchor.in, other.in)
+      const outHandle = handle(anchor.out, other.out)
+      return {
+        x: lerp(anchor.x, other.x, t),
+        y: lerp(anchor.y, other.y, t),
+        ...(inHandle.x !== 0 || inHandle.y !== 0 ? { in: inHandle } : {}),
+        ...(outHandle.x !== 0 || outHandle.y !== 0 ? { out: outHandle } : {})
+      }
+    })
+    subpaths.push(buildPathData(anchors, source.closed))
+  }
+  return subpaths.join('')
 }
 
 export function tweenNode(
@@ -78,16 +128,22 @@ export function tweenNode(
     return { ...base, type: 'symbol', assetId: from.assetId }
   }
   if (from.type === 'path') {
-    // Path geometry snaps from `from`; the transform carries, fills and
-    // strokes interpolate through `lerpPaint` like primitives (both ends
-    // defined → lerp, else the defined end wins), and the stroke-style
-    // fields hold (dash offset interpolates).
+    // Path geometry morphs between compatible outlines; `t === 0` holds the
+    // exact `from` data and `t >= 1` the exact target data (the evaluator
+    // calls the tween at keyframe frames too, so the ends must stay
+    // byte-identical), any incompatible pair snaps from `from` — the
+    // historical behavior. The transform carries, fills and strokes
+    // interpolate through `lerpPaint` like primitives (both ends defined →
+    // lerp, else the defined end wins), and the stroke-style fields hold
+    // (dash offset interpolates).
     const target = to.type === 'path' ? to : undefined
+    const morphed =
+      !target || t <= 0 ? null : t >= 1 ? target.d : morphPathData(from.d, target.d, t)
     return {
       ...base,
       ...strokeStyleTween(from, target ?? {}, t),
       type: 'path',
-      d: from.d,
+      d: morphed ?? from.d,
       fill:
         from.fill !== undefined && target?.fill !== undefined
           ? lerpPaint(from.fill, target.fill, t)

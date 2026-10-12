@@ -1,8 +1,36 @@
 import { describe, expect, it } from 'vitest'
 
 import { evaluateLayerAtFrame } from './document'
-import type { AnimatorDocument, GroupNode, ImageNode, ObjectLayer, PathNode, PrimitiveNode, SceneNode, SymbolNode, TextNode } from './model'
-import { tweenNode, tweenNodes } from './tween'
+import type { AnimatorDocument, GroupNode, ImageNode, ObjectLayer, PathAnchor, PathNode, PrimitiveNode, SceneNode, SymbolNode, TextNode } from './model'
+import { pathDataToSubpathAnchors } from './pathModel'
+import { morphPathData, tweenNode, tweenNodes } from './tween'
+
+/** Parses path data into subpath anchors for tolerant geometry comparison. */
+function anchorsOf(d: string): Array<{ anchors: PathAnchor[]; closed: boolean }> {
+  const subpaths = pathDataToSubpathAnchors(d)
+  if (!subpaths) throw new Error(`unparsable path data: ${d}`)
+  return subpaths
+}
+
+function expectAnchorsCloseTo(actual: string, expected: Array<{ anchors: PathAnchor[]; closed: boolean }>): void {
+  const parsed = anchorsOf(actual)
+  expect(parsed.length).toBe(expected.length)
+  parsed.forEach((subpath, index) => {
+    expect(subpath.closed).toBe(expected[index].closed)
+    expect(subpath.anchors.length).toBe(expected[index].anchors.length)
+    subpath.anchors.forEach((anchor, anchorIndex) => {
+      const other = expected[index].anchors[anchorIndex]
+      expect(anchor.x).toBeCloseTo(other.x, 2)
+      expect(anchor.y).toBeCloseTo(other.y, 2)
+      for (const handle of ['in', 'out'] as const) {
+        const value = anchor[handle] ?? { x: 0, y: 0 }
+        const target = other[handle] ?? { x: 0, y: 0 }
+        expect(value.x).toBeCloseTo(target.x, 2)
+        expect(value.y).toBeCloseTo(target.y, 2)
+      }
+    })
+  })
+}
 
 function shape(id: string, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
   return {
@@ -258,7 +286,7 @@ describe('tweenNode', () => {
     expect((tweenNode(groupNode, shapeNode, 1) as PrimitiveNode).type).toBe('primitive')
   })
 
-  it('tweens a path: transform, stroke width and paints lerp, geometry snaps from `from`', () => {
+  it('tweens a path: transform, stroke width and paints lerp, mismatched geometry snaps from `from`', () => {
     const from: PathNode = {
       type: 'path',
       id: 'p',
@@ -292,6 +320,27 @@ describe('tweenNode', () => {
     expect(result.d).toBe('M0 0L10 10')
     expect(result.stroke).toBe('#1a1a1a')
     expect(result.fill).toBeUndefined()
+  })
+
+  it('morphs a compatible path pair through `morphPathData`, keeping the ends exact', () => {
+    const from: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 20,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0 L20 0 L20 10 Z',
+      fill: '#0000ff'
+    }
+    const to: PathNode = { ...from, center: { x: 50, y: 50 }, d: 'M0 0 L30 0 L30 10 Z' }
+    const mid = tweenNode(from, to, 0.5) as PathNode
+    expect(mid.d).toBe('M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z')
+    // The evaluator tweens at keyframe frames too (progress 0/1), so the
+    // ends must stay byte-identical to the authored data.
+    expect((tweenNode(from, to, 0) as PathNode).d).toBe('M0 0 L20 0 L20 10 Z')
+    expect((tweenNode(from, to, 1) as PathNode).d).toBe('M0 0 L30 0 L30 10 Z')
   })
 
   it('keeps a path stroke width when only one side defines it', () => {
@@ -516,6 +565,70 @@ describe('tweenNode', () => {
     expect(result.fontWeight).toBe(400)
     expect(result.fill).toBe('#ffffff')
     expect(result.align).toBe('left')
+  })
+})
+
+describe('morphPathData', () => {
+  it('lerps matching outlines anchor by anchor (re-centered on their bounding boxes)', () => {
+    expect(morphPathData('M0 0 L20 0 L20 10 Z', 'M0 0 L30 0 L30 10 Z', 0.5)).toBe(
+      'M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z'
+    )
+    // Different sizes and offsets: both start re-centered, so only shape
+    // interpolates — the centers of the two boxes do not drag the geometry.
+    const mid = morphPathData('M0 0 L20 0 L20 10 Z', 'M100 100 L130 100 L130 110 Z', 0.5)
+    expect(mid).toBe('M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z')
+  })
+
+  it('round-trips the parsed end geometries at t=0 and t=1', () => {
+    const from = 'M-10 -10 L10 -10 L0 10'
+    const to = 'M-20 -5 L20 -5 L0 5'
+    const fromAnchors = anchorsOf(from)
+    const toAnchors = anchorsOf(to)
+    expectAnchorsCloseTo(morphPathData(from, to, 0)!, fromAnchors)
+    expectAnchorsCloseTo(morphPathData(from, to, 1)!, toAnchors)
+    // Closed outlines keep their closing segment and flag.
+    const closed = morphPathData('M0 0 L20 0 L20 10 Z', 'M0 0 L30 0 L30 10 Z', 1)
+    expect(closed).toBe('M-15 -5L15 -5L15 5L-15 -5Z')
+  })
+
+  it('treats a corner pose’s missing handle as a zero-length handle', () => {
+    // from is straight, to is curved: the midpoint is a shallower curve.
+    expect(morphPathData('M-15 0 L15 0', 'M-15 0 C-5 0 5 0 15 0', 0.5)).toBe(
+      'M-15 0C-10 0 10 0 15 0'
+    )
+    // And curving back the other way.
+    expect(morphPathData('M-15 0 C-5 0 5 0 15 0', 'M-15 0 L15 0', 0.5)).toBe(
+      'M-15 0C-10 0 10 0 15 0'
+    )
+    // Two curves average their handles (both boxes already centered).
+    expect(morphPathData('M-15 -5 C-5 -5 5 5 15 5', 'M-15 -5 C-15 5 0 5 15 5', 0.5)).toBe(
+      'M-15 -5C-10 0 2.5 5 15 5'
+    )
+  })
+
+  it('morphs every subpath of a multi-subpath outline', () => {
+    const from = 'M0 0 L10 0 L10 10 Z M20 0 L30 0 L30 10 Z'
+    const to = 'M0 0 L20 0 L20 10 Z M40 0 L60 0 L60 10 Z'
+    const mid = morphPathData(from, to, 0.5)!
+    const subpaths = anchorsOf(mid)
+    expect(subpaths).toHaveLength(2)
+    // One global bounding-box center re-centers both subpaths together.
+    expect(subpaths[0].anchors[0]).toMatchObject({ x: -22.5, y: -5 })
+    expect(subpaths[1].anchors[0]).toMatchObject({ x: 7.5, y: -5 })
+    expect(subpaths[1].anchors[2]).toMatchObject({ x: 22.5, y: 5 })
+  })
+
+  it('returns null for incompatible or unparseable outlines (the snap fallback)', () => {
+    // Anchor-count mismatch.
+    expect(morphPathData('M0 0 L20 0 L20 10 Z', 'M0 0 L30 0 Z', 0.5)).toBeNull()
+    // Subpath-count mismatch.
+    expect(
+      morphPathData('M0 0 L20 0 L20 10 Z', 'M0 0 L30 0 L30 10 Z M40 0 L50 0 L50 10 Z', 0.5)
+    ).toBeNull()
+    // Open vs closed.
+    expect(morphPathData('M0 0 L20 0 L20 10', 'M0 0 L20 0 L20 10 Z', 0.5)).toBeNull()
+    // Arcs are rejected by the parser.
+    expect(morphPathData('M0 0 A5 5 0 0 1 10 10', 'M0 0 L10 10', 0.5)).toBeNull()
   })
 })
 
@@ -746,6 +859,35 @@ describe('evaluateLayerAtFrame', () => {
     // The final tween never interpolates and the object ends at frame 20.
     expect(evaluateLayerAtFrame(trailing, 20)[0].center.x).toBe(999)
     expect(evaluateLayerAtFrame(trailing, 25)).toEqual([])
+  })
+
+  it('morphs a compatible path through a tweened span, endpoints exact', () => {
+    const path = (d: string): PathNode => ({
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 20,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d,
+      fill: '#0000ff'
+    })
+    const morphLayer: ObjectLayer = {
+      ...layer,
+      keyframes: [
+        { frame: 0, nodes: [path('M0 0 L20 0 L20 10 Z')], tween: { easing: 'linear' } },
+        { frame: 10, nodes: [path('M0 0 L30 0 L30 10 Z')] }
+      ]
+    }
+    // Keyframe frames evaluate the tween at progress 0/1 — the ends must
+    // stay byte-identical to the authored data.
+    expect((evaluateLayerAtFrame(morphLayer, 0)[0] as PathNode).d).toBe('M0 0 L20 0 L20 10 Z')
+    expect((evaluateLayerAtFrame(morphLayer, 10)[0] as PathNode).d).toBe('M0 0 L30 0 L30 10 Z')
+    const mid = evaluateLayerAtFrame(morphLayer, 5)[0] as PathNode
+    expect(mid.d).not.toBe('M0 0 L20 0 L20 10 Z')
+    expect(mid.d).not.toBe('M0 0 L30 0 L30 10 Z')
+    expect(mid.d).toBe('M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z')
   })
 })
 

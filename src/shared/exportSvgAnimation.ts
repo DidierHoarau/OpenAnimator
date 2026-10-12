@@ -3,7 +3,13 @@ import { groupNaturalSize } from './groups'
 import type { AnimatorDocument, CameraPose, PathNode, SceneNode, TextNode } from './model'
 import { isAudioLayer } from './model'
 import type { Paint } from './paint'
-import { pathNaturalSize } from './pathModel'
+import {
+  buildPathData,
+  normalizePathData,
+  parsePathCommands,
+  pathDataToSubpathAnchors,
+  pathNaturalSize
+} from './pathModel'
 import { evaluateDocumentAtFrame } from './render'
 import { escapeXmlAttribute, paintAttribute } from './renderSvg'
 import type { TextOutlineProvider } from './textOutline'
@@ -17,13 +23,16 @@ import type { TextOutlineProvider } from './textOutline'
  * (GIF-like). Static documents emit a plain `<svg>` with no `<style>` block
  * at all.
  *
- * Scoped subset (documented in docs/export-formats.md): gradient paints are
- * baked from the instance's first appearance (a paint that changes over time
- * keeps the first value + diagnostic); path data and text outlines are frozen
- * at the first appearance (mid-animation changes keep the first shape +
- * diagnostic); a text stroke is dropped, since text ships as outlines —
- * fonts are never embedded (licensing). Unsupported content degrades to a
- * dashed placeholder box plus a diagnostic, never a crash.
+ * Path data is the one geometry that animates: a path whose `d` changes
+ * across frames becomes a per-frame SMIL `<animate attributeName="d">` child
+ * of the `<path>` (interpolated linearly when every sampled frame shares one
+ * command signature — the morph-compatible case — and frame-stepped
+ * otherwise). Everything else is frozen at the instance's first appearance
+ * (gradient paints that change over time keep the first value + diagnostic;
+ * text outlines keep the first pose + diagnostic). A text stroke is dropped,
+ * since text ships as outlines — fonts are never embedded (licensing).
+ * Unsupported content degrades to a dashed placeholder box plus a
+ * diagnostic, never a crash.
  */
 
 export interface SvgAnimationOptions {
@@ -53,6 +62,35 @@ function fmt(value: number): string {
 
 function snippet(text: string): string {
   return text.length > 24 ? `${text.slice(0, 24)}…` : text
+}
+
+/** Path data re-serialized through the canonical anchor form: a (0,0)-
+ * centered bbox, `Z`-closed subpaths collapsed to their anchor list
+ * (dropping the explicit closing segment's duplicate anchor) and a uniform
+ * explicit closing segment added back on rebuild — so one morphing series
+ * shares a single string shape across frames. Null for unparseable data. */
+function canonicalPathData(d: string): string | null {
+  const subpaths = pathDataToSubpathAnchors(normalizePathData(d))
+  if (!subpaths) return null
+  const parts: string[] = []
+  for (const subpath of subpaths) {
+    const anchors = subpath.anchors.slice()
+    if (subpath.closed && anchors.length > 2) {
+      const first = anchors[0]
+      const last = anchors[anchors.length - 1]
+      if (Math.abs(first.x - last.x) < 1e-6 && Math.abs(first.y - last.y) < 1e-6) anchors.pop()
+    }
+    parts.push(buildPathData(anchors, subpath.closed))
+  }
+  return parts.join('')
+}
+
+/** Command-type signature (`MLLCZ`-style): two path strings can interpolate
+ * in SMIL exactly when their signatures match. Null for unparseable data. */
+function commandSignature(d: string): string | null {
+  const commands = parsePathCommands(d)
+  if (!commands) return null
+  return commands.map((command) => command.type).join('')
 }
 
 function cssTransform(x: number, y: number, rotation: number, sx: number, sy: number): string {
@@ -111,6 +149,8 @@ interface Instance {
   height0: number
   d?: string
   natural0?: { width: number; height: number }
+  /** Per-frame `d` series (SMIL) when the path data changes across frames. */
+  dMotion?: { calcMode: 'linear' | 'discrete'; values: string[] }
   /** Text instances. */
   textPose?: TextNode
   outlineRequested?: boolean
@@ -216,12 +256,6 @@ function recordFrame(state: WalkState, instance: Instance, frameIndex: number, n
     instance.fillValues[frameIndex] = node.fill
     instance.strokeValues[frameIndex] = node.stroke
     instance.strokeWidthValues[frameIndex] = node.stroke === undefined ? 0 : node.strokeWidth ?? 1
-    if (node.d !== instance.d) {
-      report(
-        state,
-        `The path data of "${instance.name}" changes shape across frames; the animated SVG keeps the first shape.`
-      )
-    }
   } else if (node.type === 'text') {
     instance.fillValues[frameIndex] = node.fill
     const pose = instance.textPose
@@ -305,9 +339,12 @@ function transformAt(instance: Instance, node: SceneNode): string {
     const sy = natural.height === 0 ? 1 : node.height / natural.height
     return cssTransform(node.center.x, node.center.y, node.rotation, sx, sy)
   }
-  if (instance.kind === 'path' && node.type === 'path' && instance.natural0) {
-    const sx = instance.natural0.width === 0 ? 1 : node.width / instance.natural0.width
-    const sy = instance.natural0.height === 0 ? 1 : node.height / instance.natural0.height
+  if (instance.kind === 'path' && node.type === 'path') {
+    // The path's own `d` animates per frame, so the scale is rebased on the
+    // drawn geometry's natural size every frame (the live renderer rule).
+    const natural = pathNaturalSize(node)
+    const sx = natural.width === 0 ? 1 : node.width / natural.width
+    const sy = natural.height === 0 ? 1 : node.height / natural.height
     return cssTransform(node.center.x, node.center.y, node.rotation, sx, sy)
   }
   if (instance.kind === 'text' && instance.drawable && instance.outline) {
@@ -414,6 +451,44 @@ function preparePaints(ctx: EmitContext): void {
     } else if (instance.kind === 'text') {
       instance.fill = resolvePaintValues(ctx, instance, instance.fillValues)
     }
+  }
+}
+
+/** Builds the per-frame `d` SMIL series of path instances whose geometry
+ * changes across the export: canonical strings interpolated linearly when
+ * every sampled frame shares one command signature (the morph-compatible
+ * case), the exact per-frame evaluator strings shown frame-stepped
+ * (discrete) otherwise. Absent frames inherit the previous value. */
+function preparePathData(ctx: EmitContext): void {
+  for (const instance of ctx.state.instances.values()) {
+    if (instance.kind !== 'path') continue
+    const series: Array<string | undefined> = new Array(ctx.count).fill(undefined)
+    for (let i = 0; i < ctx.count; i++) {
+      const pose = instance.poses[i]
+      if (pose && pose.type === 'path') series[i] = pose.d
+    }
+    const defined = series.filter((value): value is string => value !== undefined)
+    if (new Set(defined).size <= 1) continue
+    const canonical = series.map((value) => (value === undefined ? null : canonicalPathData(value)))
+    let linear = true
+    let reference: string | null = null
+    for (let i = 0; i < ctx.count; i++) {
+      if (series[i] === undefined) continue
+      const signature = canonical[i] === null ? null : commandSignature(canonical[i]!)
+      if (signature === null || (reference !== null && signature !== reference)) {
+        linear = false
+        break
+      }
+      reference = signature
+    }
+    const values: string[] = []
+    let last = defined[0]
+    for (let i = 0; i < ctx.count; i++) {
+      const value = linear ? canonical[i] : series[i]
+      if (value !== undefined && value !== null) last = value
+      values.push(last)
+    }
+    instance.dMotion = { calcMode: linear ? 'linear' : 'discrete', values }
   }
 }
 
@@ -571,6 +646,12 @@ function emitPathLike(ctx: EmitContext, instance: Instance, d: string, withStrok
       const width = instance.strokeWidthValues[first]
       if (width !== undefined && width !== 0) markup += attr('stroke-width', fmt(width))
     }
+  }
+  if (instance.dMotion) {
+    markup +=
+      `<animate${attr('attributeName', 'd')}${attr('dur', `${fmt(ctx.count / ctx.fps)}s`)}` +
+      `${attr('repeatCount', 'indefinite')}${attr('calcMode', instance.dMotion.calcMode)}` +
+      `${attr('values', instance.dMotion.values.join(';'))}/>`
   }
   if (innerId) markup += attr('id', innerId)
   return `${markup}/></g>`
@@ -731,6 +812,7 @@ export async function exportAnimatedSvg(
     idCounter: 0
   }
   preparePaints(ctx)
+  preparePathData(ctx)
 
   const body = state.roots.map((instance) => emitInstance(ctx, instance)).join('')
   const camera = emitCamera(ctx, document, body, cameraTrack)
