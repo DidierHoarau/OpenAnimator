@@ -15,7 +15,7 @@ import { loadBundledFontBytes } from './textOutlines'
 
 export interface FontEmbeddingDeps {
   getPolicy(): Promise<FontEmbeddingPolicy>
-  readFont(family: string, weight: number): Promise<Uint8Array | null>
+  readFont(family: string, weight: number, italic: boolean): Promise<Uint8Array | null>
   addResource(bytes: Uint8Array, fileName: string): Promise<{ resourceId: string }>
   /** Registers freshly embedded subsets as face; injectable for tests. */
   syncFaces(editor: Editor): Promise<void>
@@ -24,8 +24,8 @@ export interface FontEmbeddingDeps {
 function defaultDeps(): FontEmbeddingDeps {
   return {
     getPolicy: () => window.api.getFontEmbeddingPolicy(),
-    readFont: async (family, weight) => {
-      const result = await window.api.readSystemFont(family, weight)
+    readFont: async (family, weight, italic) => {
+      const result = await window.api.readSystemFont(family, weight, italic)
       return result.ok ? result.bytes : null
     },
     addResource: (bytes, fileName) => window.api.addResource(bytes, fileName),
@@ -33,18 +33,20 @@ function defaultDeps(): FontEmbeddingDeps {
   }
 }
 
-/** Bundled Noto Sans covers the guaranteed fallback family; every other
- * family comes from the installed system fonts. */
+/** Bundled upright Noto Sans covers the guaranteed fallback family; every
+ * other face — including italic Noto Sans, which ships no bundled italic —
+ * comes from the installed system fonts. */
 async function readSourceFont(
   family: string,
   weight: number,
+  italic: boolean,
   deps: FontEmbeddingDeps
 ): Promise<Uint8Array | null> {
-  if (family.trim().toLowerCase() === 'noto sans') {
+  if (!italic && family.trim().toLowerCase() === 'noto sans') {
     const bundled = await loadBundledFontBytes(weight)
     if (bundled) return bundled
   }
-  return deps.readFont(family, weight)
+  return deps.readFont(family, weight, italic)
 }
 
 function covers(font: EmbeddedFont, chars: ReadonlySet<string>): boolean {
@@ -63,6 +65,7 @@ function sameFonts(before: readonly EmbeddedFont[], after: readonly EmbeddedFont
       other.id === font.id &&
       other.family === font.family &&
       other.weight === font.weight &&
+      (other.italic ?? false) === (font.italic ?? false) &&
       other.resourceId === font.resourceId &&
       other.license === font.license &&
       other.glyphs.length === font.glyphs.length &&
@@ -87,12 +90,15 @@ export async function reconcileEmbeddedFonts(
   if (usages.size === 0 && editor.document.fonts.length === 0) return false
   const policy = await deps.getPolicy()
   const existingByKey = new Map(
-    editor.document.fonts.map((font) => [`${font.family.toLowerCase()}|${font.weight}`, font])
+    editor.document.fonts.map((font) => [
+      `${font.family.toLowerCase()}|${font.weight}|${font.italic ?? false}`,
+      font
+    ])
   )
   const next: EmbeddedFont[] = []
   const skipped: string[] = []
   for (const usage of usages.values()) {
-    const existing = existingByKey.get(`${usage.family.toLowerCase()}|${usage.weight}`)
+    const existing = existingByKey.get(`${usage.family.toLowerCase()}|${usage.weight}|${usage.italic}`)
     if (existing && covers(existing, usage.chars)) {
       next.push(existing)
       continue
@@ -104,8 +110,8 @@ export async function reconcileEmbeddedFonts(
       continue
     }
     const glyphs = [...new Set([...(existing?.glyphs ?? []), ...usage.chars])].sort()
-    const id = embeddedFontId(usage.family, usage.weight)
-    const source = await readSourceFont(usage.family, usage.weight, deps)
+    const id = embeddedFontId(usage.family, usage.weight, usage.italic)
+    const source = await readSourceFont(usage.family, usage.weight, usage.italic, deps)
     let subset: Uint8Array | null = null
     if (source) {
       try {
@@ -121,7 +127,15 @@ export async function reconcileEmbeddedFonts(
     }
     const { resourceId } = await deps.addResource(subset, `${id}.ttf`)
     editor.resources.put(resourceId, subset)
-    next.push({ id, family: usage.family, weight: usage.weight, resourceId, glyphs, license })
+    next.push({
+      id,
+      family: usage.family,
+      weight: usage.weight,
+      ...(usage.italic ? { italic: true } : {}),
+      resourceId,
+      glyphs,
+      license
+    })
   }
   const changed = !sameFonts(editor.document.fonts, next)
   if (changed) editor.applyFontEmbedding(next)
@@ -134,15 +148,18 @@ export async function reconcileEmbeddedFonts(
 /** Port over the DOM FontFace API, injectable for tests. */
 export interface FontFacePort {
   /** Creates, loads and adds a face; resolves to an opaque handle. */
-  add(family: string, weight: number, bytes: ArrayBuffer): Promise<unknown>
+  add(family: string, weight: number, bytes: ArrayBuffer, italic: boolean): Promise<unknown>
   /** Removes a previously added face. */
   remove(handle: unknown): void
 }
 
 function defaultFontFacePort(): FontFacePort {
   return {
-    add: async (family, weight, bytes) => {
-      const face = new FontFace(family, bytes, { weight: String(weight) })
+    add: async (family, weight, bytes, italic) => {
+      const face = new FontFace(family, bytes, {
+        weight: String(weight),
+        style: italic ? 'italic' : 'normal'
+      })
       await face.load()
       document.fonts.add(face)
       return face
@@ -178,7 +195,7 @@ export class EmbeddedFontSync {
       if (!blob) continue
       try {
         const bytes = await blob.arrayBuffer()
-        const handle = await this.port.add(font.id, font.weight, bytes)
+        const handle = await this.port.add(font.id, font.weight, bytes, font.italic ?? false)
         if (current) this.port.remove(current.handle)
         this.registered.set(font.id, { resourceId: font.resourceId, handle })
       } catch {

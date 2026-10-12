@@ -75,7 +75,8 @@ const api: OpenAnimatorApi = {
   saveGlobalPalette: (colors) => ipcRenderer.invoke(PALETTE_SET_CHANNEL, colors),
   importPaletteFile: () => ipcRenderer.invoke(PALETTE_IMPORT_CHANNEL),
   listSystemFonts: () => ipcRenderer.invoke(FONT_LIST_CHANNEL),
-  readSystemFont: (family, weight) => ipcRenderer.invoke(FONT_READ_CHANNEL, family, weight),
+  readSystemFont: (family, weight, italic) =>
+    ipcRenderer.invoke(FONT_READ_CHANNEL, family, weight, italic),
   getFontEmbeddingPolicy: () => ipcRenderer.invoke(FONT_POLICY_CHANNEL),
   openReleasePage: (version) => ipcRenderer.invoke(APP_OPEN_RELEASE_CHANNEL, version),
   openExternal: (url) => ipcRenderer.invoke(APP_OPEN_EXTERNAL_CHANNEL, url),

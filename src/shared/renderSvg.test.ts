@@ -471,6 +471,58 @@ describe('renderSvg', () => {
     expect(resolverMiss).toContain('font-family="My Font"')
   })
 
+  it('emits italic and ligature styles only when set', () => {
+    const node: TextNode = {
+      type: 'text',
+      id: 't5b',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'My Font',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    expect(nodeToSvgMarkup(node)).not.toContain('style=')
+    expect(nodeToSvgMarkup({ ...node, fontStyle: 'normal', ligatures: true })).not.toContain('style=')
+    expect(nodeToSvgMarkup({ ...node, fontStyle: 'italic' })).toContain('style="font-style: italic"')
+    expect(nodeToSvgMarkup({ ...node, ligatures: false })).toContain('style="font-variant-ligatures: none"')
+    expect(nodeToSvgMarkup({ ...node, fontStyle: 'italic', ligatures: false })).toContain(
+      'style="font-style: italic; font-variant-ligatures: none"'
+    )
+  })
+
+  it('passes the node style to the embedded-font resolver', () => {
+    const node: TextNode = {
+      type: 'text',
+      id: 't5c',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'My Font',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    const calls: Array<[string, number, boolean | undefined]> = []
+    const markup = nodeToSvgMarkup({ ...node, fontStyle: 'italic' }, undefined, {
+      resolveEmbeddedFont: (family, weight, italic) => {
+        calls.push([family, weight, italic])
+        return italic ? 'oa-embed-400-ab12cd34i' : 'oa-embed-400-ab12cd34'
+      }
+    })
+    expect(calls).toEqual([['My Font', 400, true]])
+    expect(markup).toContain('font-family="oa-embed-400-ab12cd34i, &apos;My Font&apos;')
+  })
+
   it('re-places baselines for bottom vertical alignment', () => {
     const node: TextNode = {
       type: 'text',

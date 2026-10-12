@@ -137,7 +137,7 @@ export type ExportWriteResult = { ok: true } | { ok: false; error: string }
 /** Open result of a staged export write; the token addresses the stream. */
 export type ExportStreamOpenResult = { ok: true; token: string } | { ok: false; error: string }
 
-/** One installed system font family, with its upright weights. */
+/** One installed system font family, with its available weights. */
 export interface SystemFont {
   family: string
   /** Available CSS weights, ascending, deduplicated. */
@@ -200,8 +200,9 @@ export interface OpenAnimatorApi {
   importPaletteFile(): Promise<PaletteImportResult>
   /** Lists installed system font families and their available weights. */
   listSystemFonts(): Promise<SystemFont[]>
-  /** Reads the installed face nearest to (family, weight) as raw font bytes. */
-  readSystemFont(family: string, weight: number): Promise<FontReadResult>
+  /** Reads the installed face nearest to (family, weight, style) as raw font
+   * bytes: upright by default, the italic/oblique face when `italic` is set. */
+  readSystemFont(family: string, weight: number, italic?: boolean): Promise<FontReadResult>
   /** Reads the effective font embedding policy (built-ins plus user rules). */
   getFontEmbeddingPolicy(): Promise<FontEmbeddingPolicy>
   /** Opens the GitHub release page of the given version in the browser. */

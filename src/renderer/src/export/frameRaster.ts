@@ -131,7 +131,8 @@ export class FrameRasterizer {
       .map((font) => {
         const url = this.dataUrls.get(font.resourceId)
         return url
-          ? `@font-face{font-family:'${font.id}';font-weight:${font.weight};src:url(${url}) format('truetype');}`
+          ? `@font-face{font-family:'${font.id}';font-weight:${font.weight};` +
+              `${font.italic ? 'font-style:italic;' : ''}src:url(${url}) format('truetype');}`
           : ''
       })
       .join('')

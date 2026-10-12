@@ -19,14 +19,14 @@ export type ResourceResolver = (resourceId: string) => string | null
  * one flat color (the onion-skin outline approximation); groups keep their
  * normal wrapper markup so their primitive/path children still outline, while
  * symbols, images and text keep their normal markup. `resolveEmbeddedFont`
- * yields the synthetic family of an embedded subset for a (family, weight)
- * pair; text then renders through the full CSS family list (subset first,
- * `'Noto Sans', sans-serif` last). Absent options ⇒ byte-identical markup to
- * the historical renderer.
+ * yields the synthetic family of an embedded subset for a (family, weight,
+ * italic) triple; text then renders through the full CSS family list (subset
+ * first, `'Noto Sans', sans-serif` last). Absent options ⇒ byte-identical
+ * markup to the historical renderer.
  */
 export interface SvgRenderOptions {
   outline?: { color: string }
-  resolveEmbeddedFont?: (family: string, weight: number) => string | null
+  resolveEmbeddedFont?: (family: string, weight: number, italic?: boolean) => string | null
 }
 
 /** Escapes a string for safe use inside a double- or single-quoted XML attribute. */
@@ -222,10 +222,14 @@ function pathToSvgMarkup(node: PathNode, outline: { color: string } | undefined,
 }
 
 /** SVG markup for a text node: one `<tspan>` per explicit line, positioned
- * by the shared layout math. Text content is XML-escaped. */
+ * by the shared layout math. Text content is XML-escaped. The style attribute
+ * carries `font-style: italic` for italic nodes and `font-variant-ligatures:
+ * none` when the node disables ligatures — a node with neither emits no
+ * style attribute, keeping old documents' markup untouched. */
 function textToSvgMarkup(node: TextNode, options: SvgRenderOptions | undefined, defs: GradientDefs): string {
   const layout = layoutText(node)
-  const embeddedId = options?.resolveEmbeddedFont?.(node.fontFamily, node.fontWeight) ?? null
+  const italic = node.fontStyle === 'italic'
+  const embeddedId = options?.resolveEmbeddedFont?.(node.fontFamily, node.fontWeight, italic) ?? null
   // The extended family list (subset first, Noto Sans/sans-serif fallback
   // last) only engages when the node actually has something to extend the
   // plain family with; documents without embedding/fallbacks keep their
@@ -238,6 +242,10 @@ function textToSvgMarkup(node: TextNode, options: SvgRenderOptions | undefined, 
     `<text${attr('font-family', family)}` +
     `${attr('font-size', node.fontSize)}` +
     `${attr('font-weight', node.fontWeight)}`
+  const styles: string[] = []
+  if (italic) styles.push('font-style: italic')
+  if (node.ligatures === false) styles.push('font-variant-ligatures: none')
+  if (styles.length > 0) markup += attr('style', styles.join('; '))
   if (layout.letterSpacing !== 0) markup += attr('letter-spacing', layout.letterSpacing)
   markup += attr('fill', paintAttribute(node.fill, defs))
   if (node.stroke !== undefined) {

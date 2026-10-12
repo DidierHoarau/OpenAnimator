@@ -1078,6 +1078,8 @@ export function isSceneNode(value: unknown): value is SceneNode {
         isFiniteNumber(node.fontWeight) &&
         isPaintValue(node.fill) &&
         (node.align === 'left' || node.align === 'center' || node.align === 'right') &&
+        (node.fontStyle === undefined || node.fontStyle === 'normal' || node.fontStyle === 'italic') &&
+        (node.ligatures === undefined || typeof node.ligatures === 'boolean') &&
         (node.letterSpacing === undefined || isFiniteNumber(node.letterSpacing)) &&
         (node.lineHeight === undefined ||
           (isFiniteNumber(node.lineHeight) && node.lineHeight >= 0.5 && node.lineHeight <= 5)) &&
@@ -1272,6 +1274,7 @@ export function isEmbeddedFont(value: unknown): value is EmbeddedFont {
     Number.isFinite(font.weight) &&
     font.weight >= 1 &&
     font.weight <= 1000 &&
+    (font.italic === undefined || typeof font.italic === 'boolean') &&
     typeof font.resourceId === 'string' &&
     Array.isArray(font.glyphs) &&
     font.glyphs.every((glyph) => typeof glyph === 'string') &&

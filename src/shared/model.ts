@@ -108,6 +108,13 @@ export interface TextNode extends NodeBase, StrokeStyle {
   fontWeight: number
   fill: Paint
   align: 'left' | 'center' | 'right'
+  /** Italic face selection. Absent ≡ `'normal'` (the upright face), so
+   * pre-v9 documents keep their exact rendering. */
+  fontStyle?: 'normal' | 'italic'
+  /** Emit ligatures in live text. Absent ≡ `true`; `false` renders with
+   * `font-variant-ligatures: none` (outline exports carry no GSUB either
+   * way). */
+  ligatures?: boolean
   /** Extra advance between characters in stage pixels. Absent ≡ 0. */
   letterSpacing?: number
   /** Line advance as a multiple of `fontSize`. Absent ≡ `TEXT_LINE_HEIGHT`. */
@@ -265,6 +272,9 @@ export interface EmbeddedFont {
   family: string
   /** Requested weight used by text nodes of this family (100..900-ish). */
   weight: number
+  /** Italic subset (absent ≡ upright). Italic ids resolve to italic text
+   * nodes only; upright entries keep resolving pre-v9 ids unchanged. */
+  italic?: boolean
   /** Content-addressed resource id of the subset TTF. */
   resourceId: string
   /** Every character included in the subset, sorted by code point. */

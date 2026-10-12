@@ -21,6 +21,14 @@ describe('embeddedFontId', () => {
     expect(embeddedFontId('Inter', 400)).toBe(embeddedFontId('inter', 400))
     expect(embeddedFontId('Inter', 400)).not.toBe(embeddedFontId('Inter', 700))
   })
+
+  it('keeps old upright ids byte-identical and marks italic distinctly', () => {
+    expect(embeddedFontId('Inter', 400, false)).toBe(embeddedFontId('Inter', 400))
+    const italic = embeddedFontId('Inter', 400, true)
+    expect(italic).toBe(`${embeddedFontId('Inter', 400)}i`)
+    expect(italic).toMatch(/^oa-embed-400-[0-9a-f]{8}i$/)
+    expect(italic).not.toBe(embeddedFontId('Inter', 400))
+  })
 })
 
 describe('matchEmbeddingPolicy', () => {
@@ -104,5 +112,16 @@ describe('embeddedFamilyResolverFor', () => {
     expect(resolve('noto sans', 700)).toBe('oa-embed-700-cd34ab12')
     expect(resolve('Noto Sans', 500)).toBeNull()
     expect(resolve('Other', 400)).toBeNull()
+  })
+
+  it('matches the style exactly: italic resolves only the italic subset', () => {
+    const upright = font()
+    const italic = font({ id: 'oa-embed-400-ab12cd34i', italic: true })
+    const resolve = embeddedFamilyResolverFor([upright, italic])
+    expect(resolve('Noto Sans', 400)).toBe('oa-embed-400-ab12cd34')
+    expect(resolve('Noto Sans', 400, true)).toBe('oa-embed-400-ab12cd34i')
+    // An old entry without the field counts as upright, never as italic.
+    const uprightOnly = embeddedFamilyResolverFor([upright])
+    expect(uprightOnly('Noto Sans', 400, true)).toBeNull()
   })
 })

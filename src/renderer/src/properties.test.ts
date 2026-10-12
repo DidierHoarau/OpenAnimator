@@ -698,6 +698,33 @@ describe('PropertiesView — typography controls', () => {
     expect(selectedTextNode().fontWeight).toBe(900)
   })
 
+  it('picks the italic style and drops the field back at normal', () => {
+    const select = rowInput('Style', 'select') as HTMLSelectElement
+    expect([...select.options].map((option) => option.value)).toEqual(['normal', 'italic'])
+    expect(select.value).toBe('normal')
+    select.value = 'italic'
+    select.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().fontStyle).toBe('italic')
+
+    const again = rowInput('Style', 'select') as HTMLSelectElement
+    again.value = 'normal'
+    again.dispatchEvent(new Event('change'))
+    expect('fontStyle' in selectedTextNode()).toBe(false)
+  })
+
+  it('toggles ligatures through the checkbox, defaulting to on', () => {
+    const checkbox = rowInput('Ligatures', 'input[type="checkbox"]') as HTMLInputElement
+    expect(checkbox.checked).toBe(true)
+    checkbox.checked = false
+    checkbox.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().ligatures).toBe(false)
+
+    const again = rowInput('Ligatures', 'input[type="checkbox"]') as HTMLInputElement
+    again.checked = true
+    again.dispatchEvent(new Event('change'))
+    expect('ligatures' in selectedTextNode()).toBe(false)
+  })
+
   it('writes the fallback families, caps them at 8 and clears when emptied', () => {
     const input = rowInput('Fallbacks', 'input[type="text"]') as HTMLInputElement
     input.value = 'Lato, Inter , '

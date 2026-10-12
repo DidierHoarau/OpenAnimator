@@ -112,6 +112,24 @@ describe('reconcileEmbeddedFonts', () => {
     expect(editor.resources.getBlob('res-2')).not.toBeNull()
   })
 
+  it('embeds italic usages as separate styled subsets with marked family ids', async () => {
+    const editor = textEditor([textNode('a', 'Hi!'), textNode('b', 'Hi!', { fontStyle: 'italic' })])
+    const { deps, readFont } = fakeDeps()
+    const changed = await reconcileEmbeddedFonts(editor, deps)
+
+    expect(changed).toBe(true)
+    expect(editor.document.fonts).toHaveLength(2)
+    const upright = editor.document.fonts.find((entry) => entry.italic === undefined)
+    expect(upright).toMatchObject({ id: embeddedFontId('Lato', 400), weight: 400 })
+    expect(editor.document.fonts.find((entry) => entry.italic === true)).toMatchObject({
+      id: embeddedFontId('Lato', 400, true),
+      weight: 400,
+      italic: true
+    })
+    expect(readFont).toHaveBeenCalledWith('Lato', 400, false)
+    expect(readFont).toHaveBeenCalledWith('Lato', 400, true)
+  })
+
   it('keeps an existing subset that already covers every character', async () => {
     const editor = textEditor([textNode('a', 'Hi!')])
     const existing = font()
@@ -182,14 +200,14 @@ describe('reconcileEmbeddedFonts', () => {
 
 describe('EmbeddedFontSync', () => {
   function fakePort() {
-    const added: Array<{ family: string; weight: number; bytes: ArrayBuffer }> = []
+    const added: Array<{ family: string; weight: number; bytes: ArrayBuffer; italic: boolean }> = []
     const removed: unknown[] = []
     let fail = false
     const port: FontFacePort = {
-      add: async (family, weight, bytes) => {
+      add: async (family, weight, bytes, italic) => {
         if (fail) throw new Error('FontFace unavailable')
         const handle = { family, weight }
-        added.push({ family, weight, bytes })
+        added.push({ family, weight, bytes, italic })
         return handle
       },
       remove: (handle) => {
@@ -231,6 +249,16 @@ describe('EmbeddedFontSync', () => {
     await sync.sync(document, readBlob)
     expect(added).toHaveLength(2)
     expect(removed).toHaveLength(1)
+  })
+
+  it('registers italic subsets with the italic style flag', async () => {
+    const { port, added } = fakePort()
+    const sync = new EmbeddedFontSync(port)
+    const document = documentWithFonts([font({ resourceId: 'res-1', id: 'oa-embed-400-ab12cd34i', italic: true })])
+    await sync.sync(document, readBlob)
+    expect(added).toHaveLength(1)
+    expect(added[0].italic).toBe(true)
+    expect(added[0].family).toBe('oa-embed-400-ab12cd34i')
   })
 
   it('unregisters faces whose subsets left the document', async () => {

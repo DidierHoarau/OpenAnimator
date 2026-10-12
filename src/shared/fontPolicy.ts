@@ -59,9 +59,11 @@ function hash8(value: string): string {
 }
 
 /** Synthetic CSS family of an embedded subset: lowercase and made only of
- * `[a-z0-9-]`, so it never needs quoting in a family list. */
-export function embeddedFontId(family: string, weight: number): string {
-  return `oa-embed-${weight}-${hash8(family.toLowerCase())}`
+ * `[a-z0-9-]`, so it never needs quoting in a family list. Italic subsets
+ * append an `i` marker — upright ids keep their exact old string so stored
+ * documents resolve unchanged. */
+export function embeddedFontId(family: string, weight: number, italic = false): string {
+  return `oa-embed-${weight}-${hash8(family.toLowerCase())}${italic ? 'i' : ''}`
 }
 
 function matchesPattern(family: string, pattern: string): boolean {
@@ -129,17 +131,20 @@ export function textChars(text: string): string[] {
   return [...chars].sort((a, b) => (a.codePointAt(0) ?? 0) - (b.codePointAt(0) ?? 0))
 }
 
-/** Resolver of the embedded-subset family for a (family, weight) pair — the
- * `SvgRenderOptions.resolveEmbeddedFont` implementation built from a
- * document's `fonts` list. Weight matches exactly (embedding records one
- * entry per used weight). */
+/** Resolver of the embedded-subset family for a (family, weight, style)
+ * triple — the `SvgRenderOptions.resolveEmbeddedFont` implementation built
+ * from a document's `fonts` list. Weight and style match exactly (embedding
+ * records one entry per used face); entries from before the style field
+ * existed count as upright. */
 export function embeddedFamilyResolverFor(
   fonts: readonly EmbeddedFont[]
-): (family: string, weight: number) => string | null {
-  return (family, weight) => {
+): (family: string, weight: number, italic?: boolean) => string | null {
+  return (family, weight, italic = false) => {
     const key = family.trim().toLowerCase()
     for (const font of fonts) {
-      if (font.weight === weight && font.family.toLowerCase() === key) return font.id
+      if (font.weight === weight && (font.italic ?? false) === italic && font.family.toLowerCase() === key) {
+        return font.id
+      }
     }
     return null
   }

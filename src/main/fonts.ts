@@ -12,10 +12,12 @@ import type { FontEmbeddingPolicy, FontEmbeddingRule } from '../shared/fontPolic
 
 const execFileAsync = promisify(execFile)
 
-/** One upright font face as reported by fontconfig. */
+/** One font face as reported by fontconfig. */
 export interface FcFontFace {
   family: string
   weight: number
+  /** True for italic and oblique faces (both render as italic text). */
+  italic: boolean
   file: string
 }
 
@@ -43,8 +45,8 @@ export function mapFcWeight(weight: number): number {
 
 /**
  * Parses `fc-list -f '%{family[0]}|%{style[0]}|%{weight}|%{file}\n'` output.
- * Italic and oblique faces are dropped (outlines and embedding use upright
- * faces), malformed lines are skipped, weights are mapped to CSS values.
+ * Italic and oblique faces are flagged as `italic`, malformed lines are
+ * skipped, weights are mapped to CSS values.
  */
 export function parseFcList(output: string): FcFontFace[] {
   const faces: FcFontFace[] = []
@@ -55,10 +57,10 @@ export function parseFcList(output: string): FcFontFace[] {
     const file = fileParts.join('|').trim()
     if (familyName === '' || file === '') continue
     const styleName = (style ?? '').toLowerCase()
-    if (styleName.includes('italic') || styleName.includes('oblique')) continue
+    const italic = styleName.includes('italic') || styleName.includes('oblique')
     const fcWeight = Number.parseInt(weight ?? '', 10)
     if (!Number.isFinite(fcWeight)) continue
-    faces.push({ family: familyName, weight: mapFcWeight(fcWeight), file })
+    faces.push({ family: familyName, weight: mapFcWeight(fcWeight), italic, file })
   }
   return faces
 }
@@ -134,11 +136,13 @@ export class SystemFontIndex {
       .sort((a, b) => a.family.localeCompare(b.family))
   }
 
-  /** Raw bytes of the upright face nearest to (family, weight), or null when
-   * the family is unknown or its file cannot be read. */
-  async read(family: string, weight: number): Promise<Uint8Array | null> {
+  /** Raw bytes of the face nearest to (family, weight, style), or null when
+   * the family has no matching face or its file cannot be read. */
+  async read(family: string, weight: number, italic = false): Promise<Uint8Array | null> {
     const key = family.trim().toLowerCase()
-    const candidates = (await this.faces()).filter((face) => face.family.toLowerCase() === key)
+    const candidates = (await this.faces()).filter(
+      (face) => face.family.toLowerCase() === key && face.italic === italic
+    )
     if (candidates.length === 0) return null
     const chosen = pickNearestWeight(
       candidates.map((face) => face.weight),
@@ -222,13 +226,17 @@ export function registerFontHandlers(): void {
   ipcMain.handle(FONT_LIST_CHANNEL, (): Promise<SystemFont[]> => index.list())
   ipcMain.handle(
     FONT_READ_CHANNEL,
-    async (_event, family: unknown, weight: unknown): Promise<FontReadResult> => {
+    async (_event, family: unknown, weight: unknown, italic: unknown): Promise<FontReadResult> => {
       if (typeof family !== 'string' || family.trim() === '' || typeof weight !== 'number' || !Number.isFinite(weight)) {
         return { ok: false, error: 'readSystemFont: family must be a name and weight a finite number' }
       }
-      const bytes = await index.read(family, weight)
+      const style = italic === true
+      const bytes = await index.read(family, weight, style)
       if (!bytes) {
-        return { ok: false, error: `no installed face covers "${family}" near weight ${Math.round(weight)}` }
+        return {
+          ok: false,
+          error: `no installed ${style ? 'italic ' : ''}face covers "${family}" near weight ${Math.round(weight)}`
+        }
       }
       return { ok: true, bytes }
     }

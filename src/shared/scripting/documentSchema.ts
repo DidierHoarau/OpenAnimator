@@ -134,6 +134,7 @@ export function embeddedFontSchema(): Record<string, unknown> {
       id: { type: 'string', minLength: 1 },
       family: { type: 'string', minLength: 1 },
       weight: { type: 'number', minimum: 1, maximum: 1000 },
+      italic: { type: 'boolean' },
       resourceId: { type: 'string', minLength: 1 },
       glyphs: { type: 'array', items: { type: 'string' } },
       license: { type: 'string' }
@@ -200,6 +201,8 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
       fontSize: { type: 'number', exclusiveMinimum: 0 },
       fontWeight: { type: 'number', minimum: 1, maximum: 1000 },
       align: { enum: ['left', 'center', 'right'] },
+      fontStyle: { enum: ['normal', 'italic'] },
+      ligatures: { type: 'boolean' },
       letterSpacing: { type: 'number' },
       lineHeight: { type: 'number', minimum: 0.5, maximum: 5 },
       verticalAlign: { enum: ['top', 'middle', 'bottom'] },

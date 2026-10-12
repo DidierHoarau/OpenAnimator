@@ -342,8 +342,10 @@ export class PropertiesView {
   private readonly fontDatalist: HTMLDataListElement
   private readonly textSize: HTMLInputElement
   private readonly textWeight: HTMLSelectElement
+  private readonly textStyle: HTMLSelectElement
   private readonly textAlign: HTMLSelectElement
   private readonly textSpacing: HTMLInputElement
+  private readonly textLigatures: HTMLInputElement
   private readonly textLineHeight: HTMLInputElement
   private readonly textVertical: HTMLSelectElement
   private readonly textFallback: HTMLInputElement
@@ -802,6 +804,26 @@ export class PropertiesView {
     })
     weightRow.appendChild(this.textWeight)
 
+    const styleRow = this.row(fontRows, 'Style')
+    this.textStyle = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['normal', 'Normal'],
+      ['italic', 'Italic']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.textStyle.appendChild(option)
+    }
+    this.textStyle.title = 'Font style (italic renders and outlines through the installed italic face)'
+    this.textStyle.addEventListener('change', () => {
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        if (this.textStyle.value === 'italic') current.fontStyle = 'italic'
+        else delete current.fontStyle
+      })
+    })
+    styleRow.appendChild(this.textStyle)
+
     const alignRow = this.row(fontRows, 'Align')
     this.textAlign = el('select', 'tl-select') as HTMLSelectElement
     for (const align of ['left', 'center', 'right'] as const) {
@@ -836,6 +858,20 @@ export class PropertiesView {
       })
     })
     spacingRow.appendChild(this.textSpacing)
+
+    const ligaturesRow = this.row(fontRows, 'Ligatures')
+    this.textLigatures = el('input', undefined) as HTMLInputElement
+    this.textLigatures.type = 'checkbox'
+    this.textLigatures.title = 'Ligature substitutions in live text (exports ship text as outlines, so the toggle does not affect them)'
+    this.textLigatures.addEventListener('change', () => {
+      const enabled = this.textLigatures.checked
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        if (enabled) delete current.ligatures
+        else current.ligatures = false
+      })
+    })
+    ligaturesRow.appendChild(this.textLigatures)
 
     const lineHeightRow = this.row(fontRows, 'Line height')
     this.textLineHeight = el('input') as HTMLInputElement
@@ -1976,8 +2012,10 @@ export class PropertiesView {
       if (!keepFocused(this.textFont)) this.textFont.value = node.fontFamily
       if (!keepFocused(this.textSize)) this.textSize.value = String(node.fontSize)
       if (!keepFocused(this.textWeight)) this.textWeight.value = String(node.fontWeight)
+      if (!keepFocused(this.textStyle)) this.textStyle.value = node.fontStyle ?? 'normal'
       if (!keepFocused(this.textAlign)) this.textAlign.value = node.align
       if (!keepFocused(this.textSpacing)) this.textSpacing.value = String(node.letterSpacing ?? 0)
+      if (!keepFocused(this.textLigatures)) this.textLigatures.checked = node.ligatures !== false
       if (!keepFocused(this.textLineHeight)) {
         this.textLineHeight.value = String(node.lineHeight ?? TEXT_LINE_HEIGHT)
       }

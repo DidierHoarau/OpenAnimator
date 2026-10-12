@@ -42,7 +42,7 @@ export function documentToSvgString(
   options: {
     transparent?: boolean
     embeddedFontStyle?: string
-    resolveEmbeddedFont?: (family: string, weight: number) => string | null
+    resolveEmbeddedFont?: (family: string, weight: number, italic?: boolean) => string | null
   } = {}
 ): string {
   const evaluated = evaluateDocumentAtFrame(document, frame)

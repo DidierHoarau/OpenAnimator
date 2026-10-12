@@ -138,6 +138,8 @@ describe('validateScriptPayload', () => {
             lineHeight: 1.5,
             verticalAlign: 'middle',
             fontFallback: ['Lato', 'Inter'],
+            fontStyle: 'italic',
+            ligatures: false,
             stroke: '#000000',
             strokeWidth: 3
           }
@@ -145,7 +147,7 @@ describe('validateScriptPayload', () => {
         {
           op: 'addNode',
           frame: 0,
-          node: { type: 'text', text: 'Hi', fontFamily: 'Noto Sans', fontSize: 24, fontWeight: 400, fill: '#fff', align: 'left', lineHeight: 1.2, verticalAlign: 'bottom', fontFallback: [] }
+          node: { type: 'text', text: 'Hi', fontFamily: 'Noto Sans', fontSize: 24, fontWeight: 400, fill: '#fff', align: 'left', lineHeight: 1.2, verticalAlign: 'bottom', fontFallback: [], fontStyle: 'normal', ligatures: true }
         }
       ]
     })
@@ -155,13 +157,17 @@ describe('validateScriptPayload', () => {
         { op: 'updateNode', nodeId: 'title', patch: { lineHeight: 0.2 } },
         { op: 'updateNode', nodeId: 'title', patch: { verticalAlign: 'center' } },
         { op: 'updateNode', nodeId: 'title', patch: { fontFallback: [1, 2] } },
-        { op: 'updateNode', nodeId: 'title', patch: { letterSpacing: 'wide' } }
+        { op: 'updateNode', nodeId: 'title', patch: { letterSpacing: 'wide' } },
+        { op: 'updateNode', nodeId: 'title', patch: { fontStyle: 'oblique' } },
+        { op: 'updateNode', nodeId: 'title', patch: { ligatures: 'off' } }
       ]
     })
     expect(bad.errors.join('\n')).toContain('/commands/0/patch/lineHeight')
     expect(bad.errors.join('\n')).toContain('/commands/1/patch/verticalAlign')
     expect(bad.errors.join('\n')).toContain('/commands/2/patch/fontFallback/0')
     expect(bad.errors.join('\n')).toContain('/commands/3/patch/letterSpacing')
+    expect(bad.errors.join('\n')).toContain('/commands/4/patch/fontStyle')
+    expect(bad.errors.join('\n')).toContain('/commands/5/patch/ligatures')
   })
 
   it('accepts stroke-style fields and rejects their bad shapes', () => {
@@ -456,6 +462,41 @@ describe('hand-rolled validator vs JSON Schema', () => {
       ]
     },
     { commands: [{ op: 'addNode', node: { type: 'text', text: 'Hi' } }] },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'text',
+            text: 'Hi',
+            fontFamily: 'Noto Sans',
+            fontSize: 24,
+            fontWeight: 400,
+            fill: '#fff',
+            align: 'left',
+            fontStyle: 'italic',
+            ligatures: false
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'text',
+            text: 'Hi',
+            fontFamily: 'Noto Sans',
+            fontSize: 24,
+            fontWeight: 400,
+            fill: '#fff',
+            align: 'left',
+            fontStyle: 'bold'
+          }
+        }
+      ]
+    },
     { commands: [{ op: 'addNode', node: { type: 'alien' } }] },
     { commands: [{ op: 'addNode', node: { type: 'group', children: [{ type: 'rect' }] } }] },
     { commands: [{ op: 'setTween', easing: 'wobbly' }] },
@@ -616,6 +657,9 @@ describe('hand-rolled validator vs JSON Schema', () => {
         }
       ]
     },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { fontStyle: 'italic', ligatures: false } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { fontStyle: 'oblique' } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { ligatures: 1 } }] },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { lineHeight: 0.2 } }] },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { lineHeight: 5.5 } }] },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { verticalAlign: 'left' } }] },
