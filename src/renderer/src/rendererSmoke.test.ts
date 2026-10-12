@@ -4,12 +4,25 @@ import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
+import { RenderScheduler } from '@shared/renderScheduler'
 
 import { DrawingSession, type DrawingSessionDeps } from './drawing'
 import { Editor } from './editor'
 import { PropertiesView } from './properties'
 import { StageView } from './stage'
 import { TimelineView } from './timeline'
+
+/** Runs render tasks immediately so notifications keep their synchronous,
+ * pre-scheduler test semantics. */
+function syncScheduler(): RenderScheduler {
+  return new RenderScheduler({
+    request: (task) => {
+      task()
+      return 0
+    },
+    cancel: () => undefined
+  })
+}
 
 /**
  * Renderer smoke test: runs the real view classes (StageView, TimelineView,
@@ -84,7 +97,7 @@ describe('renderer smoke (real views, real editor)', () => {
     timelineHost = document.createElement('section')
     propertiesHost = document.createElement('aside')
     document.body.append(stageHost, timelineHost, propertiesHost)
-    stage = new StageView(editor, stageHost)
+    stage = new StageView(editor, stageHost, { scheduler: syncScheduler() })
     new TimelineView(editor, timelineHost)
     new PropertiesView(editor, propertiesHost)
   })

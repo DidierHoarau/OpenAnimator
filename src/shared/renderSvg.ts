@@ -293,22 +293,56 @@ export function nodeToSvgMarkup(
   return defsMarkup(defs) + markup
 }
 
+/** One evaluated top-level node's markup, keyed by `${layerId}:${nodeId}`:
+ * the unit of keyed reuse for incremental renderers (the stage keeps one DOM
+ * element per key and only touches what changed). */
+export interface RenderedNodeMarkup {
+  key: string
+  markup: string
+}
+
+/** One evaluated frame rendered to markup: the shared gradient `<defs>`
+ * block, the per-node fragments in paint order and their concatenation. */
+export interface RenderedFrameMarkup {
+  defs: string
+  nodes: RenderedNodeMarkup[]
+  markup: string
+}
+
+/**
+ * Renders evaluated layers to per-node SVG fragments in paint order; gradient
+ * paints share one `<defs>` block across the whole frame (one entry per
+ * unique paint). This is the single rendering source of truth: the plain
+ * string form below is exactly `defs + concatenated node markup`, so a keyed
+ * incremental renderer built on this function can never drift from it.
+ */
+export function renderFrameToSvgMarkup(
+  layers: RenderLayer[],
+  resolveResource?: ResourceResolver,
+  options?: SvgRenderOptions
+): RenderedFrameMarkup {
+  const defs: GradientDefs = new Map()
+  const nodes: RenderedNodeMarkup[] = []
+  let markup = ''
+  for (const layer of layers) {
+    for (const node of layer.nodes) {
+      const fragment = nodeMarkup(node, resolveResource, options, defs)
+      nodes.push({ key: `${layer.layerId}:${node.id}`, markup: fragment })
+      markup += fragment
+    }
+  }
+  const defsMarkupString = defsMarkup(defs)
+  return { defs: defsMarkupString, nodes, markup: defsMarkupString + markup }
+}
+
 /**
  * Concatenates evaluated layers into one SVG fragment in paint order,
- * usable as innerHTML of an SVG group element. Gradient paints share one
- * `<defs>` block across the whole fragment (one entry per unique paint).
+ * usable as innerHTML of an SVG group element.
  */
 export function renderLayersToSvgMarkup(
   layers: RenderLayer[],
   resolveResource?: ResourceResolver,
   options?: SvgRenderOptions
 ): string {
-  const defs: GradientDefs = new Map()
-  let markup = ''
-  for (const layer of layers) {
-    for (const node of layer.nodes) {
-      markup += nodeMarkup(node, resolveResource, options, defs)
-    }
-  }
-  return defsMarkup(defs) + markup
+  return renderFrameToSvgMarkup(layers, resolveResource, options).markup
 }

@@ -1,6 +1,7 @@
 import { evaluateCameraAtFrame, evaluateLayerAtFrame, holdStepOf, resolveCellAtFrame } from './document'
 import type { AnimatorDocument, CameraPose, SceneNode } from './model'
 import { isCameraLayer, isAudioLayer, isObjectLayer } from './model'
+import type { EvaluationCache } from './renderCache'
 import { resolveSceneNodes } from './symbols'
 
 /** One layer's evaluated, renderer-agnostic content at a frame. */
@@ -24,6 +25,14 @@ export function drawingCellNodeId(layerId: string): string {
   return `drawing-${layerId}`
 }
 
+/** The frame a document actually evaluates at: the document's non-destructive
+ * hold step collapses frames onto step boundaries (`holdStep: n` evaluates
+ * every frame at `frame - frame % n`). */
+export function evaluatedFrameOf(document: AnimatorDocument, frame: number): number {
+  const step = holdStepOf(document)
+  return step > 1 && frame >= 0 ? frame - (frame % step) : frame
+}
+
 /**
  * Evaluates the whole document at a frame into a renderer-agnostic render
  * tree: the visible layers in paint order (bottom of the stack first) plus
@@ -41,20 +50,34 @@ export function drawingCellNodeId(layerId: string): string {
  * `holdStep: n` every frame evaluates at `frame - frame % n`, so playback,
  * onion skinning, export and the CLI all animate on n's without any frame
  * being duplicated in the document.
+ *
+ * With a `cache`, the evaluated frame is memoized by evaluated frame number
+ * and each object layer's raw evaluation by (layer, evaluated frame), so
+ * onion ghosts, selection overlays and repeated frames within one render
+ * pass never re-evaluate the same content. The caller owns cache
+ * invalidation: entries alias document nodes and must be dropped on every
+ * document mutation (the stage clears on doc change).
  */
 export function evaluateDocumentAtFrame(
   document: AnimatorDocument,
-  frame: number
+  frame: number,
+  cache?: EvaluationCache
 ): EvaluatedFrame {
-  const step = holdStepOf(document)
-  const evaluated = step > 1 && frame >= 0 ? frame - (frame % step) : frame
+  const evaluated = evaluatedFrameOf(document, frame)
+  const cached = cache?.getDocument(evaluated)
+  if (cached) return cached
   const layers: RenderLayer[] = []
   for (let i = document.layers.length - 1; i >= 0; i--) {
     const layer = document.layers[i]
     if (!layer.visible || isCameraLayer(layer) || isAudioLayer(layer)) continue
     let nodes: SceneNode[]
     if (isObjectLayer(layer)) {
-      nodes = resolveSceneNodes(evaluateLayerAtFrame(layer, evaluated), document.assets)
+      let raw = cache?.getLayer(layer.id, evaluated) ?? null
+      if (!raw) {
+        raw = evaluateLayerAtFrame(layer, evaluated)
+        cache?.setLayer(layer.id, evaluated, raw)
+      }
+      nodes = resolveSceneNodes(raw, document.assets)
     } else {
       const resourceId = resolveCellAtFrame(layer, evaluated)
       nodes = resourceId
@@ -77,5 +100,7 @@ export function evaluateDocumentAtFrame(
     }
     layers.push({ layerId: layer.id, name: layer.name, nodes })
   }
-  return { layers, camera: evaluateCameraAtFrame(document, evaluated) }
+  const result: EvaluatedFrame = { layers, camera: evaluateCameraAtFrame(document, evaluated) }
+  cache?.setDocument(evaluated, result)
+  return result
 }

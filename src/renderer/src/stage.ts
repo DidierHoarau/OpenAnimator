@@ -2,15 +2,17 @@ import { createId, evaluateLayerAtFrame } from '@shared/document'
 import type { Vec2 } from '@shared/geometry'
 import { hitTestNodes, nodeBounds, rectIntersectsRect } from '@shared/hitTesting'
 import type { Rect } from '@shared/hitTesting'
-import { evaluateDocumentAtFrame } from '@shared/render'
-import { renderLayersToSvgMarkup } from '@shared/renderSvg'
-import type { SvgRenderOptions } from '@shared/renderSvg'
+import { evaluateDocumentAtFrame, evaluatedFrameOf } from '@shared/render'
+import { EvaluationCache } from '@shared/renderCache'
+import { renderFrameToSvgMarkup, renderLayersToSvgMarkup } from '@shared/renderSvg'
+import type { RenderedFrameMarkup, SvgRenderOptions } from '@shared/renderSvg'
 import { embeddedFamilyResolverFor } from '@shared/fontPolicy'
 import { isObjectLayer } from '@shared/model'
-import type { AnimatorDocument, PathAnchor, PathNode, PrimitiveNode, TextNode } from '@shared/model'
+import type { AnimatorDocument, CameraPose, PathAnchor, PathNode, PrimitiveNode, TextNode } from '@shared/model'
 import { motionPathForNode } from '@shared/motionPath'
 import type { MotionPath } from '@shared/motionPath'
 import { buildPathData, normalizePathData, pathDataBounds } from '@shared/pathModel'
+import { RenderScheduler } from '@shared/renderScheduler'
 import { applyTextMetrics } from '@shared/textModel'
 import { identityView, panView, zoomAtView } from '@shared/viewTransform'
 import type { ViewTransform } from '@shared/viewTransform'
@@ -50,12 +52,41 @@ interface DragState {
   penIndex: number
 }
 
+/** Injectable stage dependencies (tests run with a synchronous scheduler). */
+export interface StageViewDeps {
+  /** Render coalescing scheduler; defaults to one rAF-scheduled instance. */
+  scheduler?: RenderScheduler
+}
+
+/** How the last render pass treated the keyed content elements. */
+export interface StageRenderStats {
+  /** New node elements parsed into the content group. */
+  created: number
+  /** Keys whose markup was unchanged: their elements were left untouched. */
+  reused: number
+  /** Attribute-only changes patched in place (the drag transform fast path). */
+  patched: number
+  /** Structural changes that replaced the element (identity not preserved). */
+  replaced: number
+  /** Elements whose key left the frame and were removed. */
+  removed: number
+}
+
+interface KeyedElement {
+  element: SVGElement
+  markup: string
+}
+
 /**
  * Renders the document on an SVG stage and handles stage interactions:
  * drawing, (multi-)selection, and view navigation (zoom/pan). The view
  * transform lives only here — it is never part of the document. Rendering
  * goes through the shared evaluate + renderSvg pipeline so the stage and
  * onion skinning can never drift apart.
+ *
+ * Document/UI notifications are coalesced through a `RenderScheduler`: any
+ * burst of changes between two animation frames produces exactly one render.
+ * `render()` itself stays public and synchronous for direct callers.
  */
 export class StageView {
   /** Notified after every view change with the current scale (for the statusbar). */
@@ -64,6 +95,7 @@ export class StageView {
   private readonly svg: SVGSVGElement
   private readonly overlay: HTMLCanvasElement
   private readonly editor: Editor
+  private readonly scheduler: RenderScheduler
   private drag: DragState | null = null
   /** Live paint stroke (brush/eraser), mirrored onto the overlay canvas. */
   private session: DrawingSession | null = null
@@ -79,8 +111,26 @@ export class StageView {
   private spaceDown = false
   private spaceUsedForPan = false
 
-  constructor(editor: Editor, host: HTMLElement) {
+  /** Evaluated-frame cache shared by the content pass, onion ghosts and the
+   * selection overlays; cleared on every document change. */
+  private readonly evalCache = new EvaluationCache()
+  /** Persistent content skeleton (backdrop / onion / keyed content group). */
+  private backdrop: SVGRectElement | null = null
+  private onionGroup: SVGGElement | null = null
+  private contentGroup: SVGGElement | null = null
+  private defsElement: SVGDefsElement | null = null
+  private defsMarkup = ''
+  /** Keyed node elements of the content group by `${layerId}:${nodeId}`. */
+  private nodeElements = new Map<string, KeyedElement>()
+  /** Transient overlay elements (camera frame, selection, motion path) of the
+   * last pass; only this overlay layer is rebuilt per render. */
+  private overlayElements: SVGElement[] = []
+  private overlayCursor: Node | null = null
+  private renderStatsValue: StageRenderStats = { created: 0, reused: 0, patched: 0, replaced: 0, removed: 0 }
+
+  constructor(editor: Editor, host: HTMLElement, deps: StageViewDeps = {}) {
     this.editor = editor
+    this.scheduler = deps.scheduler ?? new RenderScheduler()
     this.svg = document.createElementNS(SVG_NS, 'svg')
     this.svg.classList.add('stage')
     this.svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
@@ -103,10 +153,20 @@ export class StageView {
     })
     this.svg.addEventListener('wheel', (event) => this.onWheel(event), { passive: false })
 
-    editor.onDocChange(() => this.render())
-    editor.onFrameChange(() => this.render())
-    editor.onUiChange(() => this.render())
+    editor.onDocChange(() => {
+      // Editor mutations always notify before the deferred render runs, so
+      // dropping the cache here can never leave a stale evaluation readable.
+      this.evalCache.clear()
+      this.scheduler.request(() => this.render())
+    })
+    editor.onFrameChange(() => this.scheduler.request(() => this.render()))
+    editor.onUiChange(() => this.scheduler.request(() => this.render()))
     this.render()
+  }
+
+  /** How the last render pass treated the keyed content elements. */
+  get renderStats(): StageRenderStats {
+    return this.renderStatsValue
   }
 
   /** Marks the Space key state; the stage claims Space drags for panning. */
@@ -843,94 +903,36 @@ export class StageView {
   render(): void {
     const editor = this.editor
     const doc = editor.document
+    const stats: StageRenderStats = { created: 0, reused: 0, patched: 0, replaced: 0, removed: 0 }
     this.applyView()
-    while (this.svg.firstChild) this.svg.removeChild(this.svg.firstChild)
 
-    const backdrop = document.createElementNS(SVG_NS, 'rect')
-    backdrop.setAttribute('x', '0')
-    backdrop.setAttribute('y', '0')
+    const backdrop = this.ensureBackdrop()
     backdrop.setAttribute('width', String(doc.width))
     backdrop.setAttribute('height', String(doc.height))
     backdrop.setAttribute('fill', doc.background)
-    this.svg.appendChild(backdrop)
 
-    if (editor.onionSkin && !editor.playing) {
-      const ghosts = document.createElementNS(SVG_NS, 'g')
-      ghosts.classList.add('stage__onion')
-      const tint = editor.onionTint
-        ? {
-            before: this.appendOnionTintFilter(ghosts, 'stage-onion-before', editor.onionTintBefore),
-            after: this.appendOnionTintFilter(ghosts, 'stage-onion-after', editor.onionTintAfter)
-          }
-        : null
-      const outline: SvgRenderOptions | undefined = editor.onionOutline
-        ? { outline: { color: ONION_OUTLINE_COLOR } }
-        : undefined
-      const step = editor.holdStep
-      for (let depth = 1; depth <= editor.onionBefore; depth++) {
-        const frame = editor.currentFrame - depth * step
-        if (frame < 0) continue
-        ghosts.appendChild(this.onionGhost(doc, frame, depth, tint?.before, outline))
-      }
-      for (let depth = 1; depth <= editor.onionAfter; depth++) {
-        const frame = editor.currentFrame + depth * step
-        if (frame >= editor.duration) continue
-        ghosts.appendChild(this.onionGhost(doc, frame, depth, tint?.after, outline))
-      }
-      this.svg.appendChild(ghosts)
-    }
+    if (editor.onionSkin && !editor.playing) this.renderOnion(doc)
+    else this.removeOnion()
 
-    const stageContent = document.createElementNS(SVG_NS, 'g')
-    const evaluated = evaluateDocumentAtFrame(doc, editor.currentFrame)
-    stageContent.innerHTML = renderLayersToSvgMarkup(
-      evaluated.layers,
-      (id) => editor.resources.getUrl(id),
-      { resolveEmbeddedFont: embeddedFamilyResolverFor(doc.fonts) }
+    const content = this.ensureContentGroup()
+    const evaluated = evaluateDocumentAtFrame(doc, editor.currentFrame, this.evalCache)
+    this.syncContent(
+      renderFrameToSvgMarkup(evaluated.layers, (id) => editor.resources.getUrl(id), {
+        resolveEmbeddedFont: embeddedFamilyResolverFor(doc.fonts)
+      }),
+      content,
+      stats
     )
-    this.svg.appendChild(stageContent)
 
+    // Transient overlays are rebuilt per pass; the content nodes above keep
+    // their element identity and are only patched in place.
+    this.beginOverlayPass()
     // Display-only camera framing overlay: the stage stays in document space
     // (no coordinate remapping of tools), this rect shows where the active
     // camera looks — W/zoom × H/zoom around the pose center, rotated with it.
-    if (evaluated.camera) {
-      const pose = evaluated.camera
-      const cameraFrame = document.createElementNS(SVG_NS, 'rect')
-      cameraFrame.classList.add('stage__camera-frame')
-      cameraFrame.setAttribute('x', String(-doc.width / (2 * pose.zoom)))
-      cameraFrame.setAttribute('y', String(-doc.height / (2 * pose.zoom)))
-      cameraFrame.setAttribute('width', String(doc.width / pose.zoom))
-      cameraFrame.setAttribute('height', String(doc.height / pose.zoom))
-      cameraFrame.setAttribute(
-        'transform',
-        `translate(${pose.center.x} ${pose.center.y}) rotate(${pose.rotation})`
-      )
-      cameraFrame.setAttribute('vector-effect', 'non-scaling-stroke')
-      cameraFrame.setAttribute('pointer-events', 'none')
-      this.svg.appendChild(cameraFrame)
-    }
+    if (evaluated.camera) this.appendCameraFrame(doc, evaluated.camera)
+    this.appendSelectionOverlays(evaluatedFrameOf(doc, editor.currentFrame))
 
-    // One selection box per selected node of the current layer's content.
-    const layer = editor.currentLayer
-    if (layer && layer.visible && isObjectLayer(layer)) {
-      for (const node of evaluateLayerAtFrame(layer, editor.currentFrame)) {
-        if (!editor.selectedNodeIds.includes(node.id)) continue
-        const overlay = document.createElementNS(SVG_NS, 'rect')
-        overlay.classList.add('stage__selection')
-        overlay.setAttribute('x', String(-node.width / 2))
-        overlay.setAttribute('y', String(-node.height / 2))
-        overlay.setAttribute('width', String(node.width))
-        overlay.setAttribute('height', String(node.height))
-        overlay.setAttribute(
-          'transform',
-          `translate(${node.center.x} ${node.center.y}) rotate(${node.rotation})`
-        )
-        overlay.setAttribute('vector-effect', 'non-scaling-stroke')
-        this.svg.appendChild(overlay)
-        // Read-only trajectory preview for tweened selected nodes.
-        const motionPath = motionPathForNode(layer, node.id)
-        if (motionPath) this.appendMotionPath(motionPath)
-      }
-    }
     this.updateCursor()
     // A pen path is abandoned when the tool changes; otherwise it previews.
     if (this.penAnchors.length > 0) {
@@ -944,6 +946,223 @@ export class StageView {
     }
     if (this.session) this.paintOverlay()
     else this.clearOverlay()
+    this.renderStatsValue = stats
+  }
+
+  /** The persistent backdrop rect, kept as the first stage child. */
+  private ensureBackdrop(): SVGRectElement {
+    if (!this.backdrop) {
+      this.backdrop = document.createElementNS(SVG_NS, 'rect')
+      this.backdrop.classList.add('stage__backdrop')
+      this.backdrop.setAttribute('x', '0')
+      this.backdrop.setAttribute('y', '0')
+      this.svg.appendChild(this.backdrop)
+    }
+    if (this.svg.firstChild !== this.backdrop) {
+      this.svg.insertBefore(this.backdrop, this.svg.firstChild)
+    }
+    return this.backdrop
+  }
+
+  /** The persistent keyed content group, kept right after backdrop/onion. */
+  private ensureContentGroup(): SVGGElement {
+    if (!this.contentGroup) {
+      this.contentGroup = document.createElementNS(SVG_NS, 'g')
+      this.contentGroup.classList.add('stage__content')
+      this.svg.appendChild(this.contentGroup)
+    }
+    const anchor = this.onionGroup ?? this.backdrop
+    if (anchor && this.contentGroup.previousSibling !== anchor) {
+      this.svg.insertBefore(this.contentGroup, anchor.nextSibling)
+    }
+    return this.contentGroup
+  }
+
+  /** Onion ghosts: rebuilt per pass (they are inherently transient), but the
+   * shared evaluation cache turns their document evaluation into per-frame
+   * memoized lookups instead of full re-evaluations. */
+  private renderOnion(doc: AnimatorDocument): void {
+    const editor = this.editor
+    if (!this.onionGroup) {
+      this.onionGroup = document.createElementNS(SVG_NS, 'g')
+      this.onionGroup.classList.add('stage__onion')
+    }
+    const ghosts = this.onionGroup
+    if (ghosts.previousSibling !== this.backdrop) {
+      this.svg.insertBefore(ghosts, this.backdrop ? this.backdrop.nextSibling : this.svg.firstChild)
+    }
+    while (ghosts.firstChild) ghosts.removeChild(ghosts.firstChild)
+    const tint = editor.onionTint
+      ? {
+          before: this.appendOnionTintFilter(ghosts, 'stage-onion-before', editor.onionTintBefore),
+          after: this.appendOnionTintFilter(ghosts, 'stage-onion-after', editor.onionTintAfter)
+        }
+      : null
+    const outline: SvgRenderOptions | undefined = editor.onionOutline
+      ? { outline: { color: ONION_OUTLINE_COLOR } }
+      : undefined
+    const step = editor.holdStep
+    for (let depth = 1; depth <= editor.onionBefore; depth++) {
+      const frame = editor.currentFrame - depth * step
+      if (frame < 0) continue
+      ghosts.appendChild(this.onionGhost(doc, frame, depth, tint?.before, outline))
+    }
+    for (let depth = 1; depth <= editor.onionAfter; depth++) {
+      const frame = editor.currentFrame + depth * step
+      if (frame >= editor.duration) continue
+      ghosts.appendChild(this.onionGhost(doc, frame, depth, tint?.after, outline))
+    }
+  }
+
+  private removeOnion(): void {
+    this.onionGroup?.remove()
+    this.onionGroup = null
+  }
+
+  /**
+   * Keyed reconciliation of the content group: one element per evaluated
+   * top-level node, tracked by `${layerId}:${nodeId}`. Unchanged nodes are
+   * left untouched (element identity survives), attribute-only changes are
+   * patched in place (the drag fast path), structural changes replace the
+   * element, and vanished keys are removed — an edit to one node never
+   * rebuilds the rest of the scene. Paint order is enforced by the target
+   * order; the gradient `<defs>` block is the first child and only rebuilt
+   * when its markup changed.
+   */
+  private syncContent(rendered: RenderedFrameMarkup, content: SVGGElement, stats: StageRenderStats): void {
+    if (rendered.defs !== this.defsMarkup) {
+      this.defsElement?.remove()
+      this.defsElement = null
+      if (rendered.defs !== '') {
+        this.defsElement = this.parseSvgFragment(rendered.defs) as SVGDefsElement
+      }
+      this.defsMarkup = rendered.defs
+    }
+    if (this.defsElement && content.firstChild !== this.defsElement) {
+      content.insertBefore(this.defsElement, content.firstChild)
+    }
+
+    const next = new Map<string, KeyedElement>()
+    let cursor: Node | null = this.defsElement ? this.defsElement.nextSibling : content.firstChild
+    for (const target of rendered.nodes) {
+      const existing = this.nodeElements.get(target.key)
+      let entry: KeyedElement
+      if (!existing) {
+        entry = { element: this.parseSvgFragment(target.markup), markup: target.markup }
+        stats.created += 1
+      } else if (existing.markup === target.markup) {
+        entry = existing
+        stats.reused += 1
+      } else {
+        const fresh = this.parseSvgFragment(target.markup)
+        if (existing.element.tagName === fresh.tagName && existing.element.innerHTML === fresh.innerHTML) {
+          this.patchAttributes(existing.element, fresh)
+          entry = { element: existing.element, markup: target.markup }
+          stats.patched += 1
+        } else {
+          if (cursor === existing.element) cursor = existing.element.nextSibling
+          existing.element.replaceWith(fresh)
+          entry = { element: fresh, markup: target.markup }
+          stats.replaced += 1
+        }
+      }
+      next.set(target.key, entry)
+      if (entry.element === cursor) {
+        cursor = cursor.nextSibling
+      } else {
+        content.insertBefore(entry.element, cursor)
+        cursor = entry.element.nextSibling
+      }
+    }
+    for (const [key, entry] of this.nodeElements) {
+      if (!next.has(key)) {
+        entry.element.remove()
+        stats.removed += 1
+      }
+    }
+    this.nodeElements = next
+  }
+
+  /** Parses one SVG fragment (a single element) into a detached element via a
+   * temporary group — the same innerHTML mechanism the stage always used. */
+  private parseSvgFragment(markup: string): SVGElement {
+    const wrapper = document.createElementNS(SVG_NS, 'g')
+    wrapper.innerHTML = markup
+    const element = wrapper.firstElementChild
+    if (!element) throw new Error('OpenAnimator: empty SVG fragment')
+    return element as SVGElement
+  }
+
+  /** Copies `source`'s attribute set onto `target` (extras removed): the
+   * in-place update that keeps element identity during drags. */
+  private patchAttributes(target: SVGElement, source: SVGElement): void {
+    for (const name of [...target.getAttributeNames()]) {
+      if (!source.hasAttribute(name)) target.removeAttribute(name)
+    }
+    for (const name of source.getAttributeNames()) {
+      const value = source.getAttribute(name)
+      if (value !== null && target.getAttribute(name) !== value) target.setAttribute(name, value)
+    }
+  }
+
+  /** Starts an overlay pass: previous overlay elements are dropped; the new
+   * ones take their exact place (right after the content group, before any
+   * pen/vector/drag previews). */
+  private beginOverlayPass(): void {
+    for (const element of this.overlayElements) element.remove()
+    this.overlayElements = []
+    this.overlayCursor = this.contentGroup?.nextSibling ?? null
+  }
+
+  private appendOverlay<T extends SVGElement>(element: T): T {
+    this.svg.insertBefore(element, this.overlayCursor)
+    this.overlayCursor = element.nextSibling
+    this.overlayElements.push(element)
+    return element
+  }
+
+  private appendCameraFrame(doc: AnimatorDocument, pose: CameraPose): void {
+    const cameraFrame = this.appendOverlay(document.createElementNS(SVG_NS, 'rect'))
+    cameraFrame.classList.add('stage__camera-frame')
+    cameraFrame.setAttribute('x', String(-doc.width / (2 * pose.zoom)))
+    cameraFrame.setAttribute('y', String(-doc.height / (2 * pose.zoom)))
+    cameraFrame.setAttribute('width', String(doc.width / pose.zoom))
+    cameraFrame.setAttribute('height', String(doc.height / pose.zoom))
+    cameraFrame.setAttribute(
+      'transform',
+      `translate(${pose.center.x} ${pose.center.y}) rotate(${pose.rotation})`
+    )
+    cameraFrame.setAttribute('vector-effect', 'non-scaling-stroke')
+    cameraFrame.setAttribute('pointer-events', 'none')
+  }
+
+  /** One selection box per selected node of the current layer's content. The
+   * nodes come from the shared evaluation cache (populated by the content
+   * pass) instead of a second evaluation of the same layer and frame. */
+  private appendSelectionOverlays(evaluatedFrame: number): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    if (!layer || !layer.visible || !isObjectLayer(layer)) return
+    const nodes =
+      this.evalCache.getLayer(layer.id, evaluatedFrame) ??
+      evaluateLayerAtFrame(layer, editor.currentFrame)
+    for (const node of nodes) {
+      if (!editor.selectedNodeIds.includes(node.id)) continue
+      const overlay = this.appendOverlay(document.createElementNS(SVG_NS, 'rect'))
+      overlay.classList.add('stage__selection')
+      overlay.setAttribute('x', String(-node.width / 2))
+      overlay.setAttribute('y', String(-node.height / 2))
+      overlay.setAttribute('width', String(node.width))
+      overlay.setAttribute('height', String(node.height))
+      overlay.setAttribute(
+        'transform',
+        `translate(${node.center.x} ${node.center.y}) rotate(${node.rotation})`
+      )
+      overlay.setAttribute('vector-effect', 'non-scaling-stroke')
+      // Read-only trajectory preview for tweened selected nodes.
+      const motionPath = motionPathForNode(layer, node.id)
+      if (motionPath) this.appendMotionPath(motionPath)
+    }
   }
 
   /**
@@ -981,7 +1200,7 @@ export class StageView {
     group.setAttribute('opacity', String(0.24 / depth))
     if (tintFilter) group.setAttribute('filter', tintFilter)
     group.innerHTML = renderLayersToSvgMarkup(
-      evaluateDocumentAtFrame(doc, frame).layers,
+      evaluateDocumentAtFrame(doc, frame, this.evalCache).layers,
       (id) => this.editor.resources.getUrl(id),
       { ...outline, resolveEmbeddedFont: embeddedFamilyResolverFor(doc.fonts) }
     )
@@ -1000,19 +1219,17 @@ export class StageView {
       for (let i = 1; i < motionPath.polyline.length; i++) {
         d += ` L ${motionPath.polyline[i].x} ${motionPath.polyline[i].y}`
       }
-      const line = document.createElementNS(SVG_NS, 'path')
+      const line = this.appendOverlay(document.createElementNS(SVG_NS, 'path'))
       line.classList.add('stage__motion-path')
       line.setAttribute('d', d)
       line.setAttribute('vector-effect', 'non-scaling-stroke')
-      this.svg.appendChild(line)
     }
     for (const waypoint of motionPath.waypoints) {
-      const dot = document.createElementNS(SVG_NS, 'circle')
+      const dot = this.appendOverlay(document.createElementNS(SVG_NS, 'circle'))
       dot.classList.add('stage__motion-key')
       dot.setAttribute('cx', String(waypoint.point.x))
       dot.setAttribute('cy', String(waypoint.point.y))
       dot.setAttribute('r', String(3 / this.view.scale))
-      this.svg.appendChild(dot)
     }
   }
 }

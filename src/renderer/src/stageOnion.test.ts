@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createDocument } from '@shared/document'
 import type { PrimitiveNode } from '@shared/model'
+import { RenderScheduler } from '@shared/renderScheduler'
 
 import { Editor } from './editor'
 import { StageView } from './stage'
@@ -12,6 +13,17 @@ import { StageView } from './stage'
  * hold-step offsets and can be tinted and outlined; the motion path is a
  * read-only overlay for the selected tweened object.
  */
+
+/** Runs render tasks immediately: renders stay synchronous in tests. */
+function syncScheduler(): RenderScheduler {
+  return new RenderScheduler({
+    request: (task) => {
+      task()
+      return 0
+    },
+    cancel: () => undefined
+  })
+}
 
 function rect(id: string, x = 0): PrimitiveNode {
   return {
@@ -41,7 +53,7 @@ describe('StageView — onion skin', () => {
     editor = new Editor(createDocument('onion', 320, 180, 12))
     const host = document.createElement('main')
     document.body.appendChild(host)
-    stage = new StageView(editor, host)
+    stage = new StageView(editor, host, { scheduler: syncScheduler() })
     svg = stage.element
   })
 
@@ -157,7 +169,7 @@ describe('StageView — motion path overlay', () => {
     editor = new Editor(createDocument('motion', 320, 180, 12))
     const host = document.createElement('main')
     document.body.appendChild(host)
-    stage = new StageView(editor, host)
+    stage = new StageView(editor, host, { scheduler: syncScheduler() })
     svg = stage.element
   })
 

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createDocument } from '@shared/document'
 import type { PathNode, TextNode } from '@shared/model'
+import { RenderScheduler } from '@shared/renderScheduler'
 
 import { Editor } from './editor'
 import { StageView } from './stage'
@@ -13,6 +14,18 @@ import { StageView } from './stage'
  * screen transform is stubbed to an identity mapping so client coordinates
  * equal stage coordinates.
  */
+
+/** Runs render tasks immediately: the tool-change assertions below depend on
+ * the render-on-notification semantics. */
+function syncScheduler(): RenderScheduler {
+  return new RenderScheduler({
+    request: (task) => {
+      task()
+      return 0
+    },
+    cancel: () => undefined
+  })
+}
 
 function identityCTM(): { inverse(): { matrixTransform(point: DOMPoint): DOMPoint } } {
   return {
@@ -28,7 +41,7 @@ function createStage(): { editor: Editor; stage: StageView; svg: SVGSVGElement }
   })
   const host = document.createElement('main')
   document.body.appendChild(host)
-  const stage = new StageView(editor, host)
+  const stage = new StageView(editor, host, { scheduler: syncScheduler() })
   const svg = stage.element
   svg.getScreenCTM = identityCTM as unknown as SVGSVGElement['getScreenCTM']
   svg.setPointerCapture = () => {}
@@ -274,7 +287,7 @@ describe('stage vector brush', () => {
     layer.locked = true
     const host = document.createElement('main')
     document.body.appendChild(host)
-    const lockedStage = new StageView(vectorEditor, host)
+    const lockedStage = new StageView(vectorEditor, host, { scheduler: syncScheduler() })
     const lockedSvg = lockedStage.element
     lockedSvg.getScreenCTM = identityCTM as unknown as SVGSVGElement['getScreenCTM']
     lockedSvg.setPointerCapture = () => {}
