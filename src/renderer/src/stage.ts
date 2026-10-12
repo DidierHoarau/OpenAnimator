@@ -11,6 +11,7 @@ import type { AnimatorDocument, PathAnchor, PathNode, PrimitiveNode, TextNode } 
 import { motionPathForNode } from '@shared/motionPath'
 import type { MotionPath } from '@shared/motionPath'
 import { buildPathData, normalizePathData, pathDataBounds } from '@shared/pathModel'
+import { RenderScheduler } from '@shared/renderScheduler'
 import { applyTextMetrics } from '@shared/textModel'
 import { identityView, panView, zoomAtView } from '@shared/viewTransform'
 import type { ViewTransform } from '@shared/viewTransform'
@@ -50,12 +51,22 @@ interface DragState {
   penIndex: number
 }
 
+/** Injectable stage dependencies (tests run with a synchronous scheduler). */
+export interface StageViewDeps {
+  /** Render coalescing scheduler; defaults to one rAF-scheduled instance. */
+  scheduler?: RenderScheduler
+}
+
 /**
  * Renders the document on an SVG stage and handles stage interactions:
  * drawing, (multi-)selection, and view navigation (zoom/pan). The view
  * transform lives only here — it is never part of the document. Rendering
  * goes through the shared evaluate + renderSvg pipeline so the stage and
  * onion skinning can never drift apart.
+ *
+ * Document/UI notifications are coalesced through a `RenderScheduler`: any
+ * burst of changes between two animation frames produces exactly one render.
+ * `render()` itself stays public and synchronous for direct callers.
  */
 export class StageView {
   /** Notified after every view change with the current scale (for the statusbar). */
@@ -64,6 +75,7 @@ export class StageView {
   private readonly svg: SVGSVGElement
   private readonly overlay: HTMLCanvasElement
   private readonly editor: Editor
+  private readonly scheduler: RenderScheduler
   private drag: DragState | null = null
   /** Live paint stroke (brush/eraser), mirrored onto the overlay canvas. */
   private session: DrawingSession | null = null
@@ -79,8 +91,9 @@ export class StageView {
   private spaceDown = false
   private spaceUsedForPan = false
 
-  constructor(editor: Editor, host: HTMLElement) {
+  constructor(editor: Editor, host: HTMLElement, deps: StageViewDeps = {}) {
     this.editor = editor
+    this.scheduler = deps.scheduler ?? new RenderScheduler()
     this.svg = document.createElementNS(SVG_NS, 'svg')
     this.svg.classList.add('stage')
     this.svg.setAttribute('preserveAspectRatio', 'xMidYMid meet')
@@ -103,9 +116,9 @@ export class StageView {
     })
     this.svg.addEventListener('wheel', (event) => this.onWheel(event), { passive: false })
 
-    editor.onDocChange(() => this.render())
-    editor.onFrameChange(() => this.render())
-    editor.onUiChange(() => this.render())
+    editor.onDocChange(() => this.scheduler.request(() => this.render()))
+    editor.onFrameChange(() => this.scheduler.request(() => this.render()))
+    editor.onUiChange(() => this.scheduler.request(() => this.render()))
     this.render()
   }
 
