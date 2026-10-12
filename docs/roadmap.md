@@ -21,6 +21,7 @@ this page records what landed and what is being considered next.
 | v0.19.1 | Release-job fixes |
 | v0.20.0 | Automation & quality — scripting expansion (groups, symbols, library bridge, frame/cell ops), Playwright-Electron E2E suite in PR CI, the docs site with the auto-generated scripting reference and sample gallery, community files |
 | v0.21.0 | Stability — cancellable exports with staged writes and a GIF encode worker, unsaved-changes close protection, crash recovery for never-saved documents, in-app modals replacing native dialogs, export diagnostics surfacing, two new E2E golden paths |
+| v0.22.0 | Performance — rAF-coalesced stage rendering with keyed incremental patching, structural-sharing undo snapshots, idle-debounced autosave with an incremental recovery packer, and a deterministic 500-node regression benchmark (seek 28→24 ms, drag 44.5→37 ms/move, playback ≈30 fps, 24-frame export ≈1.5 s on the reference machine) |
 
 ## What's next
 

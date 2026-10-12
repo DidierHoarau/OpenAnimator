@@ -79,6 +79,43 @@ Notes:
 - Failures write screenshots and traces to `.tmp/e2e/`; CI uploads that
   directory as an artifact.
 
+### Performance benchmark
+
+`e2e/perf-budget.spec.ts` (part of `npm run test:e2e`) guards the stage
+against performance regressions. It opens a deterministic generated project —
+`e2e/perfFixture.ts` builds a seeded 500-node / 120-frame document (10 layers
+× 50 nodes, keyed at frames 0/30/60/90/119 with linear tweens, fps 30) — and
+measures four interactive paths in the real app:
+
+- **full render** — a timeline seek to frame 60, two rAFs settled;
+- **drag render** — 30 real 2 px pointer moves on a selected node, per-move
+  cost including its render;
+- **playback** — a 2 s window of `Play`, sampling the status-bar frame
+  counter for the sustained rate and the worst inter-frame gap;
+- **export** — 24 frames of png-sequence at 0.5× resolution, timed to the
+  file write.
+
+Each metric is logged as `perf: <name>=<value><unit>` (quote those lines in
+PRs) and asserted against `PERF_BUDGETS` in the spec. The budgets are
+generous absolute ceilings calibrated from the v0.22.0 measurements: they
+flag large regressions (multiples of the observed cost), not drift — CI
+hardware is slower than a development machine, so a tight between-branch
+split would flake instead of guarding. The same budgets are the acceptance
+gate for the performance work planned in later roadmap groups.
+
+To compare a branch with its base, run only this spec on both sides:
+
+```bash
+git checkout main
+git checkout my-branch -- e2e/perf-budget.spec.ts e2e/perfFixture.ts
+npm run build && npx playwright test e2e/perf-budget.spec.ts
+```
+
+The fixture is deliberately stable (seeded, fixed counts): changing the
+scenario invalidates the recorded before/after numbers in
+`docs/roadmap.md` — re-measure both sides on the same machine when it
+changes.
+
 ### Changing the scripting API or the docs
 
 - Scripting commands: edit `src/shared/scripting/commands.ts` (the
