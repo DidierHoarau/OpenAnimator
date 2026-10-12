@@ -26,6 +26,7 @@ this page records what landed and what is being considered next.
 | v0.24.0 | Vector depth — direct-selection anchor editing (`A`) with the `setPathAnchors` scripting op and multi-subpath support, stroke styles (linecap/linejoin/dash) through model, renderer, UI and SVG round-trip, per-stop gradient alpha, path fill/stroke tweening, the eyedropper with a recent-colors row, and GIMP (`.gpl`) palette import/export |
 | v0.25.0 | Motion & Text Depth — path shape morphing between keyframes, per-property tween easing channels (`transform`/`opacity`/`fill`), kerning-true font subsets with italic embedding and a ligature toggle, and frame-locked continuous audio scrub (plus a path-morphing E2E golden path) |
 | v0.26.0 | Interchange & Automation — Lottie gradients (with stop alpha), `ty:6` audio layers (embedded in Lottie JSON, `audio/` files in dotLottie), baked smooth paths and text strokes; SVG gradient import (kept in the native gradient model, rasterize fallback for the rest); export presets with last-used persistence, GIF palette/dithering/loop and MP4/WebM quality tiers; CLI multi-format rendering; scripted `export`/file-import/view ops and the UI-gesture script recorder; a gradient→Lottie E2E golden path |
+| v0.27.0 | Fixes — the timeline ruler seeks on click (frames are selectable on long timelines) and the layer explorer auto-expands to reveal created objects |
 
 ## What's next
 

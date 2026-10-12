@@ -171,6 +171,10 @@ export class TimelineView {
   private readonly menuMoveRow: HTMLDivElement
   private readonly menuMoveInput: HTMLInputElement
   private readonly expandedLayers = new Set<string>()
+  /** Selected node ids the layer explorer has already revealed. */
+  private revealedSelection: string[] = []
+  /** Node whose row must be scrolled into view on the next render. */
+  private pendingRevealNodeId: string | null = null
   /** Selected keyframe markers, keyed by `markerKey` (layer, node, frame). */
   private selectedMarkers = new Set<string>()
   /** Last marker press: the copy fallback and the keyboard-focus anchor. */
@@ -507,6 +511,7 @@ export class TimelineView {
     })
 
     const ruler = el('div', 'tl-ruler')
+    ruler.title = 'Click a frame to seek — drag to mark a copy range'
     ruler.addEventListener('pointerdown', (event) => this.onRulerPointerDown(event))
     this.rowsHost = el('div', 'tl-rows')
     this.playhead = el('div', 'tl-playhead')
@@ -531,7 +536,10 @@ export class TimelineView {
       this.refreshNodeKeyframeButtons()
       this.refreshNodeTweenButtons()
     })
-    editor.onUiChange(() => this.render())
+    editor.onUiChange(() => {
+      this.revealSelection()
+      this.render()
+    })
     // A freshly decoded audio resource unlocks its clip length and waveform.
     editor.audio.onDecoded?.(() => this.render())
     this.render()
@@ -707,11 +715,12 @@ export class TimelineView {
 
   /**
    * Ruler press-drag defines the copy range (an inclusive frame band shown as
-   * `.tl-range`); a plain click clears the band.
+   * `.tl-range`); a plain click clears the band and seeks to the pressed frame.
    */
   private onRulerPointerDown(event: PointerEvent): void {
     if (event.button !== 0) return
     event.preventDefault()
+    this.endScrubOnPointerUp(event.pointerId)
     const ruler = event.currentTarget as HTMLElement
     const bounds = ruler.getBoundingClientRect()
     const frames = Math.max(this.editor.duration, MIN_FRAMES)
@@ -736,7 +745,10 @@ export class TimelineView {
       window.removeEventListener('pointerup', onUp)
       if (this.rulerDrag !== drag) return
       this.rulerDrag = null
-      if (!drag.active) this.rangeSelection = null
+      if (!drag.active) {
+        this.rangeSelection = null
+        this.editor.seekToFrame(drag.startFrame)
+      }
       this.updateRangeBand()
     }
     window.addEventListener('pointermove', onMove)
@@ -854,6 +866,16 @@ export class TimelineView {
     // The layer list always ends with the lines to append a layer of either kind.
     for (const row of this.buildAddLayerRows()) {
       this.rowsHost.appendChild(row)
+    }
+
+    // Scroll a freshly revealed row into view (vertical axis only).
+    if (this.pendingRevealNodeId) {
+      const nodeId = this.pendingRevealNodeId
+      this.pendingRevealNodeId = null
+      const row = [
+        ...this.rowsHost.querySelectorAll<HTMLElement>('.tl-shape-row[data-shape-id]')
+      ].find((candidate) => candidate.dataset.shapeId === nodeId)
+      if (row) this.scrollRowIntoView(row)
     }
 
     // Playback state lives on the top controls now.
@@ -1606,6 +1628,46 @@ export class TimelineView {
     if (this.expandedLayers.has(layerId)) this.expandedLayers.delete(layerId)
     else this.expandedLayers.add(layerId)
     this.render()
+  }
+
+  /**
+   * Reveals the selection in the layer explorer: every object layer owning a
+   * selected node is expanded, so created or pasted objects (and script and
+   * undo/redo selections) show their row. Runs on selection changes only — an
+   * unrelated uiChange leaves a manually collapsed, unchanged selection as is.
+   */
+  private revealSelection(): void {
+    const selection = this.editor.selectedNodeIds
+    if (
+      selection.length === this.revealedSelection.length &&
+      selection.every((id, index) => id === this.revealedSelection[index])
+    ) {
+      return
+    }
+    this.revealedSelection = [...selection]
+    for (const nodeId of selection) {
+      const owner = this.editor.document.layers.find(
+        (layer) =>
+          isObjectLayer(layer) &&
+          layer.keyframes.some((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))
+      )
+      if (owner && !this.expandedLayers.has(owner.id)) {
+        this.expandedLayers.add(owner.id)
+        this.pendingRevealNodeId = nodeId
+      }
+    }
+  }
+
+  /** Block-nearest vertical scroll of a revealed row; horizontal scroll untouched. */
+  private scrollRowIntoView(row: HTMLElement): void {
+    const scroll = this.rowsHost.closest<HTMLElement>('.tl-scroll')
+    if (!scroll) return
+    const top = row.offsetTop
+    const bottom = top + row.offsetHeight
+    if (top < scroll.scrollTop) scroll.scrollTop = top
+    else if (bottom > scroll.scrollTop + scroll.clientHeight) {
+      scroll.scrollTop = bottom - scroll.clientHeight
+    }
   }
 
   /** Returns the frame range [start, end) where a node is continuously active. */

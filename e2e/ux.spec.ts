@@ -104,3 +104,61 @@ test('opens the shortcut cheat sheet with F1 and closes it with Escape', async (
   await page.locator('.modal-overlay .modal-close').click()
   await expect(page.locator('.modal-overlay')).toHaveCount(0)
 })
+
+test('reveals a created object and seeks from the frame ruler', async () => {
+  const page = await start()
+  await dismissStartup(page)
+
+  await page.getByRole('button', { name: 'New', exact: true }).click()
+  await expect(page.locator('footer.statusbar')).toContainText('file: unsaved')
+
+  // Draw a rectangle WITHOUT expanding the layer first: the new selection
+  // auto-expands its owning layer, so the object row shows up on its own.
+  await page.locator('.tool-button[data-tool="rect"]').click()
+  const stageBox = await boxOf(page.locator('svg.stage'))
+  const centerX = stageBox.x + stageBox.width / 2
+  const centerY = stageBox.y + stageBox.height / 2
+  await page.mouse.move(centerX - 90, centerY - 60)
+  await page.mouse.down()
+  await page.mouse.move(centerX + 90, centerY + 60, { steps: 8 })
+  await page.mouse.up()
+
+  const shapeRows = page.locator('.tl-shape-row[data-shape-id]')
+  await expect(shapeRows).toHaveCount(1)
+  await expect(shapeRows.first()).toHaveClass(/selected/)
+  await expect(page.getByText('no objects on this layer')).toHaveCount(0)
+  await expect(page.locator('.tl-toggle').first()).toHaveText('▾')
+
+  // Extend the timeline to 10 frames: + Frame grows the authored length to
+  // the playhead + 2 at most, so advance the playhead between the clicks.
+  const addFrame = page.getByRole('button', { name: '+ Frame', exact: true })
+  const seekTrack = async (frame: number): Promise<void> => {
+    const box = await boxOf(shapeRows.first().locator('.tl-track'))
+    await page.mouse.click(box.x + frame * 14 + 7, box.y + box.height / 2)
+  }
+  for (let last = 1; last <= 9; last++) {
+    await addFrame.click()
+    await seekTrack(last)
+  }
+  await expect(page.locator('footer.statusbar')).toContainText('frame 10 / 10')
+
+  // Geometry of the ruler: the frame strip starts after the 180px row head
+  // and every frame is 14px wide (same constants as the timeline source).
+  const rulerBox = await boxOf(page.locator('.tl-ruler'))
+  const frameX = (frame: number): number => rulerBox.x + 180 + frame * 14 + 7
+
+  // A plain click on the ruler seeks: the click on the 6th displayed frame
+  // moves the playhead (frames are selectable on long timelines).
+  await page.mouse.click(frameX(5), rulerBox.y + 9)
+  await expect(page.locator('footer.statusbar')).toContainText('frame 6 / 10')
+
+  // Dragging across the ruler still marks the copy-range band, without
+  // moving the playhead.
+  await page.mouse.move(frameX(2), rulerBox.y + 9)
+  await page.mouse.down()
+  await page.mouse.move(frameX(4), rulerBox.y + 9, { steps: 4 })
+  await expect(page.locator('.tl-range')).toBeVisible()
+  await page.mouse.up()
+  await expect(page.locator('.tl-range')).toBeVisible()
+  await expect(page.locator('footer.statusbar')).toContainText('frame 6 / 10')
+})

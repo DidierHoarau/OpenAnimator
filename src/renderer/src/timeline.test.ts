@@ -66,8 +66,11 @@ describe('TimelineView', () => {
     view = new TimelineView(editor, container)
   })
 
+  // Idempotent: selection changes already reveal the owning layer, so only
+  // click a row that still shows the collapsed glyph.
   const expandFirstLayer = (): void => {
-    container.querySelector<HTMLElement>('.tl-toggle')!.click()
+    const toggle = container.querySelector<HTMLElement>('.tl-toggle')!
+    if (toggle.textContent === '\u25b8') toggle.click()
   }
   const kfButton = (): HTMLButtonElement =>
     container.querySelector<HTMLButtonElement>('.tl-shape-kf')!
@@ -180,6 +183,44 @@ describe('TimelineView', () => {
 
     const layer = getLayer(editor.document, editor.currentLayerId)!
     expect(layer.keyframes).toHaveLength(0)
+  })
+
+  it('reveals a created object by expanding its layer in the layer explorer', () => {
+    // Fresh documents start collapsed: no object rows exist yet.
+    expect(container.querySelector('.tl-shape-row')).toBeNull()
+
+    editor.addNode(rect('a'))
+
+    const row = container.querySelector<HTMLElement>('.tl-shape-row[data-shape-id="a"]')
+    expect(row).not.toBeNull()
+    expect(row!.classList.contains('selected')).toBe(true)
+    expect(container.textContent).not.toContain('no objects on this layer')
+    expect(container.querySelector<HTMLElement>('.tl-toggle')!.textContent).toBe('\u25be')
+  })
+
+  it('keeps a manual collapse through unrelated changes and re-reveals on the next selection', () => {
+    editor.addNode(rect('a'))
+    const layerId = editor.currentLayerId
+    const toggle = (): HTMLElement => container.querySelector<HTMLElement>('.tl-toggle')!
+    const shapeRow = (): HTMLElement | null =>
+      container.querySelector<HTMLElement>('.tl-shape-row[data-shape-id="a"]')
+    expect(shapeRow()).not.toBeNull()
+
+    // A manual collapse of the unchanged selection survives unrelated uiChanges.
+    toggle().click()
+    expect(shapeRow()).toBeNull()
+    expect(toggle().textContent).toBe('\u25b8')
+    editor.toggleLayerVisibility(layerId)
+    expect(shapeRow()).toBeNull()
+    expect(editor.selectedNodeIds).toEqual(['a'])
+
+    // The next selection change re-reveals the owning layer.
+    editor.selectNodes([], 'replace')
+    expect(shapeRow()).toBeNull()
+    editor.selectNodes(['a'], 'replace')
+    expect(shapeRow()).not.toBeNull()
+    expect(shapeRow()!.classList.contains('selected')).toBe(true)
+    expect(toggle().textContent).toBe('\u25be')
   })
 
   it('adds a layer from the bottom line and reorders layers by drag and drop', () => {
@@ -561,8 +602,11 @@ describe('TimelineView — keyframe markers, range copy/paste and options', () =
       editor.insertFrameHere()
     }
   }
+  // Idempotent: selection changes already reveal the owning layer, so only
+  // click a row that still shows the collapsed glyph.
   const expandFirstLayer = (): void => {
-    container.querySelector<HTMLElement>('.tl-toggle')!.click()
+    const toggle = container.querySelector<HTMLElement>('.tl-toggle')!
+    if (toggle.textContent === '\u25b8') toggle.click()
   }
   const markerFor = (shapeId: string, frame: number): HTMLElement =>
     container.querySelector<HTMLElement>(
@@ -660,7 +704,7 @@ describe('TimelineView — keyframe markers, range copy/paste and options', () =
     expect(nodeFrames('b')).toEqual([0, 5])
   })
 
-  it('drags a copy range on the ruler and clears it with a plain click', () => {
+  it('drags a copy range on the ruler; a plain click clears it and seeks', () => {
     const ruler = container.querySelector<HTMLElement>('.tl-ruler')!
     const band = (): HTMLElement => container.querySelector<HTMLElement>('.tl-range')!
     const at = (frame: number): number => 180 + frame * 14 + 7
@@ -673,10 +717,30 @@ describe('TimelineView — keyframe markers, range copy/paste and options', () =
     window.dispatchEvent(new MouseEvent('pointerup', { clientX: at(5), clientY: 5 }))
     expect(band().classList.contains('hidden')).toBe(false)
 
-    // A plain click (no travel) clears the band.
+    // A plain click (no travel) clears the band and seeks to the frame.
+    editor.insertFrameHere()
     ruler.dispatchEvent(new MouseEvent('pointerdown', { clientX: at(1), clientY: 5, bubbles: true }))
     window.dispatchEvent(new MouseEvent('pointerup', { clientX: at(1), clientY: 5 }))
     expect(band().classList.contains('hidden')).toBe(true)
+    expect(editor.currentFrame).toBe(1)
+  })
+
+  it('seeks to any displayed frame from the ruler and leaves drags band-only', () => {
+    extend(9)
+    editor.seekToFrame(0)
+    const ruler = container.querySelector<HTMLElement>('.tl-ruler')!
+    const at = (frame: number): number => 180 + frame * 14 + 7
+
+    ruler.dispatchEvent(new MouseEvent('pointerdown', { clientX: at(6), clientY: 5, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: at(6), clientY: 5 }))
+    expect(editor.currentFrame).toBe(6)
+
+    // Dragging on the ruler builds the copy-range band without seeking.
+    ruler.dispatchEvent(new MouseEvent('pointerdown', { clientX: at(2), clientY: 5, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: at(4), clientY: 5 }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: at(4), clientY: 5 }))
+    expect(container.querySelector<HTMLElement>('.tl-range')!.classList.contains('hidden')).toBe(false)
+    expect(editor.currentFrame).toBe(6)
   })
 
   it('copies the ruler range and pastes it at the playhead with the carried tween', () => {
