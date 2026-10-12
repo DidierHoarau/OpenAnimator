@@ -92,10 +92,14 @@ export function createModal(options: ModalOptions = {}): ModalHandle {
   overlay.appendChild(modal)
   document.body.appendChild(overlay)
   // Deferred so the caller's content (built right after this call) is in the
-  // DOM before the initial focus target is picked.
+  // DOM before the initial focus target is picked. Content without any
+  // focusable control (e.g. the shortcut cheat sheet) focuses the modal box
+  // itself, so Escape and Tab still reach the overlay's key handler.
   queueMicrotask(() => {
     if (closed) return
-    ;(options.initialFocus ?? initialFocusTarget(modal))?.focus()
+    const target = options.initialFocus ?? initialFocusTarget(modal)
+    if (target) target.focus()
+    else modal.focus()
   })
 
   return { overlay, modal, close }

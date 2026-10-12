@@ -4,12 +4,13 @@ import { createModal } from '../modal'
 import { validateScriptPayload } from '@shared/scripting/commands'
 import type { ScriptIssue } from '@shared/scripting/commands'
 import { SCRIPT_EXAMPLES } from '@shared/scripting/examples'
-import { executeScriptCommands, type ScriptLibraryBridge } from './execute'
+import { executeScriptCommands, type ScriptLibraryBridge, type ScriptPreferencesBridge } from './execute'
 
 /** Options of the console; `library` enables the My Library commands
- * (the renderer passes `window.api`). */
+ * (the renderer passes `window.api`), `preferences` the settings command. */
 export interface ScriptConsoleOptions {
   library?: ScriptLibraryBridge
+  preferences?: ScriptPreferencesBridge
 }
 
 /**
@@ -99,7 +100,10 @@ export function showScriptConsole(editor: Editor, options: ScriptConsoleOptions 
         showIssues(`Schema errors (${errors.length}) — nothing ran:`, issuesFromMessages(errors))
         return
       }
-      const result = await executeScriptCommands(editor, commands, { library: options.library })
+      const result = await executeScriptCommands(editor, commands, {
+        library: options.library,
+        preferences: options.preferences
+      })
       if (result.issues.length === 0) {
         showIssues(`Applied ${result.applied} of ${commands.length} command(s) with no issues.`, [])
       } else {

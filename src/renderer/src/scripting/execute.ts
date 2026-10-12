@@ -10,6 +10,8 @@ import type { Editor } from '../editor'
 import { applyTextMetrics } from '@shared/textModel'
 import type { MeasureLineWidth } from '@shared/textModel'
 import type { Easing } from '@shared/easing'
+import { DEFAULT_PREFERENCES } from '@shared/preferences'
+import type { AppPreferences } from '@shared/preferences'
 
 const NODE_KINDS = new Set(['primitive', 'path', 'text', 'image', 'group', 'symbol'])
 
@@ -22,9 +24,18 @@ export type ScriptLibraryBridge = {
   addResource(bytes: Uint8Array, fileName: string): Promise<ResourceAddResult>
 }
 
+/** Preference store the `setPreferences` command reads and writes through
+ * (`src/renderer/src/preferences.ts` in the app; absent in the CLI). */
+export interface ScriptPreferencesBridge {
+  get(): AppPreferences
+  update(patch: Partial<AppPreferences>): Promise<AppPreferences>
+}
+
 export interface ScriptRunOptions {
   /** Global "My Library" bridge for the save/insert-library commands. */
   library?: ScriptLibraryBridge
+  /** Renderer preferences store for `setPreferences`. */
+  preferences?: ScriptPreferencesBridge
 }
 
 /**
@@ -53,7 +64,7 @@ export async function executeScriptCommands(
   for (let index = 0; index < commands.length; index += 1) {
     const command = commands[index]
     try {
-      editor.beginInteraction()
+      editor.beginInteraction(`Script: ${command.op}`)
       const changed = await applyCommand(editor, command, index, issues, options)
       if (changed) applied += 1
     } catch (error) {
@@ -638,6 +649,66 @@ async function applyCommand(
         )
         return false
       }
+      return true
+    }
+    case 'duplicateNodes': {
+      const count = editor.duplicateSelectedNodes()
+      if (count === 0) {
+        issue(
+          issues,
+          index,
+          `duplicateNodes: nothing duplicated — no nodes are selected on layer ${editor.currentLayerId} (or it is locked)`,
+          'warning'
+        )
+        return false
+      }
+      issue(issues, index, `duplicateNodes: duplicated ${count} node(s) as ${editor.selectedNodeIds.join(', ')}`, 'warning')
+      return true
+    }
+    case 'align': {
+      if (!editor.alignSelected(command.mode)) {
+        issue(
+          issues,
+          index,
+          'align: nothing moved — align works on the current selection (at least two objects on an unlocked object layer; already-aligned objects stay put)',
+          'warning'
+        )
+        return false
+      }
+      return true
+    }
+    case 'distribute': {
+      if (!editor.distributeSelected(command.axis)) {
+        issue(
+          issues,
+          index,
+          'distribute: nothing moved — distribute works on the current selection (at least three objects on an unlocked object layer; evenly spaced objects stay put)',
+          'warning'
+        )
+        return false
+      }
+      return true
+    }
+    case 'setPreferences': {
+      if (!options.preferences) {
+        issue(issues, index, 'setPreferences: no preference store is available in this context', 'warning')
+        return false
+      }
+      const before = options.preferences.get()
+      const after = await options.preferences.update(command.preferences)
+      const changed = (Object.keys(DEFAULT_PREFERENCES) as Array<keyof AppPreferences>).filter(
+        (key) => before[key] !== after[key]
+      )
+      if (changed.length === 0) {
+        issue(
+          issues,
+          index,
+          'setPreferences: no preference changed (values are already set, or the patch was empty)',
+          'warning'
+        )
+        return false
+      }
+      issue(issues, index, `setPreferences: ${changed.map((key) => `${key}=${String(after[key])}`).join(', ')}`, 'warning')
       return true
     }
   }

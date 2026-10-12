@@ -240,7 +240,7 @@ export class PropertiesView {
     this.easingEditor = new EasingEditor({
       onChange: (easing) => editor.setTweenEasingHere(easing),
       // A handle drag is one coalesced interaction: one undo entry.
-      onDragStart: () => editor.beginInteraction(),
+      onDragStart: () => editor.beginInteraction('Set easing'),
       onDragEnd: () => editor.endInteraction()
     })
     this.tweenPathSelect = el('select', 'tl-select') as HTMLSelectElement
@@ -301,7 +301,7 @@ export class PropertiesView {
     // A color-swatch drag fires many input events: coalesce them into one
     // undo entry, committed on change/cancel of the picker.
     this.fillColor.addEventListener('input', () => {
-      editor.beginInteraction()
+      editor.beginInteraction('Set fill')
       editor.updateSelectedNode((current) => {
         if (current.type === 'primitive') current.fill = this.fillColor.value
       })
@@ -348,7 +348,7 @@ export class PropertiesView {
     this.strokeColor.type = 'color'
     this.strokeColor.title = 'Outline color'
     this.strokeColor.addEventListener('input', () => {
-      editor.beginInteraction()
+      editor.beginInteraction('Set outline')
       editor.updateSelectedNode((current) => {
         if (current.type === 'primitive') current.stroke = this.strokeColor.value
       })
@@ -405,7 +405,7 @@ export class PropertiesView {
     this.pathStrokeColor.type = 'color'
     this.pathStrokeColor.title = 'Outline color'
     this.pathStrokeColor.addEventListener('input', () => {
-      editor.beginInteraction()
+      editor.beginInteraction('Set outline')
       editor.updateSelectedNode((current) => {
         if (current.type === 'path') current.stroke = this.pathStrokeColor.value
       })
@@ -453,7 +453,7 @@ export class PropertiesView {
     this.pathFillColor.type = 'color'
     this.pathFillColor.title = 'Fill color'
     this.pathFillColor.addEventListener('input', () => {
-      editor.beginInteraction()
+      editor.beginInteraction('Set fill')
       editor.updateSelectedNode((current) => {
         if (current.type === 'path') current.fill = this.pathFillColor.value
       })
@@ -661,7 +661,7 @@ export class PropertiesView {
     this.textColor.type = 'color'
     this.textColor.title = 'Text color'
     this.textColor.addEventListener('input', () => {
-      editor.beginInteraction()
+      editor.beginInteraction('Set fill')
       editor.updateSelectedNode((current) => {
         if (current.type === 'text') current.fill = this.textColor.value
       })
@@ -712,7 +712,7 @@ export class PropertiesView {
     this.textStrokeColor.type = 'color'
     this.textStrokeColor.title = 'Text outline color'
     this.textStrokeColor.addEventListener('input', () => {
-      editor.beginInteraction()
+      editor.beginInteraction('Set outline')
       editor.updateSelectedNode((current) => {
         if (current.type === 'text') current.stroke = this.textStrokeColor.value
       })
@@ -828,7 +828,7 @@ export class PropertiesView {
     )
     this.cameraEasingEditor = new EasingEditor({
       onChange: (easing) => editor.setCameraTweenEasingHere(easing),
-      onDragStart: () => editor.beginInteraction(),
+      onDragStart: () => editor.beginInteraction('Camera easing'),
       onDragEnd: () => editor.endInteraction()
     })
     this.cameraTweenPathSelect = el('select', 'tl-select') as HTMLSelectElement
@@ -1172,7 +1172,7 @@ export class PropertiesView {
       onApply: (paint) => {
         this.editor.updateSelectedNode((current) => apply(current, paint))
       },
-      onDragStart: () => this.editor.beginInteraction(),
+      onDragStart: () => this.editor.beginInteraction('Set paint'),
       onDragEnd: () => this.editor.endInteraction()
     })
   }

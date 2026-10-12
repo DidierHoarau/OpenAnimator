@@ -84,10 +84,16 @@ demo is loaded so there is something on the stage to play with.
 | `Space`             | Play / pause                            |
 | `F5` / `F6` / `F7`  | Insert frame / keyframe (or duplicate cell) / blank keyframe (or cell) |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo                       |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+D` | Copy / paste / duplicate objects (keyframes on the timeline) |
+| `Ctrl+'`            | Toggle grid & snapping                  |
+| `Ctrl+,`            | Preferences                             |
+| `F1`                | Keyboard-shortcut cheat sheet           |
 | `Ctrl+G` / `Ctrl+Shift+G` | Group / ungroup                   |
 | `F8`                | Save the selection as a symbol          |
 | `Ctrl+S` / `Ctrl+Shift+S` / `Ctrl+O` | Save / Save As / Open     |
 | `Ctrl+I`            | Import an image                         |
 | `Ctrl+0` / `+` / `-`| Reset / in / out stage zoom             |
 
-The [README](README.md) lists the complete set.
+The generated [Keyboard shortcuts](shortcuts.md) page lists the complete
+table — the application menu, the in-app `F1` cheat sheet and that page are
+all rendered from the same source.

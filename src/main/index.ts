@@ -1,15 +1,16 @@
 import { join } from 'node:path'
 
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
-import type { MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
 
-import { APP_API_CHANNEL, APP_CLOSE_REQUEST_CHANNEL, APP_CLOSE_RESPONSE_CHANNEL, APP_MENU_COMMAND_CHANNEL, APP_OPEN_FILE_CHANNEL } from '../shared/api'
-import type { AppVersions, MenuCommand } from '../shared/api'
+import { APP_API_CHANNEL, APP_CLOSE_REQUEST_CHANNEL, APP_CLOSE_RESPONSE_CHANNEL, APP_MENU_COMMAND_CHANNEL, APP_OPEN_EXTERNAL_CHANNEL, APP_OPEN_FILE_CHANNEL } from '../shared/api'
+import type { AppVersions, MenuCommand, OpenExternalResult } from '../shared/api'
 import { abortStagedExports, registerExportHandlers } from './exports'
 import { registerFontHandlers } from './fonts'
 import { registerLibraryHandlers } from './library'
+import { installApplicationMenu } from './menu'
 import { projectPathFromArgv } from './openFiles'
 import { registerPaletteHandlers } from './palette'
+import { registerPreferencesHandlers } from './preferences'
 import { registerProjectHandlers } from './projects'
 import { registerRecoveryHandlers } from './recovery'
 import { registerUpdateHandlers, setupAutoUpdates } from './updates'
@@ -56,46 +57,22 @@ function sendMenuCommand(command: MenuCommand): void {
   target?.webContents.send(APP_MENU_COMMAND_CHANNEL, command)
 }
 
-/**
- * Explicit application menu. The default menu's role items swallow the
- * Ctrl+Z / Ctrl+Shift+Z accelerators as web-page edits, so the Edit menu
- * routes Undo/Redo into the renderer's document history instead. The View
- * menu omits the browser zoom roles: Ctrl+0 and Ctrl+-/Ctrl++ belong to the
- * stage view.
- */
-function installApplicationMenu(): void {
-  const template: MenuItemConstructorOptions[] = [
-    {
-      label: 'File',
-      submenu: [{ role: 'quit' }]
-    },
-    {
-      label: 'Edit',
-      submenu: [
-        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => sendMenuCommand('undo') },
-        { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', click: () => sendMenuCommand('redo') },
-        { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' }
-      ]
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload' },
-        { role: 'toggleDevTools' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' }
-      ]
-    },
-    {
-      label: 'Window',
-      submenu: [{ role: 'minimize' }, { role: 'close' }]
+/** Hosts the About dialog is allowed to open in the system browser. */
+const EXTERNAL_URL_HOSTS = new Set(['github.com', 'didierhoarau.github.io'])
+
+function registerOpenExternalHandler(): void {
+  ipcMain.handle(APP_OPEN_EXTERNAL_CHANNEL, async (_event, url: unknown): Promise<OpenExternalResult> => {
+    try {
+      const parsed = new URL(String(url))
+      if (parsed.protocol !== 'https:' || !EXTERNAL_URL_HOSTS.has(parsed.hostname)) {
+        return { ok: false, error: 'Only https links to GitHub or the documentation site are allowed' }
+      }
+      await shell.openExternal(parsed.toString())
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'Invalid URL' }
     }
-  ]
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  })
 }
 
 function createWindow(): void {
@@ -106,7 +83,9 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     title: 'OpenAnimator',
-    autoHideMenuBar: true,
+    // The full menu stays visible: it is the discoverability surface for
+    // every action (and the accelerators work regardless of F10 focus).
+    autoHideMenuBar: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js')
     }
@@ -187,10 +166,12 @@ if (!app.requestSingleInstanceLock()) {
     registerLibraryHandlers()
     registerExportHandlers()
     registerPaletteHandlers()
+    registerPreferencesHandlers()
     registerFontHandlers()
     registerRecoveryHandlers()
     registerUpdateHandlers()
-    installApplicationMenu()
+    registerOpenExternalHandler()
+    installApplicationMenu(sendMenuCommand, { dev: !app.isPackaged })
 
     ipcMain.handle(APP_CLOSE_RESPONSE_CHANNEL, (event, allow: boolean): void => {
       closeRequestPending = false

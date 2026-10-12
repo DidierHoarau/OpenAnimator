@@ -4,7 +4,7 @@ OpenAnimator is an open-source, vector-based animation tool built as an Electron
 
 ## Status
 
-The application now provides a working authoring core: layers with keyframes, frame-by-frame drawing layers painted with brush and eraser tools, a frame timeline with cell filmstrips, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, a reusable asset library with document and persistent global collections, symbol instances with isolated editing, raster image import, SVG import as editable vectors, basic vector drawing and selection tools, a vector brush, linear/radial gradient paints, a document and global color palette, a text and font system (system-font picker, typography controls and license-gated glyph-subset embedding), a keyframable camera layer, audio layers (waveform timeline, synced playback and mixed audio in video exports), onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
+The application now provides a working authoring core: layers with keyframes, frame-by-frame drawing layers painted with brush and eraser tools, a frame timeline with cell filmstrips, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, a reusable asset library with document and persistent global collections, symbol instances with isolated editing, raster image import, SVG import as editable vectors, basic vector drawing and selection tools, a vector brush, linear/radial gradient paints, a document and global color palette, a text and font system (system-font picker, typography controls and license-gated glyph-subset embedding), a keyframable camera layer, audio layers (waveform timeline, synced playback and mixed audio in video exports), onion skinning and playback — all rendered as SVG. A full application menu, an in-app shortcut cheat sheet (`F1`), a scene-object clipboard with align/distribute and grid snapping, and a Preferences dialog round out the editor UX. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
 
 ## Documentation
 
@@ -13,9 +13,10 @@ The user guide lives at **<https://didierhoarau.github.io/OpenAnimator/>**:
 - [Getting started](https://didierhoarau.github.io/OpenAnimator/getting-started.html) — install, a first animation, essential shortcuts.
 - [Features](https://didierhoarau.github.io/OpenAnimator/features.html) — the condensed feature map with links to the deep dives.
 - [Scripting](https://didierhoarau.github.io/OpenAnimator/scripting.html) and the [command reference](https://didierhoarau.github.io/OpenAnimator/reference.html) — the JSON command API; the reference is generated from `COMMANDS_SCHEMA`, so it cannot drift from the implementation.
+- [Keyboard shortcuts](https://didierhoarau.github.io/OpenAnimator/shortcuts.html) — the complete table, generated from the same shortcut source the application menu, the `F1` cheat sheet and this page use.
 - [Gallery](https://didierhoarau.github.io/OpenAnimator/gallery.html) — sample `.oanim` projects you can open, script and remix.
 
-The site is rebuilt from `docs/` by the **Docs** workflow on every push to `main` that touches the docs; run `npm run docs:build` locally to regenerate the reference and preview the site from `site/`.
+The site is rebuilt from `docs/` by the **Docs** workflow on every push to `main` that touches the docs; run `npm run docs:build` locally to regenerate the reference and the shortcuts page and preview the site from `site/`.
 
 ## Tech stack
 
@@ -40,7 +41,7 @@ The site is rebuilt from `docs/` by the **Docs** workflow on every push to `main
 - **Vector brush**: the `N` tool draws freehand strokes on the stage — pointer samples are smoothed into a quadratic-curve path and committed on release as one editable vector path node (stroked in the brush color, size and opacity, no fill), auto-selected, in a single undo step; a click without a drag draws a dot, and `Escape` or switching tools abandons an in-progress stroke.
 - **Groups**: `Ctrl+G` folds the selection of the active keyframe into one group (children re-expressed in group-local coordinates, z-order preserved) and `Ctrl+Shift+G` dissolves groups back into the layer space with an exact round-trip. Group transforms compose onto the children on ungroup; grouping and ungrouping are each a single undo step.
 - **Asset library & symbols**: `F8` (or `Save as Symbol…`) saves the selection as a reusable symbol asset and replaces it on stage with one instance; every instance references the asset, so `Edit Symbol` opens the artwork in an isolated scratch editor and commits the change back to all instances in one undo step, and `Break Apart` decouples an instance into an editable group. The left **Library panel** shows the document's assets and the persistent global **My Library** (stored in the Electron user-data folder) as searchable 72 px thumbnails with a context menu (place at center, rename, duplicate, delete with instance-count warning, save to My Library) and a pointer-based drag onto the stage that places an instance at the drop point; global assets are imported on use (resources are content-addressed, so re-use is cheap). Imported images are registered as image assets automatically. Symbol graphs may nest up to 16 levels; cycles and over-deep graphs never hang the renderer — unresolvable instances render as dashed placeholders and the problem is reported on load.
-- **Undo/redo**: snapshot history capped at 100 entries; a continuous drag or a color-swatch drag is a single undo step. `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` with statusbar feedback, toolbar Undo/Redo buttons that enable with the history, and an application **Edit menu** whose Undo/Redo route to the editor (a focused text field keeps its native undo while it has focus). History resets when a new or opened document replaces the current one.
+- **Undo/redo**: snapshot history whose depth is configurable in Preferences (default 100 entries); a continuous drag or a color-swatch drag is a single undo step. `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` with statusbar feedback that names the action (`Undo: Move nodes`), toolbar Undo/Redo buttons that enable with the history, and the application menu's Undo/Redo routing to the editor (a focused text field keeps its native undo while it has focus). History resets when a new or opened document replaces the current one.
 - **Stage zoom & pan**: wheel zooms to the cursor (10%–800%), middle-drag, Space-hold-drag and the Hand tool (`H`) pan, `Ctrl+0` resets to the 1:1 fit, `+`/`-` zoom around the view center. Creation thresholds, default sizes and selection overlays stay correct and crisp at every zoom.
 - **Multi-select**: the selection is a set — shift-click adds or toggles, rubber-band on empty stage area with the Select tool selects (shift unions). Move, nudge and delete apply to the whole selection; the properties panel edits the primary (last-selected) node.
 - **Properties panel**: a right-side panel of collapsible sections whose expanded/collapsed state is remembered across restarts. Sections adapt to the editor state — the node sections only appear while a matching node is selected:
@@ -64,6 +65,11 @@ The site is rebuilt from `docs/` by the **Docs** workflow on every push to `main
 - **Export**: the toolbar's Export dialog writes eight formats for a chosen resolution scale, fps and frame range — raster outputs (PNG sequence as ZIP, animated GIF, spritesheet as a PNG atlas ZIP), WebM/MP4 video, and the **natively built vector exports** (Lottie bodymovin JSON, dotLottie ZIP, animated CSS-keyframes SVG). PNG/GIF/spritesheet and the vector formats keep transparency; WebM adds **VP9 alpha** when the environment's encoder supports it (otherwise the video is opaque, reported in the status bar) and MP4 is always opaque. WebM/MP4 include the mixed audio tracks (silent when no audio codec is available, also reported), all other formats are silent. Lottie/dotLottie and animated-SVG exports run without rasterization and never embed fonts — text ships as outlines, and unsupported content degrades to dashed placeholders with per-export diagnostics (the full feature matrix lives in `docs/export-formats.md`). The same frame evaluation runs headless through the CLI (`npm run cli -- render …`; video needs `ffmpeg` on PATH), so camera framing and audio timing are identical between the app and the command line.
 - **Projects**: save and open `.oanim` project files with an explicit Save/Save As/Open, Ctrl+S / Ctrl+Shift+S / Ctrl+O shortcuts. The project file itself only ever changes through an explicit save; the debounced autosave writes a **recovery snapshot** under the Electron user-data folder instead, and reopening a project whose snapshot is newer than the last save offers a recovery dialog (see *Platform notes*). Since v0.9.0 the container is a **ZIP archive**: `document.json` plus the referenced binary resources under `resources/<sha256>.<ext>` (stored uncompressed), written atomically (temp file + rename). The loader sniffs the magic bytes: ZIP containers take the archive path; legacy plain-JSON documents (v1 shapes and pre-0.9.0 v2 JSON) still open through the migration/validation path. Resources are content-addressed by SHA-256, so identical content dedupes automatically; a missing or corrupt resource renders a dashed placeholder box while the document still opens, and unknown node types are reported as errors (pre-1.0, no forward-compat shims). `Purge Unused` in the toolbar removes resources no object references from the session store — nothing is garbage-collected silently.
 - **Startup dialog**: shown on launch to start a new project, open a file, or reopen one of the recent projects (stored in the Electron `userData` folder).
+- **Application menu**: a full **File / Edit / Insert / Layer / View / Help** menu (plus the platform window menu) whose entries call the exact same editor commands as the toolbar and timeline (New `Ctrl+N`, Open `Ctrl+O`, Save `Ctrl+S` / Save As `Ctrl+Shift+S`, Import Image `Ctrl+I`, Import Audio, Export `Ctrl+E`, Purge Unused, Undo/Redo, Cut/Copy/Paste/Duplicate, Select All, Align and Distribute, Preferences `Ctrl+,`, keyframe/frame/blank-cell inserts `F5`–`F7`, tween `Ctrl+T`, group `Ctrl+G`/`Ctrl+Shift+G`, symbol `F8`, layer creation, zoom and view toggles, grid `Ctrl+'`, onion skin, panels, fullscreen). The same table drives the `F1` cheat sheet and the generated [shortcuts page](https://didierhoarau.github.io/OpenAnimator/shortcuts.html), so the three can never drift apart.
+- **Scene-object clipboard, align and distribute**: `Ctrl+C` / `Ctrl+V` copy and paste the selected scene objects (with their keyframe tracks, offset +10/+10); while the timeline was the last-clicked surface the same keys operate the timeline's keyframe clipboard. `Ctrl+X` cuts and `Ctrl+D` duplicates the selection, each a single undo step. Align (left/center/right/top/middle/bottom) needs two or more selected objects, distribute (horizontal/vertical) three or more; both live in the Edit menu.
+- **Grid and snapping**: `Ctrl+'` toggles the grid overlay together with snap-to-grid — move drags and rectangle/ellipse/line creation land on the grid (freehand input stays free). The step size comes from Preferences.
+- **Preferences**: Edit → **Preferences…** (`Ctrl+,`) edits the stage size and frame rate used by the **next new document** (the current one is never resized implicitly), autosave on/off and its idle window, the undo depth, the brush defaults and the grid size — persisted in `preferences.json` in the Electron user-data folder. Brush/undo/autosave/grid values apply live; panel sizes remain where they were.
+- **Help, About and status feedback**: `F1` opens the in-app keyboard cheat sheet; **Help → About** shows the app, Electron and Chrome versions with links to the repository and the docs. Status-bar messages name the undone/redone action and persistent problems (e.g. a failed autosave) stay visible until dismissed, with a **Copy details** button.
 
 ## Project layout
 
@@ -81,6 +87,8 @@ The site is rebuilt from `docs/` by the **Docs** workflow on every push to `main
 │   │   ├── recovery.ts    # Autosave recovery snapshots + IPC handlers
 │   │   ├── updates.ts     # Update checks (electron-updater / GitHub Releases API)
 │   │   ├── openFiles.ts   # `.oanim` launch-argument extraction
+│   │   ├── menu.ts        # Application menu built from the single shortcut table
+│   │   ├── preferences.ts # Preferences store (`preferences.json`) + IPC handlers
 │   │   └── projects.ts    # Project file IO, resource/image IPC handlers
 │   ├── preload/           # Preload scripts (contextBridge API)
 │   ├── shared/            # Pure TypeScript document model + unit tests
@@ -110,6 +118,10 @@ The site is rebuilt from `docs/` by the **Docs** workflow on every push to `main
 │   │   ├── recovery.ts    # Recovery snapshot rules (offer when newer than the file)
 │   │   ├── updates.ts     # Release version parsing and comparison (pure)
 │   │   ├── textOutline.ts # Text→outline math shared by Convert-to-Outlines and the vector exporters
+│   │   ├── shortcuts.ts   # The single shortcut table driving menu, keyboard, cheat sheet and docs
+│   │   ├── preferences.ts # Preferences model: defaults, clamps, partial merges
+│   │   ├── snapping.ts    # Grid-snapping math for move and create drags
+│   │   ├── align.ts       # Align/distribute math for node selections
 │   │   ├── lottieExport.ts # Lottie (bodymovin) / dotLottie builder with placeholder degradation
 │   │   ├── exportSvgAnimation.ts # Animated-SVG (CSS keyframes) builder
 │   │   ├── spritesheet.ts # Spritesheet grid math, atlas blitting, JSON-hash metadata
@@ -118,6 +130,12 @@ The site is rebuilt from `docs/` by the **Docs** workflow on every push to `main
 │       ├── index.html
 │       └── src/
 │           ├── editor.ts  # Editor state (frame, selection, tools, playback)
+│           ├── commands.ts # Single command router: menu items and key bindings dispatch here
+│           ├── activeSurface.ts # Which surface (stage/timeline) the clipboard acts on
+│           ├── shortcutHelp.ts # F1 cheat sheet rendered from the shortcut table
+│           ├── preferences.ts  # Renderer preference store (live values + IPC sync)
+│           ├── preferencesDialog.ts # Preferences dialog
+│           ├── aboutDialog.ts  # About dialog (versions, repository, docs links)
 │           ├── stage.ts   # SVG stage: rendering, drawing, selection
 │           ├── drawing.ts # Stroke smoothing + DrawingSession (overlay-then-commit)
 │           ├── cellPreload.ts # Playback preloader for drawing-cell images
@@ -165,7 +183,7 @@ npm run dev        # start the app with hot reload
 | `npm run test:e2e`      | Playwright-Electron golden paths against `out/` (build first; prefix `xvfb-run -a` on headless Linux) |
 | `npm run cli -- …`      | Headless CLI: `render`, `validate`, `schema` (see `npm run cli -- help`) |
 | `npm run samples:build` | Regenerate the committed gallery samples (`docs/samples/*.oanim` + GIF previews) |
-| `npm run docs:build`    | Regenerate `docs/scripting-reference.md` and build the docs site into `site/` |
+| `npm run docs:build`    | Regenerate `docs/scripting-reference.md` and `docs/shortcuts.md`, then build the docs site into `site/` |
 | `npm run dist:linux`    | Package Linux installers (AppImage, deb, rpm, Flatpak, tar.gz) |
 | `npm run dist:win`      | Package Windows installers (NSIS + portable exe)         |
 | `npm run dist:mac`      | Package macOS disk images (dmg, x64 + arm64)             |
@@ -193,11 +211,20 @@ npm run dev        # start the app with hot reload
 | `Ctrl+S`            | Save the current project                |
 | `Ctrl+Shift+S`      | Save the project to a new file          |
 | `Ctrl+O`            | Open a project file                     |
+| `Ctrl+N`            | Start a new document                    |
 | `Ctrl+I`            | Import an image onto the stage          |
+| `Ctrl+E`            | Export the animation                    |
+| `Ctrl+C` / `Ctrl+V` | Copy / paste keyframes (timeline) or scene objects (stage) — the last-clicked surface decides |
+| `Ctrl+X` / `Ctrl+D` | Cut / duplicate the selected scene objects |
+| `Ctrl+A`            | Select every object on the layer        |
 | `Space`             | Play / pause                            |
 | `Enter`             | Commit an open pen path                 |
 | `Escape`            | Cancel the pen path or vector stroke, otherwise stop and return to frame 1 |
 | `F5` / `F6` / `F7`  | Insert frame / keyframe or duplicate cell / blank keyframe or cell |
+| `Ctrl+T`            | Toggle the tween at the playhead        |
+| `Ctrl+'`            | Toggle the grid and snapping            |
+| `Ctrl+,`            | Open Preferences                        |
+| `F1`                | Keyboard-shortcut cheat sheet           |
 | Shift-click         | Add to or toggle the selection          |
 | Rubber-band on empty stage | Select objects (Shift unions)    |
 | `Delete`            | Delete the selected objects             |

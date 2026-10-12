@@ -137,6 +137,39 @@ describe('validateScriptPayload', () => {
     expect(bad.errors.join('\n')).toContain('/commands/3/patch/letterSpacing')
   })
 
+  it('accepts the UX ops and rejects bad modes, axes and preference patches', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        { op: 'duplicateNodes' },
+        { op: 'align', mode: 'centerH' },
+        { op: 'distribute', axis: 'v' },
+        { op: 'setPreferences', preferences: { gridSize: 32, showDemoOnNew: false } }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+    expect(ok.commands).toHaveLength(4)
+
+    const bad = validateScriptPayload({
+      commands: [
+        { op: 'align', mode: 'diagonal' },
+        { op: 'distribute', axis: 'x' },
+        { op: 'align' },
+        { op: 'setPreferences', preferences: { gridSize: 'big' } },
+        { op: 'setPreferences', preferences: { notAKey: 1 } },
+        { op: 'setPreferences', preferences: [1] },
+        { op: 'duplicateNodes', mode: 'left' }
+      ]
+    })
+    const errors = bad.errors.join('\n')
+    expect(errors).toContain('/commands/0/mode')
+    expect(errors).toContain('/commands/1/axis')
+    expect(errors).toContain('/commands/2/mode')
+    expect(errors).toContain('/commands/3/preferences/gridSize')
+    expect(errors).toContain('/commands/4/preferences/notAKey')
+    expect(errors).toContain('/commands/5/preferences')
+    expect(errors).toContain('/commands/6/mode')
+  })
+
   it('accepts the camera and audio ops and rejects their bad shapes', () => {
     const ok = validateScriptPayload({
       commands: [

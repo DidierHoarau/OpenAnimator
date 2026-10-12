@@ -75,7 +75,7 @@ describe('Editor undo/redo history', () => {
 
   it('coalesces an interaction into a single history entry', () => {
     editor.addNode(rect('a', 0))
-    editor.beginInteraction()
+    editor.beginInteraction('Move nodes')
     editor.updateSelectedNodes((node) => {
       node.center.x += 10
     })

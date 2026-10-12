@@ -5,6 +5,7 @@ import type { Editor } from './editor'
 import { el } from './dom'
 import { reconcileEmbeddedFonts, syncSessionFonts } from './fontEmbedding'
 import { createModal, showAlertDialog, showConfirmDialog } from './modal'
+import { getPreferences } from './preferences'
 
 function pathBasename(path: string): string {
   return path.split(/[\\/]/).pop() ?? path
@@ -287,7 +288,9 @@ export async function openDocument(editor: Editor): Promise<boolean> {
   return loadProjectFromPath(editor, result.path, result.document, result.resources)
 }
 
-/** Starts a new empty project after confirmation when there are unsaved changes. */
+/** Starts a new empty project after confirmation when there are unsaved changes.
+ * Stage size, frame rate and the demo-scene choice come from the persisted
+ * preferences. */
 export async function newDocument(editor: Editor): Promise<boolean> {
   if (
     editor.dirty &&
@@ -299,8 +302,14 @@ export async function newDocument(editor: Editor): Promise<boolean> {
   ) {
     return false
   }
+  const preferences = getPreferences()
   editor.filePath = null
-  editor.newDocument()
+  editor.newDocument({
+    width: preferences.stageWidth,
+    height: preferences.stageHeight,
+    fps: preferences.fps,
+    demo: preferences.showDemoOnNew
+  })
   editor.dirty = false
   void window.api.resetResourceStore()
   return true
