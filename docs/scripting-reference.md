@@ -154,6 +154,7 @@ Set the interpolation (easing / motion path) of a node or camera keyframe.
 | `layerId` | string | no | — |
 | `frame` | integer | no | min 0 |
 | `easing` | string | no | one of `linear`, `ease-in`, `ease-out`, `ease-in-out`; may be `null`; string or cubic-bezier object `{x1,y1,x2,y2}` |
+| `easings` | object | no | per-channel overrides `{transform,opacity,fill}`: named easing, cubic-bezier object or `null` to clear |
 | `path` | string | no | one of `linear`, `smooth` |
 
 ### moveKeyframe

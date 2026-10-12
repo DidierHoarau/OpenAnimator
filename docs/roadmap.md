@@ -24,9 +24,14 @@ this page records what landed and what is being considered next.
 | v0.22.0 | Performance — rAF-coalesced stage rendering with keyed incremental patching, structural-sharing undo snapshots, idle-debounced autosave with an incremental recovery packer, and a deterministic 500-node regression benchmark (seek 28→24 ms, drag 44.5→37 ms/move, playback ≈30 fps, 24-frame export ≈1.5 s on the reference machine) |
 | v0.23.0 | Editor UX — full application menu over the existing editor commands, keyboard-shortcut cheat sheet and docs page from one shortcut table (plus the F7 timeline leak fix), scene-object clipboard beside the keyframe clipboard, grid snapping with align/distribute, a Preferences dialog replacing hardcoded defaults, and feedback polish (labeled undo, persistent errors, About dialog) |
 | v0.24.0 | Vector depth — direct-selection anchor editing (`A`) with the `setPathAnchors` scripting op and multi-subpath support, stroke styles (linecap/linejoin/dash) through model, renderer, UI and SVG round-trip, per-stop gradient alpha, path fill/stroke tweening, the eyedropper with a recent-colors row, and GIMP (`.gpl`) palette import/export |
+| v0.25.0 | Motion & Text Depth — path shape morphing between keyframes, per-property tween easing channels (`transform`/`opacity`/`fill`), kerning-true font subsets with italic embedding and a ligature toggle, and frame-locked continuous audio scrub (plus a path-morphing E2E golden path) |
 
 ## What's next
 
+- **Per-character animation (charRange) and per-channel camera keys.** Both
+  were stretch items of the v0.25.0 cycle and stay on the list: a `charRange`
+  on text nodes for per-character reveal/stagger, and camera keyframes that
+  can carry per-property easing channels like object tweens do.
 - **Code signing and silent auto-update.** Windows and macOS builds ship
   unsigned; the in-app updater only checks for releases and links to them.
   Signing the installers unlocks silent in-place updates (README, *Platform
@@ -42,8 +47,8 @@ this page records what landed and what is being considered next.
 - **E2E golden paths as features land.** The Playwright suite pins the
   golden paths (drawing/tweening, save/reopen, exports, scripting, startup,
   cancellation, close protection, node clipboard, shortcut help, anchor
-  editing and the eyedropper) plus the 500-node performance budget; new
-  major features should add their own golden path.
+  editing, the eyedropper and path morphing) plus the 500-node performance
+  budget; new major features should add their own golden path.
 
 Suggestions are welcome — open an issue (see
 [Contributing](contributing.md)) and describe the workflow you need.

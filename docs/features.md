@@ -80,10 +80,11 @@ reference where one exists; the [README](README.md) has the exhaustive list.
 - **Asset library** — document assets plus a persistent global *My Library*
   with searchable thumbnails, drag-to-stage placement, rename, duplicate,
   delete and save-to-library.
-- **Text and fonts** — full typography (weight, alignment, letter spacing,
-  line height, vertical placement, fallback families), a system-font picker,
-  text outlines, `Convert to Outlines`, and license-gated glyph-subset
-  **embedding** so shared files render identically — see
+- **Text and fonts** — full typography (weight, italic style, alignment,
+  letter spacing, line height, vertical placement, fallback families, a
+  ligature toggle), a system-font picker, text outlines, `Convert to
+  Outlines`, and license-gated glyph-subset **embedding** with kerning
+  retention, so shared files render identically — see
   [Font embedding](font-embedding.md).
 - **Images and SVG import** — PNG/JPG/WebP (GIF takes its first frame) with
   replace-source; SVGs inside a documented subset import as **editable
@@ -91,7 +92,9 @@ reference where one exists; the [README](README.md) has the exhaustive list.
   [SVG import](svg-import.md).
 - **Camera and audio** — pan/zoom (0.05×–64×)/rotate framing with the same
   easing controls as object tweens; WAV/MP3/OGG clips with waveforms, volume
-  and mute, mixed into video exports.
+  and mute, mixed into video exports; optional **frame-locked scrub audio**
+  while scrubbing paused (a rate-mapped preview that follows the playhead
+  within one frame).
 - **Palettes** — a document palette saved in the project plus a global
   palette persisted in the user-data folder, shared by every color control;
   the global palette imports and exports **GIMP (`.gpl`) palette files**
