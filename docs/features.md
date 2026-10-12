@@ -42,6 +42,27 @@ reference where one exists; the [README](README.md) has the exhaustive list.
 - **Groups and symbols** — `Ctrl+G`/`Ctrl+Shift+G` group and ungroup with
   exact round-trip; `F8` saves the selection as a reusable symbol asset with
   isolated editing and instance-count-aware management.
+- **Menus and shortcut help** — a full application menu
+  (File/Edit/Insert/Layer/View/Help) over the same editor commands the
+  toolbar and timeline call, an `F1` cheat sheet and a generated
+  [shortcuts page](shortcuts.md) — all rendered from one shortcut table, so
+  they cannot drift apart.
+- **Node clipboard, align and distribute** — `Ctrl+C`/`Ctrl+V`/`Ctrl+X`/
+  `Ctrl+D` copy, paste, cut and duplicate the selected scene objects with
+  their keyframe tracks (paste offset +10/+10, one undo step each); the
+  timeline keeps its own keyframe clipboard on the same keys and the
+  last-clicked surface decides (see the [shortcuts page](shortcuts.md)).
+  Align (six modes) needs ≥2 selected objects, distribute (h/v) ≥3.
+- **Grid and snapping** — `Ctrl+'` toggles the grid overlay and snap-to-grid
+  together; move drags and rectangle/ellipse/line creation land on the grid,
+  with the step size set in Preferences.
+- **Preferences** — a dialog (`Ctrl+,`) for the stage size/frame rate used by
+  the *next* new document, autosave on/off and its idle window, undo depth,
+  brush defaults and grid size — persisted in `preferences.json` in the
+  user-data folder. The status bar names the undone action, and persistent
+  errors stay visible with copyable details until dismissed.
+- **About dialog** — app, Electron and Chrome versions with links to the
+  repository and the documentation.
 - **Asset library** — document assets plus a persistent global *My Library*
   with searchable thumbnails, drag-to-stage placement, rename, duplicate,
   delete and save-to-library.
@@ -59,9 +80,10 @@ reference where one exists; the [README](README.md) has the exhaustive list.
   and mute, mixed into video exports.
 - **Palettes** — a document palette saved in the project plus a global
   palette persisted in the user-data folder, shared by every color control.
-- **Editing comfort** — undo/redo (100 entries, drags are single steps),
-  multi-select and rubber-band selection, zoom 10%–800% with pan, panel
-  layout persistence, onion skinning, and playback with looping.
+- **Editing comfort** — undo/redo (drag-coalesced single steps, depth
+  configurable in Preferences), multi-select and rubber-band selection, zoom
+  10%–800% with pan, panel layout persistence, onion skinning, and playback
+  with looping.
 
 ## Export and automation
 

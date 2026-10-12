@@ -216,7 +216,11 @@ describe('saveRecoverySnapshot', () => {
     editor.onMessage(message)
 
     await saveRecoverySnapshot(editor)
-    expect(message).toHaveBeenCalledWith('Autosave failed', { persistent: true })
+    expect(message).toHaveBeenCalledWith('Autosave failed', {
+      persistent: true,
+      severity: 'info',
+      details: undefined
+    })
 
     message.mockClear()
     writeRecovery.mockResolvedValue({ ok: true })

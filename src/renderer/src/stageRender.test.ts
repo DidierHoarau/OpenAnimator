@@ -178,7 +178,7 @@ describe('StageView — incremental keyed rendering', () => {
     const [elementA, elementB] = nodeElements()
 
     editor.selectNodes(['a'], 'replace')
-    editor.beginInteraction()
+    editor.beginInteraction('Move nodes')
     editor.updateSelectedNodes((node) => {
       node.center.x += 5
     })

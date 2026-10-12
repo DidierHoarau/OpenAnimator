@@ -48,6 +48,10 @@ Machine-readable schema: `commands-v1.json` (export it with `npm run cli -- sche
 - [`removeFrames`](#removeframes) — Remove `count` frames at a frame, pulling later content back.
 - [`moveCell`](#movecell) — Move the drawing cell at `fromFrame` to `toFrame`.
 - [`moveNodeToFrame`](#movenodetoframe) — Retime a node: move its whole keyframe track so it starts at `targetFrame`.
+- [`duplicateNodes`](#duplicatenodes) — Duplicate the currently selected nodes at +10/+10 (one undo entry).
+- [`align`](#align) — Align the selected objects to their union bounds (`left`, `centerH`, `right`, `top`, `middle`, `bottom`; needs at least two objects).
+- [`distribute`](#distribute) — Space the selected objects evenly along `h` or `v` (outermost two fixed; needs at least three objects).
+- [`setPreferences`](#setpreferences) — Merge a partial preferences patch (sanitized and persisted) into the application settings.
 
 ## Conventions
 
@@ -407,6 +411,36 @@ Retime a node: move its whole keyframe track so it starts at `targetFrame`.
 | `nodeId` | string | yes | — |
 | `layerId` | string | no | — |
 | `targetFrame` | integer | yes | min 0 |
+
+### duplicateNodes
+
+Duplicate the currently selected nodes at +10/+10 (one undo entry).
+
+_No fields._
+
+### align
+
+Align the selected objects to their union bounds (`left`, `centerH`, `right`, `top`, `middle`, `bottom`; needs at least two objects).
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `mode` | string | yes | one of `left`, `centerH`, `right`, `top`, `middle`, `bottom` |
+
+### distribute
+
+Space the selected objects evenly along `h` or `v` (outermost two fixed; needs at least three objects).
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `axis` | string | yes | one of `h`, `v` |
+
+### setPreferences
+
+Merge a partial preferences patch (sanitized and persisted) into the application settings.
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `preferences` | object | yes | — |
 
 ## Examples
 

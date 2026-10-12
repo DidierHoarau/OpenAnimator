@@ -6,13 +6,15 @@ import type { Tokens } from 'marked'
 
 import { renderSchemaJson, schemaFileName } from '../src/cli/schema'
 import { renderScriptingReference } from '../src/shared/scripting/referenceMarkdown'
+import { renderShortcutMarkdown } from '../src/shared/shortcuts'
 
 /**
  * Builds the GitHub Pages documentation site into `site/` (gitignored):
  *
  * 1. Regenerates `docs/scripting-reference.md` from `COMMANDS_SCHEMA` and the
- *    field metadata — the same function the drift unit test compares against,
- *    so the committed reference cannot go stale.
+ *    field metadata and `docs/shortcuts.md` from the shortcut table — the same
+ *    functions the drift unit tests compare against, so the committed files
+ *    cannot go stale.
  * 2. Renders every page (README, the `docs/*.md` guides, CONTRIBUTING) to
  *    static HTML with one shared template and nav.
  * 3. Copies the stylesheet, the sample projects/previews and the JSON
@@ -40,6 +42,7 @@ const PAGES: Page[] = [
   { label: 'Features', source: 'docs/features.md', out: 'features.html' },
   { label: 'Scripting', source: 'docs/scripting.md', out: 'scripting.html' },
   { label: 'Reference', source: 'docs/scripting-reference.md', out: 'reference.html' },
+  { label: 'Shortcuts', source: 'docs/shortcuts.md', out: 'shortcuts.html' },
   { label: 'Export formats', source: 'docs/export-formats.md', out: 'export-formats.html' },
   { label: 'SVG import', source: 'docs/svg-import.md', out: 'svg-import.html' },
   { label: 'Fonts', source: 'docs/font-embedding.md', out: 'fonts.html' },
@@ -162,9 +165,11 @@ async function writeSchemas(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  // 1. Regenerate the committed scripting reference in place.
+  // 1. Regenerate the committed generated docs in place.
   await writeFile(join(ROOT, 'docs/scripting-reference.md'), renderScriptingReference())
   console.log('docs/scripting-reference.md regenerated')
+  await writeFile(join(ROOT, 'docs/shortcuts.md'), renderShortcutMarkdown())
+  console.log('docs/shortcuts.md regenerated')
 
   // 2. Render every page.
   await rm(SITE_DIR, { recursive: true, force: true })

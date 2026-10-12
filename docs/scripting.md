@@ -40,6 +40,8 @@ the implementation. The command families:
 - **Nodes & keyframes** — `addNode`, `updateNode`, `deleteNode`,
   `setKeyframe`, `removeNodeKeyframe`, `moveKeyframe`, `copyKeyframes`,
   `moveNodeToFrame`.
+- **Selection, layout & preferences** — `duplicateNodes`, `align`,
+  `distribute`, `setPreferences`.
 - **Grouping & symbols** — `group`, `ungroup`, `breakApart`,
   `createSymbol`, `placeAsset`, `editSymbol`, `endSymbolEdit`,
   `renameAsset`, `duplicateAsset`, `deleteAsset`.
@@ -79,6 +81,36 @@ keeps running.
 every layer — the timeline's insert/remove-frame buttons as commands.
 `moveCell` retimes a drawing cell and `moveNodeToFrame` shifts a node's
 whole keyframe track so it starts at `targetFrame` (the retiming gestures).
+
+### Selection, layout and preferences
+
+`duplicateNodes` copies the current selection at +10/+10 with its keyframe
+tracks intact — the Edit-menu Duplicate (`Ctrl+D`) as a command, one undo
+entry. `align` snaps the selection to the union of their bounds (`mode`:
+`left`, `centerH`, `right`, `top`, `middle`, `bottom`; at least two selected
+objects) and `distribute` spaces three or more objects evenly along `h` or
+`v` with the outermost two fixed — the Edit → Align submenu as commands.
+
+```json
+{"commands": [
+  {"op": "align", "mode": "top"},
+  {"op": "distribute", "axis": "h"},
+  {"op": "duplicateNodes"}
+]}
+```
+
+`setPreferences` merges a partial, sanitized patch into the application
+settings — the same store the Preferences dialog (`Ctrl+,`) edits:
+
+```json
+{"commands": [
+  {"op": "setPreferences", "preferences": {"gridSize": 32, "autosaveIdleMs": 5000}}
+]}
+```
+
+Like the library bridge, `setPreferences` needs the app's preference store:
+the script console passes it automatically; a headless executor without one
+reports a clear warning per command and keeps running.
 
 ### Node kinds
 

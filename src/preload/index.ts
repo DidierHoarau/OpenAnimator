@@ -6,6 +6,7 @@ import {
   APP_CLOSE_REQUEST_CHANNEL,
   APP_CLOSE_RESPONSE_CHANNEL,
   APP_MENU_COMMAND_CHANNEL,
+  APP_OPEN_EXTERNAL_CHANNEL,
   APP_OPEN_FILE_CHANNEL,
   APP_OPEN_RELEASE_CHANNEL,
   APP_UPDATE_AVAILABLE_CHANNEL,
@@ -29,6 +30,8 @@ import {
   LIBRARY_RENAME_CHANNEL,
   PALETTE_GET_CHANNEL,
   PALETTE_SET_CHANNEL,
+  PREFERENCES_GET_CHANNEL,
+  PREFERENCES_SET_CHANNEL,
   RECENT_ADD_CHANNEL,
   RECENT_LIST_CHANNEL,
   RECOVERY_CHECK_CHANNEL,
@@ -73,6 +76,9 @@ const api: OpenAnimatorApi = {
   readSystemFont: (family, weight) => ipcRenderer.invoke(FONT_READ_CHANNEL, family, weight),
   getFontEmbeddingPolicy: () => ipcRenderer.invoke(FONT_POLICY_CHANNEL),
   openReleasePage: (version) => ipcRenderer.invoke(APP_OPEN_RELEASE_CHANNEL, version),
+  openExternal: (url) => ipcRenderer.invoke(APP_OPEN_EXTERNAL_CHANNEL, url),
+  getPreferences: () => ipcRenderer.invoke(PREFERENCES_GET_CHANNEL),
+  savePreferences: (preferences) => ipcRenderer.invoke(PREFERENCES_SET_CHANNEL, preferences),
   onMenuCommand: (listener) => {
     const handler = (_event: IpcRendererEvent, command: MenuCommand): void => listener(command)
     ipcRenderer.on(APP_MENU_COMMAND_CHANNEL, handler)

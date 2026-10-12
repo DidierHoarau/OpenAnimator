@@ -497,7 +497,7 @@ describe('Editor — asset library and symbols', () => {
   it('importAndPlaceAsset registers asset + resources in one undo step', () => {
     const asset = imageAsset('ext-1', 'hash-a')
     const bytes = new Uint8Array([1, 2, 3])
-    editor.beginInteraction()
+    editor.beginInteraction('Place asset')
     const placed = editor.importAndPlaceAsset(asset, { 'hash-a': bytes }, { x: 40, y: 40 })
     editor.endInteraction()
     expect(placed).toBe(true)
@@ -510,7 +510,7 @@ describe('Editor — asset library and symbols', () => {
     expect(nodesIn()).toHaveLength(0)
     // Already-known assets are not re-registered (and survive a failed place).
     editor.document.assets = [asset]
-    editor.beginInteraction()
+    editor.beginInteraction('Place asset')
     expect(editor.importAndPlaceAsset(asset, { 'hash-a': bytes })).toBe(true)
     editor.endInteraction()
     expect(editor.document.assets).toHaveLength(1)
@@ -937,7 +937,11 @@ describe('Editor — document palette', () => {
     )
     editor.addPaletteColor('#ffffff')
     expect(editor.document.palette).toHaveLength(48)
-    expect(message).toHaveBeenCalledWith('Palette is full (48 colors)', { persistent: false })
+    expect(message).toHaveBeenCalledWith('Palette is full (48 colors)', {
+      persistent: false,
+      severity: 'info',
+      details: undefined
+    })
   })
 
   it('removePaletteColor removes by normalized color as one undo step', () => {

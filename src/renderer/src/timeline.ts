@@ -20,6 +20,7 @@ import type {
 import { paintPrimaryColor } from '@shared/paint'
 
 import { importAudioViaDialog } from './audioImport'
+import { setActiveSurface } from './activeSurface'
 import type { Editor } from './editor'
 import { el } from './dom'
 
@@ -515,7 +516,12 @@ export class TimelineView {
 
     const scroll = el('div', 'tl-scroll')
     scroll.appendChild(this.content)
-    scroll.addEventListener('pointerdown', (event) => this.onTrackPointerDown(event))
+    scroll.addEventListener('pointerdown', (event) => {
+      // Ctrl+C/V act on the keyframe clipboard while the timeline is the
+      // surface the user touched last.
+      setActiveSurface('timeline')
+      this.onTrackPointerDown(event)
+    })
 
     container.append(controls, options, scroll, this.menu)
 

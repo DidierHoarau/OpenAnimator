@@ -91,6 +91,17 @@ describe('createModal', () => {
 
     expect(document.activeElement).toBe(input)
   })
+
+  it('focuses the modal box when the content has no focusable control', async () => {
+    const handle = createModal()
+    handle.modal.append(el('h2', 'modal-title', 'Read only'))
+    await microtask()
+    expect(document.activeElement).toBe(handle.modal)
+
+    // Escape bubbles through the overlay even with nothing else focusable.
+    expect(pressKey(handle.modal, 'Escape').defaultPrevented).toBe(true)
+    expect(document.querySelector('.modal-overlay')).toBeNull()
+  })
 })
 
 describe('showConfirmDialog', () => {

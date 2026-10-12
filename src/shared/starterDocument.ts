@@ -18,19 +18,22 @@ function ballNode(id: string, x: number, y: number): PrimitiveNode {
 }
 
 /** Document used for new projects and as a first-run demo of tweening. */
-export function createStarterDocument(): AnimatorDocument {
+export function createStarterDocument(width = 960, height = 540, fps = 24): AnimatorDocument {
   const backdrop: PrimitiveNode = {
     type: 'primitive',
     primitive: 'rect',
     id: createId('node'),
-    center: { x: 480, y: 270 },
-    width: 960,
-    height: 540,
+    center: { x: width / 2, y: height / 2 },
+    width,
+    height,
     rotation: 0,
     fill: '#10151b',
     opacity: 1
   }
 
+  // The demo arc scales with the stage so it stays inside the visible area.
+  const sx = width / 960
+  const sy = height / 540
   const ballId = createId('node')
   const demoLayer = {
     kind: 'object' as const,
@@ -41,15 +44,15 @@ export function createStarterDocument(): AnimatorDocument {
     keyframes: [
       {
         frame: 0,
-        nodes: [ballNode(ballId, 180, 180)],
+        nodes: [ballNode(ballId, 180 * sx, 180 * sy)],
         tween: { easing: 'ease-in-out' as const }
       },
       {
         frame: 12,
-        nodes: [ballNode(ballId, 480, 380)],
+        nodes: [ballNode(ballId, 480 * sx, 380 * sy)],
         tween: { easing: 'ease-in-out' as const }
       },
-      { frame: 24, nodes: [ballNode(ballId, 780, 180)] }
+      { frame: 24, nodes: [ballNode(ballId, 780 * sx, 180 * sy)] }
     ]
   }
 
@@ -65,9 +68,9 @@ export function createStarterDocument(): AnimatorDocument {
   return {
     schemaVersion: 7,
     name: 'Untitled',
-    width: 960,
-    height: 540,
-    fps: 24,
+    width,
+    height,
+    fps,
     background: '#0b0e12',
     // Topmost layer first.
     layers: [demoLayer, backgroundLayer],

@@ -1,185 +1,39 @@
-import { isDrawingLayer } from '@shared/model'
+import { TEXT_FIELD_SAFE, matchShortcut } from '@shared/shortcuts'
+import type { ShortcutRow } from '@shared/shortcuts'
 
-import type { Editor } from './editor'
-import { importImageViaDialog } from './imageImport'
-import { openDocument, saveDocument } from './projects'
-import type { StageView } from './stage'
-import type { TimelineView } from './timeline'
+import { runEditorCommand } from './commands'
+import type { CommandDeps } from './commands'
 
 /**
- * Application-wide keyboard shortcuts. Registered once per window; the
- * timeline clipboard shortcuts (Ctrl+C/Ctrl+V) are ignored inside form fields
- * so native text editing keeps working there.
+ * Application-wide keyboard dispatcher. Every key event is resolved through
+ * the single shortcut table (`src/shared/shortcuts.ts`) and routed to the one
+ * command router — the same path the application menu uses, so a real key
+ * press (consumed natively by the menu) and a synthetic one (E2E) behave
+ * identically. Inside text fields native editing wins over every binding
+ * except the TEXT_FIELD_SAFE list (File menu entries and F1).
+ *
+ * Page-only rows that need event data — nudge direction, the Space hold/release
+ * pair — are handled here; everything else goes through the router.
  */
-export function registerKeyboard(editor: Editor, stageView: StageView, timelineView: TimelineView): void {
+export function registerKeyboard(deps: CommandDeps): void {
+  const { editor, stageView } = deps
+
   window.addEventListener('keydown', (event) => {
     const target = event.target as HTMLElement | null
     const inTextField =
       target instanceof HTMLInputElement ||
       target instanceof HTMLSelectElement ||
       target instanceof HTMLTextAreaElement
-    if (event.ctrlKey || event.metaKey) {
-      const key = event.key.toLowerCase()
-      if (key === 's') {
-        event.preventDefault()
-        void saveDocument(editor, { as: event.shiftKey })
-      } else if (key === 'o') {
-        event.preventDefault()
-        void openDocument(editor)
-      } else if (key === 'i') {
-        event.preventDefault()
-        void importImageViaDialog(editor)
-      } else if (inTextField) {
-        // Let native text undo/redo keep working inside fields.
-        return
-      } else if (key === 'c') {
-        event.preventDefault()
-        timelineView.copyKeyframes()
-      } else if (key === 'v') {
-        event.preventDefault()
-        timelineView.pasteKeyframes()
-      } else if (key === 'z') {
-        event.preventDefault()
-        if (event.shiftKey) editor.redo()
-        else editor.undo()
-      } else if (key === 'y') {
-        event.preventDefault()
-        editor.redo()
-      } else if (key === 'g' && !inTextField) {
-        event.preventDefault()
-        if (event.shiftKey) editor.ungroupSelection()
-        else editor.groupSelection()
-      } else if (key === '0') {
-        event.preventDefault()
-        stageView.resetView()
-      }
-      return
-    }
-    if (inTextField) return
-    switch (event.key) {
-      case 'v':
-      case 'V':
-        editor.setTool('select')
-        break
-      case 'h':
-      case 'H':
-        editor.setTool('hand')
-        break
-      case 'b':
-      case 'B':
-        editor.setTool('brush')
-        break
-      case 'e':
-      case 'E':
-        editor.setTool('eraser')
-        break
-      case '[':
-        event.preventDefault()
-        editor.setBrushSize(editor.brushSize - 1)
-        break
-      case ']':
-        event.preventDefault()
-        editor.setBrushSize(editor.brushSize + 1)
-        break
-      case 'r':
-      case 'R':
-        editor.setTool('rect')
-        break
-      case 'o':
-      case 'O':
-        editor.setTool('ellipse')
-        break
-      case 'l':
-      case 'L':
-        editor.setTool('line')
-        break
-      case 'p':
-      case 'P':
-        editor.setTool('pen')
-        break
-      case 't':
-      case 'T':
-        editor.setTool('text')
-        break
-      case 'n':
-      case 'N':
-        editor.setTool('vector')
-        break
-      case 'Enter':
-        // Enter commits an open pen path.
-        if (editor.tool === 'pen') {
-          event.preventDefault()
-          stageView.finishPen()
-        }
-        break
-      case '+':
-      case '=':
-        event.preventDefault()
-        stageView.zoomIn()
-        break
-      case '-':
-        event.preventDefault()
-        stageView.zoomOut()
-        break
-      case ' ':
-        event.preventDefault()
-        stageView.setSpacePressed(true)
-        break
-      case 'Escape':
-        // Escape cancels an in-progress pen path or vector stroke, otherwise playback.
-        if (editor.tool === 'pen') stageView.cancelPen()
-        else if (editor.tool === 'vector') stageView.cancelVectorStroke()
-        else editor.stopPlayback()
-        break
-      case 'F5':
-        event.preventDefault()
-        editor.insertFrameHere()
-        break
-      case 'F6': {
-        event.preventDefault()
-        // Drawing layers key cells, object layers key their selected nodes.
-        const layer = editor.currentLayer
-        if (layer && isDrawingLayer(layer)) void editor.insertCellHere()
-        else editor.insertKeyframeHere()
-        break
-      }
-      case 'F7': {
-        const layer = editor.currentLayer
-        if (layer && isDrawingLayer(layer)) {
-          event.preventDefault()
-          void editor.insertBlankCellHere()
-        }
-        break
-      }
-      case 'F8':
-        event.preventDefault()
-        editor.saveSelectionAsSymbol()
-        break
-      case 'Delete':
-      case 'Backspace':
-        event.preventDefault()
-        editor.deleteSelected()
-        break
-      case 'ArrowLeft':
-        event.preventDefault()
-        editor.nudgeSelected(event.shiftKey ? -10 : -1, 0)
-        break
-      case 'ArrowRight':
-        event.preventDefault()
-        editor.nudgeSelected(event.shiftKey ? 10 : 1, 0)
-        break
-      case 'ArrowUp':
-        event.preventDefault()
-        editor.nudgeSelected(0, event.shiftKey ? -10 : -1)
-        break
-      case 'ArrowDown':
-        event.preventDefault()
-        editor.nudgeSelected(0, event.shiftKey ? 10 : 1)
-        break
-      default:
-        break
+    const row = matchShortcut(event)
+    if (!row) return
+    if (inTextField && !TEXT_FIELD_SAFE.has(row.id)) return
+
+    if (!dispatchSpecial(row, event, deps)) {
+      event.preventDefault()
+      runEditorCommand(row.id, deps)
     }
   })
+
   window.addEventListener('keyup', (event) => {
     if (event.key !== ' ') return
     const target = event.target as HTMLElement | null
@@ -189,4 +43,42 @@ export function registerKeyboard(editor: Editor, stageView: StageView, timelineV
     // drag does not.
     if (!stageView.spaceUsed) editor.togglePlay()
   })
+}
+
+/**
+ * Handles the page-only rows whose action needs the event itself. Returns
+ * true when the event was consumed (the generic router path is skipped).
+ */
+function dispatchSpecial(row: ShortcutRow, event: KeyboardEvent, deps: CommandDeps): boolean {
+  const { editor, stageView } = deps
+  switch (row.id) {
+    case 'stage.pan':
+      event.preventDefault()
+      stageView.setSpacePressed(true)
+      return true
+    case 'edit.nudge': {
+      event.preventDefault()
+      const distance = event.shiftKey ? 10 : 1
+      if (event.key === 'ArrowLeft') editor.nudgeSelected(-distance, 0)
+      else if (event.key === 'ArrowRight') editor.nudgeSelected(distance, 0)
+      else if (event.key === 'ArrowUp') editor.nudgeSelected(0, -distance)
+      else if (event.key === 'ArrowDown') editor.nudgeSelected(0, distance)
+      return true
+    }
+    case 'pen.finish':
+      // Only an open pen path consumes Enter, so focused buttons keep their
+      // native Enter activation.
+      if (editor.tool !== 'pen') return true
+      event.preventDefault()
+      stageView.finishPen()
+      return true
+    case 'editor.escape':
+      // Escape stays passive (no preventDefault): modals handle their own.
+      if (editor.tool === 'pen') stageView.cancelPen()
+      else if (editor.tool === 'vector') stageView.cancelVectorStroke()
+      else editor.stopPlayback()
+      return true
+    default:
+      return false
+  }
 }

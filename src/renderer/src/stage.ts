@@ -13,9 +13,11 @@ import { motionPathForNode } from '@shared/motionPath'
 import type { MotionPath } from '@shared/motionPath'
 import { buildPathData, normalizePathData, pathDataBounds } from '@shared/pathModel'
 import { RenderScheduler } from '@shared/renderScheduler'
+import { snapPoint, snappedDelta } from '@shared/snapping'
 import { applyTextMetrics } from '@shared/textModel'
 import { identityView, panView, zoomAtView } from '@shared/viewTransform'
 import type { ViewTransform } from '@shared/viewTransform'
+import { setActiveSurface } from './activeSurface'
 import { DrawingSession, strokeToPathData } from './drawing'
 import type { StrokePoint } from './drawing'
 import type { Editor } from './editor'
@@ -34,6 +36,12 @@ const PEN_STROKE = '#e2e8f0'
 const PEN_STROKE_WIDTH = 3
 /** Flat stroke color of outlined onion ghosts (a neutral slate). */
 const ONION_OUTLINE_COLOR = '#94a3b8'
+/** Grid overlay: minimum on-screen spacing between grid lines; below this the
+ * overlay would turn into a solid tint and is hidden instead. */
+const GRID_MIN_SCREEN_STEP = 4
+/** Grid overlay: hard cap on grid lines per axis (dense grids draw every
+ * n-th line instead of thousands of paths). */
+const GRID_MAX_LINES = 500
 
 interface DragState {
   mode: 'create' | 'move' | 'marquee' | 'pan' | 'pen'
@@ -46,6 +54,9 @@ interface DragState {
   moveStarted: boolean
   /** Move drag: shape centers captured at pointer-down, per selected id. */
   origins: Map<string, Vec2>
+  /** Move drag: the node under the pointer — grid snapping follows its origin
+   * so the other members keep their relative offsets. */
+  grabbedId: string | null
   startView: ViewTransform
   preview: SVGElement | null
   /** Pen: index of the anchor whose handles are being dragged. */
@@ -114,8 +125,10 @@ export class StageView {
   /** Evaluated-frame cache shared by the content pass, onion ghosts and the
    * selection overlays; cleared on every document change. */
   private readonly evalCache = new EvaluationCache()
-  /** Persistent content skeleton (backdrop / onion / keyed content group). */
+  /** Persistent content skeleton (backdrop / grid / onion / keyed content
+   * group). */
   private backdrop: SVGRectElement | null = null
+  private gridGroup: SVGGElement | null = null
   private onionGroup: SVGGElement | null = null
   private contentGroup: SVGGElement | null = null
   private defsElement: SVGDefsElement | null = null
@@ -142,7 +155,12 @@ export class StageView {
     this.overlay.className = 'stage-overlay'
     host.appendChild(this.overlay)
 
-    this.svg.addEventListener('pointerdown', (event) => this.onPointerDown(event))
+    this.svg.addEventListener('pointerdown', (event) => {
+      // Remember where the user last clicked: Ctrl+C/V pick the node
+      // clipboard on the stage and the keyframe clipboard on the timeline.
+      setActiveSurface('stage')
+      this.onPointerDown(event)
+    })
     this.svg.addEventListener('pointermove', (event) => this.onPointerMove(event))
     this.svg.addEventListener('pointerup', (event) => this.onPointerUp(event))
     this.svg.addEventListener('pointercancel', () => {
@@ -314,6 +332,7 @@ export class StageView {
       }
       if (layer && !layer.locked && editor.selectedNodeIds.includes(hit.id)) {
         const drag = this.newDrag('move', point)
+        drag.grabbedId = hit.id
         for (const node of content) {
           if (editor.selectedNodeIds.includes(node.id)) {
             drag.origins.set(node.id, { ...node.center })
@@ -399,6 +418,7 @@ export class StageView {
       additive: false,
       moveStarted: false,
       origins: new Map(),
+      grabbedId: null,
       startView: { ...this.view },
       preview: null,
       penIndex: -1
@@ -451,11 +471,22 @@ export class StageView {
       if (this.dragDistance(drag) < MIN_DRAG / this.view.scale) return
       drag.moveStarted = true
       // One history entry for the whole drag, including its auto-key.
-      this.editor.beginInteraction()
+      this.editor.beginInteraction('Move nodes')
       this.editor.ensureSelectedNodesKeyframes()
     }
-    const dx = drag.last.x - drag.start.x
-    const dy = drag.last.y - drag.start.y
+    let dx = drag.last.x - drag.start.x
+    let dy = drag.last.y - drag.start.y
+    // Grid on: the grabbed node's origin lands on the grid; every other
+    // selected node keeps its offset relative to it.
+    const step = this.editor.gridSnapSize
+    if (step > 0 && drag.grabbedId) {
+      const origin = drag.origins.get(drag.grabbedId)
+      if (origin) {
+        const snapped = snappedDelta(origin, { x: dx, y: dy }, step)
+        dx = snapped.x
+        dy = snapped.y
+      }
+    }
     this.editor.updateSelectedNodes((node) => {
       const origin = drag.origins.get(node.id)
       if (!origin) return
@@ -518,19 +549,18 @@ export class StageView {
       this.finishLineCreate(drag)
       return
     }
-    let width = Math.abs(drag.last.x - drag.start.x)
-    let height = Math.abs(drag.last.y - drag.start.y)
-    let center = {
-      x: (drag.start.x + drag.last.x) / 2,
-      y: (drag.start.y + drag.last.y) / 2
-    }
+    // Grid on: both corners land on the grid, so the shape's bounds align.
+    const { start, last } = this.snappedDragPoints(drag)
+    let width = Math.abs(last.x - start.x)
+    let height = Math.abs(last.y - start.y)
+    let center = { x: (start.x + last.x) / 2, y: (start.y + last.y) / 2 }
     const minSize = MIN_DRAG / this.view.scale
     if (width < minSize && height < minSize) {
       // A click without a real drag produces a default-size shape; the sizes
       // are divided by the scale so they land at a constant size on screen.
       width = DEFAULT_CREATE_WIDTH / this.view.scale
       height = DEFAULT_CREATE_HEIGHT / this.view.scale
-      center = { ...drag.start }
+      center = { ...start }
     }
     const node: PrimitiveNode = {
       id: createId('node'),
@@ -549,8 +579,8 @@ export class StageView {
   /** Commits a line-tool drag as a straight 2-anchor path node. */
   private finishLineCreate(drag: DragState): void {
     const minSize = MIN_DRAG / this.view.scale
-    let start = drag.start
-    let end = drag.last
+    // Grid on: both endpoints snap, so the line lands on grid points.
+    let { start, last: end } = this.snappedDragPoints(drag)
     if (Math.abs(end.x - start.x) < minSize && Math.abs(end.y - start.y) < minSize) {
       // A click without a real drag produces a default-length horizontal line.
       const half = DEFAULT_CREATE_WIDTH / this.view.scale / 2
@@ -841,7 +871,16 @@ export class StageView {
     ctx?.clearRect(0, 0, this.overlay.width, this.overlay.height)
   }
 
+  /** Drag corner/endpoint positions with grid snapping applied (a no-op when
+   * the grid is hidden). */
+  private snappedDragPoints(drag: DragState): { start: Vec2; last: Vec2 } {
+    const step = this.editor.gridSnapSize
+    if (step <= 0) return { start: drag.start, last: drag.last }
+    return { start: snapPoint(drag.start, step), last: snapPoint(drag.last, step) }
+  }
+
   private updatePreview(drag: DragState): void {
+    const { start, last } = this.snappedDragPoints(drag)
     if (drag.kind === 'line') {
       let preview = drag.preview as SVGLineElement | null
       if (!preview) {
@@ -852,10 +891,10 @@ export class StageView {
         this.svg.appendChild(preview)
         drag.preview = preview
       }
-      preview.setAttribute('x1', String(drag.start.x))
-      preview.setAttribute('y1', String(drag.start.y))
-      preview.setAttribute('x2', String(drag.last.x))
-      preview.setAttribute('y2', String(drag.last.y))
+      preview.setAttribute('x1', String(start.x))
+      preview.setAttribute('y1', String(start.y))
+      preview.setAttribute('x2', String(last.x))
+      preview.setAttribute('y2', String(last.y))
       return
     }
     let preview = drag.preview
@@ -868,13 +907,13 @@ export class StageView {
       this.svg.appendChild(preview)
       drag.preview = preview
     }
-    const width = Math.abs(drag.last.x - drag.start.x)
-    const height = Math.abs(drag.last.y - drag.start.y)
-    const cx = (drag.start.x + drag.last.x) / 2
-    const cy = (drag.start.y + drag.last.y) / 2
+    const width = Math.abs(last.x - start.x)
+    const height = Math.abs(last.y - start.y)
+    const cx = (start.x + last.x) / 2
+    const cy = (start.y + last.y) / 2
     if (drag.kind === 'rect') {
-      preview.setAttribute('x', String(Math.min(drag.start.x, drag.last.x)))
-      preview.setAttribute('y', String(Math.min(drag.start.y, drag.last.y)))
+      preview.setAttribute('x', String(Math.min(start.x, last.x)))
+      preview.setAttribute('y', String(Math.min(start.y, last.y)))
       preview.setAttribute('width', String(width))
       preview.setAttribute('height', String(height))
     } else {
@@ -910,6 +949,9 @@ export class StageView {
     backdrop.setAttribute('width', String(doc.width))
     backdrop.setAttribute('height', String(doc.height))
     backdrop.setAttribute('fill', doc.background)
+
+    if (editor.gridVisible && !editor.playing) this.renderGrid(doc)
+    else this.removeGrid()
 
     if (editor.onionSkin && !editor.playing) this.renderOnion(doc)
     else this.removeOnion()
@@ -964,18 +1006,66 @@ export class StageView {
     return this.backdrop
   }
 
-  /** The persistent keyed content group, kept right after backdrop/onion. */
+  /** The persistent keyed content group, kept right after backdrop/grid/onion. */
   private ensureContentGroup(): SVGGElement {
     if (!this.contentGroup) {
       this.contentGroup = document.createElementNS(SVG_NS, 'g')
       this.contentGroup.classList.add('stage__content')
       this.svg.appendChild(this.contentGroup)
     }
-    const anchor = this.onionGroup ?? this.backdrop
+    const anchor = this.onionGroup ?? this.gridGroup ?? this.backdrop
     if (anchor && this.contentGroup.previousSibling !== anchor) {
       this.svg.insertBefore(this.contentGroup, anchor.nextSibling)
     }
     return this.contentGroup
+  }
+
+  /**
+   * Grid overlay: one path with all grid lines inside the stage bounds,
+   * rebuilt per pass (cheap — a single element). It hides itself when the
+   * on-screen spacing would fall under a few pixels (zoomed far out) and
+   * thins the line set out when a dense grid would exceed the line cap.
+   */
+  private renderGrid(doc: AnimatorDocument): void {
+    const size = this.editor.gridSize
+    if (size <= 0 || size * this.view.scale < GRID_MIN_SCREEN_STEP) {
+      this.removeGrid()
+      return
+    }
+    if (!this.gridGroup) {
+      this.gridGroup = document.createElementNS(SVG_NS, 'g')
+      this.gridGroup.classList.add('stage-grid')
+      this.svg.appendChild(this.gridGroup)
+    }
+    const grid = this.gridGroup
+    if (grid.previousSibling !== this.backdrop) {
+      this.svg.insertBefore(grid, this.backdrop ? this.backdrop.nextSibling : this.svg.firstChild)
+    }
+    const columns = Math.floor(doc.width / size)
+    const rows = Math.floor(doc.height / size)
+    const total = columns + rows
+    const stride = total > GRID_MAX_LINES ? Math.ceil(total / GRID_MAX_LINES) : 1
+    const parts: string[] = []
+    for (let column = stride; column < columns; column += stride) {
+      const x = column * size
+      parts.push(`M ${x} 0 V ${doc.height}`)
+    }
+    for (let row = stride; row < rows; row += stride) {
+      const y = row * size
+      parts.push(`M 0 ${y} H ${doc.width}`)
+    }
+    while (grid.firstChild) grid.removeChild(grid.firstChild)
+    if (parts.length > 0) {
+      const path = document.createElementNS(SVG_NS, 'path')
+      path.setAttribute('d', parts.join(' '))
+      path.setAttribute('vector-effect', 'non-scaling-stroke')
+      grid.appendChild(path)
+    }
+  }
+
+  private removeGrid(): void {
+    this.gridGroup?.remove()
+    this.gridGroup = null
   }
 
   /** Onion ghosts: rebuilt per pass (they are inherently transient), but the
@@ -988,8 +1078,9 @@ export class StageView {
       this.onionGroup.classList.add('stage__onion')
     }
     const ghosts = this.onionGroup
-    if (ghosts.previousSibling !== this.backdrop) {
-      this.svg.insertBefore(ghosts, this.backdrop ? this.backdrop.nextSibling : this.svg.firstChild)
+    const anchor = this.gridGroup ?? this.backdrop
+    if (ghosts.previousSibling !== anchor) {
+      this.svg.insertBefore(ghosts, anchor ? anchor.nextSibling : this.svg.firstChild)
     }
     while (ghosts.firstChild) ghosts.removeChild(ghosts.firstChild)
     const tint = editor.onionTint

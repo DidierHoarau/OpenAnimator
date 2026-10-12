@@ -300,6 +300,17 @@ input:disabled {
   pointer-events: none;
 }
 
+/* Grid overlay (View -> Toggle Grid & Snapping). */
+.stage-grid {
+  pointer-events: none;
+}
+
+.stage-grid path {
+  fill: none;
+  stroke: rgba(148, 163, 184, 0.35);
+  stroke-width: 1;
+}
+
 .stage__selection {
   fill: none;
   stroke: var(--accent);

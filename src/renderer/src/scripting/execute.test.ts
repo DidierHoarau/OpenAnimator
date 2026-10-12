@@ -4,13 +4,14 @@ import { describe, expect, it, vi } from 'vitest'
 import type { LibraryListResult } from '@shared/api'
 import { isAudioLayer, isObjectLayer } from '@shared/model'
 import type { Asset, DrawingLayer, PrimitiveNode } from '@shared/model'
+import { DEFAULT_PREFERENCES } from '@shared/preferences'
 import { createStarterDocument } from '@shared/starterDocument'
 import { SCRIPT_EXAMPLES } from '@shared/scripting/examples'
 import { validateScriptPayload } from '@shared/scripting/commands'
 
 import { Editor } from '../editor'
 import { executeScriptCommands } from './execute'
-import type { ScriptLibraryBridge } from './execute'
+import type { ScriptLibraryBridge, ScriptPreferencesBridge } from './execute'
 
 const AUDIO_RESOURCE = 'a1b2c3d4'.repeat(8)
 const AUDIO_BYTES = new Uint8Array([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
@@ -995,5 +996,129 @@ describe('executeScriptCommands', () => {
     expect(warnings.applied).toBe(0)
     expect(warnings.issues).toHaveLength(2)
     expect(warnings.issues.every((entry) => entry.severity === 'warning')).toBe(true)
+  })
+
+  it('duplicateNodes, align and distribute act on the current selection', async () => {
+    const editor = createEditor()
+    const setup = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'addLayer', kind: 'object', name: 'Shapes' },
+          { op: 'addNode', frame: 0, node: rectNode('a', { x: 100, y: 100 }) },
+          { op: 'addNode', frame: 0, node: rectNode('b', { x: 200, y: 140 }) },
+          { op: 'addNode', frame: 0, node: rectNode('c', { x: 500, y: 180 }) },
+          { op: 'group', nodeIds: ['a', 'b', 'c'] }
+        ]
+      })
+    )
+    expect(setup.issues).toHaveLength(1)
+
+    // group leaves the new group selected: duplicateNodes needs no fields.
+    const duplicated = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'duplicateNodes' }] })
+    )
+    expect(duplicated.applied).toBe(1)
+    expect(duplicated.issues).toHaveLength(1)
+    expect(duplicated.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
+    expect(duplicated.issues[0].message).toContain('duplicated 1 node')
+    expect(namedLayer(editor, 'Shapes').keyframes[0].nodes).toHaveLength(2)
+
+    // One undo entry steps back to the single group.
+    editor.undo()
+    const groupId = namedLayer(editor, 'Shapes').keyframes[0].nodes[0].id
+    expect(namedLayer(editor, 'Shapes').keyframes[0].nodes).toHaveLength(1)
+
+    // Ungrouping selects the children: align/distribute see a multi-selection.
+    await executeScriptCommands(editor, validated({ commands: [{ op: 'ungroup', nodeIds: [groupId] }] }))
+    const centers = (): Record<string, { x: number; y: number }> =>
+      Object.fromEntries(
+        namedLayer(editor, 'Shapes').keyframes[0].nodes.map((node) => [node.id, { ...node.center }])
+      )
+
+    const distributed = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'distribute', axis: 'h' }] })
+    )
+    expect(distributed.issues).toEqual([])
+    expect(distributed.applied).toBe(1)
+    // Outermost two fixed, the middle snaps to even spacing.
+    expect(centers()).toMatchObject({
+      a: { x: 100, y: 100 },
+      b: { x: 300, y: 140 },
+      c: { x: 500, y: 180 }
+    })
+
+    const aligned = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'align', mode: 'top' }] })
+    )
+    expect(aligned.issues).toEqual([])
+    expect(aligned.applied).toBe(1)
+    expect(centers()).toMatchObject({
+      a: { x: 100, y: 100 },
+      b: { x: 300, y: 100 },
+      c: { x: 500, y: 100 }
+    })
+
+    // Each command is its own undo entry (align first, then distribute).
+    editor.undo()
+    expect(centers()).toMatchObject({ b: { x: 300, y: 140 }, c: { x: 500, y: 180 } })
+    editor.undo()
+    expect(centers()).toMatchObject({ b: { x: 200, y: 140 } })
+
+    // An empty selection warns without failing the run.
+    const nothing = await executeScriptCommands(
+      createEditor(),
+      validated({
+        commands: [
+          { op: 'align', mode: 'left' },
+          { op: 'distribute', axis: 'h' },
+          { op: 'duplicateNodes' }
+        ]
+      })
+    )
+    expect(nothing.applied).toBe(0)
+    expect(nothing.issues).toHaveLength(3)
+    expect(nothing.issues.every((entry) => entry.severity === 'warning')).toBe(true)
+  })
+
+  it('setPreferences merges through the injected store and warns without one', async () => {
+    const editor = createEditor()
+    const stored = { ...DEFAULT_PREFERENCES }
+    const bridge: ScriptPreferencesBridge = {
+      get: () => ({ ...stored }),
+      update: async (patch) => {
+        Object.assign(stored, patch)
+        return { ...stored }
+      }
+    }
+    const applied = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'setPreferences', preferences: { gridSize: 32, showDemoOnNew: true } },
+          { op: 'setPreferences', preferences: { gridSize: 32 } }
+        ]
+      }),
+      { preferences: bridge }
+    )
+    expect(applied.applied).toBe(1)
+    expect(applied.issues).toHaveLength(2)
+    expect(applied.issues[0].message).toContain('gridSize=32')
+    expect(applied.issues[0].message).toContain('showDemoOnNew=true')
+    expect(applied.issues[1].message).toContain('no preference changed')
+    expect(stored.gridSize).toBe(32)
+    expect(stored.showDemoOnNew).toBe(true)
+
+    // Without a store (the CLI context) the command warns instead of failing.
+    const noStore = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setPreferences', preferences: { fps: 30 } }] })
+    )
+    expect(noStore.applied).toBe(0)
+    expect(noStore.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
+    expect(noStore.issues[0].message).toContain('no preference store')
   })
 })

@@ -1,7 +1,9 @@
 import Ajv, { type ValidateFunction } from 'ajv'
 
+import { ALIGN_MODES, DISTRIBUTE_AXES, type AlignMode, type DistributeAxis } from '../align'
 import { parseHexColor } from '../color'
 import { MAX_GRADIENT_STOPS, MIN_GRADIENT_STOPS } from '../paint'
+import { DEFAULT_PREFERENCES, type AppPreferences } from '../preferences'
 import {
   DOCUMENT_SCHEMA,
   EASING_VALUES,
@@ -102,6 +104,10 @@ export type ScriptCommand =
   | { op: 'removeFrames'; layerId?: string; frame?: number; count?: number }
   | { op: 'moveCell'; layerId?: string; fromFrame: number; toFrame: number }
   | { op: 'moveNodeToFrame'; nodeId: string; targetFrame: number; layerId?: string }
+  | { op: 'duplicateNodes' }
+  | { op: 'align'; mode: AlignMode }
+  | { op: 'distribute'; axis: DistributeAxis }
+  | { op: 'setPreferences'; preferences: Partial<AppPreferences> }
 
 /** One validation or application outcome, designed to be fed back to a model. */
 export interface ScriptIssue {
@@ -109,6 +115,18 @@ export interface ScriptIssue {
   message: string
   severity: 'error' | 'warning'
 }
+
+/**
+ * JSON-schema shape of a preferences patch, derived from the defaults so the
+ * schema tracks new preference keys automatically (ranges are clamped by the
+ * store's sanitizer, so the schema only pins the primitive type).
+ */
+const PREFERENCE_PATCH_PROPERTIES = Object.fromEntries(
+  Object.entries(DEFAULT_PREFERENCES).map(([key, value]) => [
+    key,
+    { type: typeof value === 'boolean' ? 'boolean' : 'number' }
+  ])
+) as Record<string, { type: 'boolean' | 'number' }>
 
 export const COMMANDS_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
@@ -163,6 +181,12 @@ export const COMMANDS_SCHEMA = {
     frameNumber: { type: 'integer', minimum: 0 },
     /** Non-empty list of node ids (group-style commands). */
     stringList: { type: 'array', minItems: 1, items: { type: 'string' } },
+    /** Partial preferences patch; unknown keys are rejected. */
+    preferencesPatch: {
+      type: 'object',
+      additionalProperties: false,
+      properties: PREFERENCE_PATCH_PROPERTIES
+    },
     command: {
       type: 'object',
       required: ['op'],
@@ -204,7 +228,11 @@ export const COMMANDS_SCHEMA = {
             'insertFrames',
             'removeFrames',
             'moveCell',
-            'moveNodeToFrame'
+            'moveNodeToFrame',
+            'duplicateNodes',
+            'align',
+            'distribute',
+            'setPreferences'
           ]
         },
         kind: { enum: ['object', 'drawing', 'camera', 'audio'] },
@@ -239,7 +267,10 @@ export const COMMANDS_SCHEMA = {
           maxItems: MAX_PALETTE_COLORS,
           items: { type: 'string', pattern: HEX_COLOR_PATTERN }
         },
-        easing: { $ref: '#/definitions/tweenEasing' }
+        easing: { $ref: '#/definitions/tweenEasing' },
+        mode: { enum: ALIGN_MODES },
+        axis: { enum: DISTRIBUTE_AXES },
+        preferences: { $ref: '#/definitions/preferencesPatch' }
       },
       allOf: [
         {
@@ -482,6 +513,34 @@ export const COMMANDS_SCHEMA = {
             additionalProperties: false,
             properties: { op: {}, nodeId: {}, layerId: {}, targetFrame: {} }
           }
+        },
+        {
+          if: { properties: { op: { const: 'duplicateNodes' } }, required: ['op'] },
+          then: { additionalProperties: false, properties: { op: {} } }
+        },
+        {
+          if: { properties: { op: { const: 'align' } }, required: ['op'] },
+          then: {
+            required: ['mode'],
+            additionalProperties: false,
+            properties: { op: {}, mode: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'distribute' } }, required: ['op'] },
+          then: {
+            required: ['axis'],
+            additionalProperties: false,
+            properties: { op: {}, axis: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'setPreferences' } }, required: ['op'] },
+          then: {
+            required: ['preferences'],
+            additionalProperties: false,
+            properties: { op: {}, preferences: {} }
+          }
         }
       ]
     }
@@ -545,7 +604,11 @@ export const OPS = [
   'insertFrames',
   'removeFrames',
   'moveCell',
-  'moveNodeToFrame'
+  'moveNodeToFrame',
+  'duplicateNodes',
+  'align',
+  'distribute',
+  'setPreferences'
 ] as const
 
 /** One scripting op name. */
@@ -691,6 +754,16 @@ export const OP_FIELDS: Record<Op, Record<string, FieldSpec>> = {
     nodeId: { type: 'string', required: true },
     layerId: { type: 'string' },
     targetFrame: { type: 'integer', min: 0, required: true }
+  },
+  duplicateNodes: {},
+  align: {
+    mode: { type: 'string', enum: ALIGN_MODES, required: true }
+  },
+  distribute: {
+    axis: { type: 'string', enum: DISTRIBUTE_AXES, required: true }
+  },
+  setPreferences: {
+    preferences: { type: 'object', required: true }
   }
 }
 
@@ -847,6 +920,7 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
     if (path.endsWith('/center') || path.endsWith('/at')) checkVec2(collector, path, value)
     else if (path.endsWith('/node')) validateSceneNode(collector, path, value)
     else if (path.endsWith('/patch')) validateNodePatch(collector, path, value)
+    else if (path.endsWith('/preferences')) checkPreferencesPatch(collector, path, value)
     return
   }
   if (kind !== 'number') {
@@ -1030,6 +1104,24 @@ function validateNodePatch(collector: Collector, path: string, value: unknown): 
       continue
     }
     checkField(collector, `${path}/${key}`, spec, child)
+  }
+}
+
+/** Partial preferences patch: known keys with the matching primitive type.
+ * Out-of-range values are left to the store's clamping sanitizer. */
+function checkPreferencesPatch(collector: Collector, path: string, value: unknown): void {
+  const patch = value as Record<string, unknown>
+  for (const [key, entry] of Object.entries(patch)) {
+    const expected = PREFERENCE_PATCH_PROPERTIES[key]
+    if (!expected) {
+      collector.at(`${path}/${key}`, 'must not have additional properties')
+      continue
+    }
+    if (expected.type === 'boolean') {
+      if (typeof entry !== 'boolean') collector.at(`${path}/${key}`, 'must be boolean')
+    } else if (typeof entry !== 'number' || !Number.isFinite(entry)) {
+      collector.at(`${path}/${key}`, 'must be a finite number')
+    }
   }
 }
 

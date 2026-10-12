@@ -49,7 +49,11 @@ const OP_SUMMARIES: Record<Op, string> = {
   insertFrames: 'Insert `count` hold frames at a frame, shifting later content.',
   removeFrames: 'Remove `count` frames at a frame, pulling later content back.',
   moveCell: 'Move the drawing cell at `fromFrame` to `toFrame`.',
-  moveNodeToFrame: 'Retime a node: move its whole keyframe track so it starts at `targetFrame`.'
+  moveNodeToFrame: 'Retime a node: move its whole keyframe track so it starts at `targetFrame`.',
+  duplicateNodes: 'Duplicate the currently selected nodes at +10/+10 (one undo entry).',
+  align: 'Align the selected objects to their union bounds (`left`, `centerH`, `right`, `top`, `middle`, `bottom`; needs at least two objects).',
+  distribute: 'Space the selected objects evenly along `h` or `v` (outermost two fixed; needs at least three objects).',
+  setPreferences: 'Merge a partial preferences patch (sanitized and persisted) into the application settings.'
 }
 
 const FIELD_TYPES: Record<FieldSpec['type'], string> = {

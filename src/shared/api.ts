@@ -10,6 +10,13 @@ export const APP_UPDATE_AVAILABLE_CHANNEL = 'openanimator:update-available'
 /** IPC channel asking the main process to open a release page in the browser. */
 export const APP_OPEN_RELEASE_CHANNEL = 'openanimator:open-release'
 
+/** IPC channel asking the main process to open an allowlisted https URL. */
+export const APP_OPEN_EXTERNAL_CHANNEL = 'openanimator:open-external'
+
+/** IPC channels reading and writing the persistent preferences file. */
+export const PREFERENCES_GET_CHANNEL = 'openanimator:preferences-get'
+export const PREFERENCES_SET_CHANNEL = 'openanimator:preferences-set'
+
 /** IPC channel delivering a `.oanim` path to open (file association, launch
  * argument, second instance or macOS open-file event). */
 export const APP_OPEN_FILE_CHANNEL = 'openanimator:open-file'
@@ -22,7 +29,9 @@ export const APP_CLOSE_RESPONSE_CHANNEL = 'openanimator:close-response'
 
 import type { AnimatorDocument, Asset } from './model'
 import type { FontEmbeddingPolicy } from './fontPolicy'
+import type { AppPreferences } from './preferences'
 import type { RecoveryInfo } from './recovery'
+import type { ShortcutId } from './shortcuts'
 
 export const DOCUMENT_SAVE_AS_CHANNEL = 'openanimator:document-save-as'
 export const DOCUMENT_SAVE_TO_CHANNEL = 'openanimator:document-save-to'
@@ -136,8 +145,13 @@ export interface SystemFont {
 
 export type FontReadResult = { ok: true; bytes: Uint8Array } | { ok: false; error: string }
 
-/** Commands the application menu dispatches into the renderer. */
-export type MenuCommand = 'undo' | 'redo'
+/** Commands the application menu dispatches into the renderer: the full
+ * shortcut-table id union, so menu, keyboard, cheat sheet and docs share one
+ * namespace (`src/shared/shortcuts.ts`). */
+export type MenuCommand = ShortcutId
+
+/** Result of asking the main process to open an external URL. */
+export type OpenExternalResult = { ok: true } | { ok: false; error: string }
 
 /** Payload of the update-available notification. */
 export interface UpdateAvailableInfo {
@@ -184,6 +198,15 @@ export interface OpenAnimatorApi {
   getFontEmbeddingPolicy(): Promise<FontEmbeddingPolicy>
   /** Opens the GitHub release page of the given version in the browser. */
   openReleasePage(version: string): Promise<void>
+  /** Opens an external URL in the browser; the main process only allows
+   * `https:` URLs on its host allowlist (docs site, GitHub). */
+  openExternal(url: string): Promise<OpenExternalResult>
+  /** Reads the persistent application preferences (sanitized; defaults when
+   * no preferences file exists yet). */
+  getPreferences(): Promise<AppPreferences>
+  /** Persists application preferences (sanitized and clamped by the main
+   * process); resolves with the stored value. */
+  savePreferences(preferences: AppPreferences): Promise<AppPreferences>
   /** Listens for application-menu commands; returns an unsubscribe function. */
   onMenuCommand(listener: (command: MenuCommand) => void): () => void
   /** Listens for update-available notifications (packaged builds); returns an

@@ -1,18 +1,22 @@
 import './style.css'
 
-import { AUTOSAVE_IDLE_MS, AUTOSAVE_MAX_WAIT_MS, IdleDebouncer } from '@shared/idleDebounce'
+import { AUTOSAVE_MAX_WAIT_MS, IdleDebouncer } from '@shared/idleDebounce'
+import type { ShortcutId } from '@shared/shortcuts'
 import { createStarterDocument } from '@shared/starterDocument'
 
 import { AudioSystem } from './audio'
 import { detectAudioFormat, importAudioBytes, importAudioViaDialog } from './audioImport'
 import { preloadDrawingCells } from './cellPreload'
 import { registerCloseGuard } from './closeGuard'
+import { purgeUnusedResources, runEditorCommand } from './commands'
+import type { CommandDeps } from './commands'
 import { el } from './dom'
 import { Editor } from './editor'
 import { importImageBytes, importImageViaDialog } from './imageImport'
 import { registerKeyboard } from './keyboard'
 import { LibraryView } from './library'
 import { attachPanelSplitters } from './panelLayout'
+import { getPreferences, initPreferences, onPreferencesChanged, updatePreferences } from './preferences'
 import { PropertiesView } from './properties'
 import { showExportDialog } from './exportDialog'
 import { checkUntitledRecovery, fileLabel, newDocument, openDocument, openProjectFromPath, saveDocument, saveRecoverySnapshot, showStartupDialog } from './projects'
@@ -22,7 +26,15 @@ import { TimelineView } from './timeline'
 import { buildToolsPanel } from './toolsPanel'
 import { showUpdateBanner } from './updateBanner'
 
-function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryView): HTMLElement {
+/** Toolbar plus the panel toggles it owns, so the command router can reuse
+ * the exact same actions as the toolbar buttons. */
+interface ToolbarHandle {
+  element: HTMLElement
+  toggleLibrary(): void
+  toggleProperties(): void
+}
+
+function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryView): ToolbarHandle {
   const toolbar = el('header', 'toolbar')
   toolbar.appendChild(el('span', 'title', 'OpenAnimator'))
 
@@ -43,17 +55,19 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
     layout.classList.toggle('library-hidden', !libraryView.isVisible)
     library.classList.toggle('active', libraryView.isVisible)
   }
-  library.addEventListener('click', () => libraryView.setVisible(!libraryView.isVisible))
+  const toggleLibrary = (): void => libraryView.setVisible(!libraryView.isVisible)
+  library.addEventListener('click', toggleLibrary)
   libraryView.onVisibilityChanged(syncLibraryLayout)
   syncLibraryLayout()
   const properties = el('button', undefined, 'Properties')
   properties.title = 'Toggle the properties panel'
   properties.classList.add('toggle')
   properties.classList.add('active')
-  properties.addEventListener('click', () => {
+  const toggleProperties = (): void => {
     layout.classList.toggle('properties-hidden')
     properties.classList.toggle('active', !layout.classList.contains('properties-hidden'))
-  })
+  }
+  properties.addEventListener('click', toggleProperties)
   view.append(onion, library, properties)
   toolbar.appendChild(view)
 
@@ -101,23 +115,22 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   exportButton.addEventListener('click', () => showExportDialog(editor))
   const purgeButton = el('button', undefined, 'Purge Unused')
   purgeButton.title = 'Remove resources no object references from the session store'
-  purgeButton.addEventListener('click', () => {
-    void window.api.purgeUnusedResources(editor.document).then((result) => {
-      editor.showMessage(
-        result.removed === 0 ? 'No unused resources' : `Purged ${result.removed} unused resource(s)`
-      )
-    })
-  })
+  purgeButton.addEventListener('click', () => purgeUnusedResources(editor))
   const scriptButton = el('button', undefined, 'Script…')
   scriptButton.title = 'Run a JSON command payload through the editor'
-  scriptButton.addEventListener('click', () => showScriptConsole(editor, { library: window.api }))
+  scriptButton.addEventListener('click', () =>
+    showScriptConsole(editor, {
+      library: window.api,
+      preferences: { get: getPreferences, update: updatePreferences }
+    })
+  )
   docs.append(importButton, importAudioButton, newButton, openButton, saveButton, saveAsButton, exportButton, purgeButton, scriptButton)
   toolbar.appendChild(docs)
 
   editor.onUiChange(() => {
     onion.classList.toggle('active', editor.onionSkin)
   })
-  return toolbar
+  return { element: toolbar, toggleLibrary, toggleProperties }
 }
 
 function buildStatusbar(editor: Editor, stageView: StageView): HTMLElement {
@@ -127,8 +140,15 @@ function buildStatusbar(editor: Editor, stageView: StageView): HTMLElement {
   const toolInfo = el('span')
   const zoomInfo = el('span')
   const fileInfo = el('span')
-  const messageInfo = el('span')
-  messageInfo.classList.add('statusbar-message')
+  const messageInfo = el('span', 'statusbar-message')
+  const messageText = el('span', 'statusbar-message-text')
+  const copyDetails = el('button', 'statusbar-details', 'Copy details')
+  copyDetails.title = 'Copy the full error details to the system clipboard'
+  copyDetails.hidden = true
+  const dismissMessage = el('button', 'statusbar-dismiss', '×')
+  dismissMessage.title = 'Dismiss this message'
+  dismissMessage.hidden = true
+  messageInfo.append(messageText, copyDetails, dismissMessage)
   const versionInfo = el('span')
   statusbar.append(frameInfo, layerInfo, toolInfo, zoomInfo, fileInfo, messageInfo, versionInfo)
 
@@ -151,16 +171,40 @@ function buildStatusbar(editor: Editor, stageView: StageView): HTMLElement {
   update()
 
   // Status-bar messages: transient by default (2 s), persistent ones (e.g.
-  // autosave failures) stay visible until the next message replaces them.
+  // errors) stay visible until dismissed or replaced. Error messages carry
+  // copyable details (stack traces) and a dismiss button.
   let messageTimer: number | undefined
+  let currentDetails: string | null = null
+  const hideMessage = (): void => {
+    messageInfo.classList.remove('visible', 'persistent', 'severity-error')
+  }
+  copyDetails.addEventListener('click', () => {
+    if (!currentDetails) return
+    void navigator.clipboard
+      .writeText(currentDetails)
+      .then(() => {
+        copyDetails.textContent = 'Copied'
+        window.setTimeout(() => {
+          copyDetails.textContent = 'Copy details'
+        }, 1500)
+      })
+      .catch((error: unknown) => {
+        console.warn('OpenAnimator: could not copy the error details', error)
+      })
+  })
+  dismissMessage.addEventListener('click', hideMessage)
   editor.onMessage((message, options) => {
-    messageInfo.textContent = message
+    messageText.textContent = message
     messageInfo.classList.add('visible')
     messageInfo.classList.toggle('persistent', options.persistent)
+    messageInfo.classList.toggle('severity-error', options.severity === 'error')
+    currentDetails = options.details ?? null
+    copyDetails.hidden = currentDetails === null
+    dismissMessage.hidden = !options.persistent
     window.clearTimeout(messageTimer)
     if (options.persistent) return
     messageTimer = window.setTimeout(() => {
-      messageInfo.classList.remove('visible')
+      hideMessage()
     }, 2000)
   })
 
@@ -198,14 +242,21 @@ function registerFileDrop(editor: Editor, workspace: HTMLElement, stageView: Sta
 
 /**
  * Global renderer error surfacing: uncaught errors and unhandled rejections
- * are logged with their stack and reported through the status bar, so a
- * broken view can never fail silently for the user.
+ * are logged with their stack and reported through the persistent error
+ * strip (with copyable details), so a broken view can never fail silently
+ * for the user.
  */
 function registerErrorSurfacing(editor: Editor): void {
   const report = (kind: string, error: unknown): void => {
     const message = error instanceof Error ? error.message : String(error)
+    const details =
+      error instanceof Error ? (error.stack ?? `${error.name}: ${message}`) : String(error)
     console.error(`OpenAnimator: ${kind}`, error)
-    editor.showMessage(`Unexpected error: ${message}`)
+    editor.showMessage(`Unexpected error: ${message}`, {
+      severity: 'error',
+      persistent: true,
+      details: `${kind}\n${details}`
+    })
   }
   window.addEventListener('error', (event) => {
     if (event.error) report('uncaught error', event.error)
@@ -215,9 +266,39 @@ function registerErrorSurfacing(editor: Editor): void {
   })
 }
 
+/** Menu commands routed into focused form fields: the DOM editing commands
+ * run natively, so menu and keyboard behave exactly like the platform. */
+function runTextEditCommand(command: ShortcutId): boolean {
+  switch (command) {
+    case 'edit.undo':
+    case 'edit.redo':
+    case 'edit.cut':
+    case 'edit.copy':
+    case 'edit.selectAll':
+      document.execCommand(command.slice('edit.'.length))
+      return true
+    case 'edit.paste':
+      void navigator.clipboard
+        .readText()
+        .then((text) => {
+          if (text) document.execCommand('insertText', false, text)
+        })
+        .catch((error: unknown) => {
+          console.warn('OpenAnimator: could not read the system clipboard', error)
+        })
+      return true
+    default:
+      return false
+  }
+}
+
 async function bootstrap(): Promise<void> {
   const root = document.querySelector<HTMLDivElement>('#app')
   if (!root) throw new Error('Missing #app root element')
+
+  // Preferences first: they shape the welcome document (stage size, fps) and
+  // the live editor defaults (grid, brush, undo depth).
+  const preferences = await initPreferences()
 
   // The audio system reads resources through the editor, which does not exist
   // yet: resolve the editor lazily through a captured slot.
@@ -225,8 +306,16 @@ async function bootstrap(): Promise<void> {
   const audio = new AudioSystem({
     getBlob: (resourceId) => audioEditor?.resources.getBlob(resourceId) ?? null
   })
-  const editor = new Editor(createStarterDocument(), { audio })
+  // The welcome document is always the demo scene; `showDemoOnNew` only
+  // affects File → New (see projects.ts).
+  const startDocument = createStarterDocument(
+    preferences.stageWidth,
+    preferences.stageHeight,
+    preferences.fps
+  )
+  const editor = new Editor(startDocument, { audio })
   audioEditor = editor
+  editor.applyPreferences(preferences)
 
   const layout = el('div', 'layout')
   const libraryHost = el('aside', 'library-panel')
@@ -238,8 +327,9 @@ async function bootstrap(): Promise<void> {
     api: window.api,
     dropTarget: { element: stageView.element, toStagePoint: (event) => stageView.toStagePoint(event) }
   })
+  const toolbar = buildToolbar(editor, layout, libraryView)
   layout.append(
-    buildToolbar(editor, layout, libraryView),
+    toolbar.element,
     libraryHost,
     buildToolsPanel(editor),
     workspace,
@@ -252,24 +342,26 @@ async function bootstrap(): Promise<void> {
 
   const timelineView = new TimelineView(editor, timelineHost)
   new PropertiesView(editor, propertiesHost)
-  registerKeyboard(editor, stageView, timelineView)
+  const commandDeps: CommandDeps = {
+    editor,
+    stageView,
+    timelineView,
+    panels: { toggleLibrary: toolbar.toggleLibrary, toggleProperties: toolbar.toggleProperties }
+  }
+  registerKeyboard(commandDeps)
   registerFileDrop(editor, workspace, stageView)
   registerErrorSurfacing(editor)
-  // Menu accelerators are consumed by the native menu before the page sees
-  // them; the Edit menu routes Undo/Redo here. Inside form fields the DOM
-  // editing history is replayed instead of touching the document.
+  // Menu commands are the application menu's dispatch path: inside form
+  // fields the DOM editing commands replay natively, everything else runs
+  // through the same router the keyboard uses.
   window.api.onMenuCommand((command) => {
     const target = document.activeElement
-    if (
+    const inTextField =
       target instanceof HTMLInputElement ||
       target instanceof HTMLSelectElement ||
       target instanceof HTMLTextAreaElement
-    ) {
-      document.execCommand(command)
-      return
-    }
-    if (command === 'undo') editor.undo()
-    else editor.redo()
+    if (inTextField && runTextEditCommand(command)) return
+    runEditorCommand(command, commandDeps)
   })
   // A `.oanim` handed over by the OS (file association, second instance or
   // macOS open-file) opens through the regular load path.
@@ -286,17 +378,30 @@ async function bootstrap(): Promise<void> {
     if (editor.playing) preloadDrawingCells(editor)
   })
 
-  // Idle-debounced autosave to a recovery snapshot (trailing 2.5 s, forced at
-  // most 20 s after the first unsaved change); the project file itself is
-  // only written by an explicit save. Untitled documents are covered too —
-  // their session-keyed snapshot is the only protection they have. The
-  // scratch document of a symbol edit session is never autosaved; the guards
-  // are evaluated at run time.
-  const autosave = new IdleDebouncer(AUTOSAVE_IDLE_MS, AUTOSAVE_MAX_WAIT_MS, () => {
-    if (editor.editingAssetId) return
-    if (editor.dirty) void saveRecoverySnapshot(editor)
+  // Idle-debounced autosave to a recovery snapshot (trailing window from the
+  // preferences, forced at most 20 s after the first unsaved change); the
+  // project file itself is only written by an explicit save. Untitled
+  // documents are covered too — their session-keyed snapshot is the only
+  // protection they have. The scratch document of a symbol edit session is
+  // never autosaved; the guards are evaluated at run time.
+  let autosave: IdleDebouncer | null = null
+  const rebuildAutosave = (idleMs: number, enabled: boolean): void => {
+    autosave?.cancel()
+    autosave = enabled
+      ? new IdleDebouncer(idleMs, AUTOSAVE_MAX_WAIT_MS, () => {
+          if (editor.editingAssetId) return
+          if (editor.dirty) void saveRecoverySnapshot(editor)
+        })
+      : null
+  }
+  rebuildAutosave(preferences.autosaveIdleMs, preferences.autosaveEnabled)
+  editor.onDocChange(() => autosave?.schedule())
+  // Preference edits take effect immediately: editor state (grid, brush,
+  // undo depth) is re-applied and the autosave cadence is rebuilt.
+  onPreferencesChanged((next) => {
+    editor.applyPreferences(next)
+    rebuildAutosave(next.autosaveIdleMs, next.autosaveEnabled)
   })
-  editor.onDocChange(() => autosave.schedule())
 }
 
 void bootstrap()

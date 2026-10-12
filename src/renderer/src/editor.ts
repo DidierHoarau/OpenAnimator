@@ -56,6 +56,8 @@ import {
   instanceToGroup,
   symbolContentFromGroup
 } from '@shared/assets'
+import { alignOffsets, distributeOffsets } from '@shared/align'
+import type { AlignMode, DistributeAxis } from '@shared/align'
 import type { Easing } from '@shared/easing'
 import { fitImagePlacement } from '@shared/imagePlacement'
 import { shareSnapshot } from '@shared/shareSnapshot'
@@ -65,6 +67,8 @@ import { groupNaturalSize, groupNodes, ungroupNode } from '@shared/groups'
 import type { Vec2 } from '@shared/geometry'
 import { cloneNode, isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { AnimatorDocument, Asset, AudioLayer, CameraLayer, CameraPose, DrawingLayer, EmbeddedFont, GroupNode, ImageNode, KeyframeTween, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
+import type { AppPreferences } from '@shared/preferences'
+import { createStarterDocument } from '@shared/starterDocument'
 import { validateAssetGraph } from '@shared/symbols'
 import { createId } from '@shared/document'
 import { measureLineWidthCanvas } from '@shared/textModel'
@@ -123,6 +127,14 @@ function easingsEqual(a: Easing, b: Easing): boolean {
   return a.x1 === b.x1 && a.y1 === b.y1 && a.x2 === b.x2 && a.y2 === b.y2
 }
 
+/** Recursively assigns fresh ids to a (cloned) node tree so copies never
+ * collide with the originals in the same keyframe. */
+function reIdentifyNode(node: SceneNode): SceneNode {
+  node.id = createId('node')
+  if (node.type === 'group') for (const child of node.children) reIdentifyNode(child)
+  return node
+}
+
 /** Injectable side effects for environments without a DOM (tests). */
 export interface EditorDeps {
   /** Encodes a fully transparent PNG of the given pixel size. */
@@ -141,6 +153,46 @@ function defaultStoreResource(bytes: Uint8Array): Promise<string | null> {
 
 export type SelectionMode = 'replace' | 'add' | 'toggle'
 
+/** Options of a status-bar message (severity colors the strip; `details` is
+ * copyable extra context such as an error stack). */
+export interface MessageOptions {
+  persistent?: boolean
+  severity?: 'info' | 'error'
+  details?: string
+}
+
+export interface ResolvedMessageOptions {
+  persistent: boolean
+  severity: 'info' | 'error'
+  details?: string
+}
+
+/** One undo/redo entry: the snapshot plus the label of the action it records
+ * ("Move nodes"), surfaced as `Undo: Move nodes`. */
+interface HistoryEntry {
+  snapshot: AnimatorDocument
+  label: string
+}
+
+/** One copied node pose of a keyframe track (frame offset relative to the
+ * copy-time playhead). */
+interface NodeClipboardPose {
+  offset: number
+  node: SceneNode
+}
+
+/** One clipboard entry: the node's pose at copy time plus its full keyframe
+ * track, so pasted copies keep their animation. */
+interface NodeClipboardEntry {
+  node: SceneNode
+  poses: NodeClipboardPose[]
+}
+
+interface NodeClipboard {
+  layerId: string
+  entries: NodeClipboardEntry[]
+}
+
 /**
  * Editor state shared by the stage and timeline views. Owns the current
  * document, playhead, selection, active tool, playback loop and the
@@ -149,7 +201,8 @@ export type SelectionMode = 'replace' | 'add' | 'toggle'
  * playback, selection).
  */
 export class Editor {
-  /** Maximum number of undo snapshots kept in memory. */
+  /** Default maximum number of undo snapshots kept in memory (overridable
+   * through the preferences' undo depth). */
   static readonly HISTORY_LIMIT = 100
 
   document: AnimatorDocument
@@ -163,6 +216,12 @@ export class Editor {
   playing = false
   loop = true
   onionSkin = false
+  /** Grid overlay visibility; visible also enables move/create snapping. */
+  gridVisible = false
+  /** Grid size in stage pixels (preferences; clamped by the sanitizer). */
+  gridSize = 20
+  /** Maximum undo snapshots kept (preferences; 10–500). */
+  historyLimit = Editor.HISTORY_LIMIT
   /** Number of previous/next onion ghosts shown (session state, 0–5). */
   onionBefore = 2
   onionAfter = 2
@@ -195,8 +254,10 @@ export class Editor {
    * cells are real cells holding a transparent PNG, which content-addressed
    * storage dedupes to one resource per buffer size. */
   private readonly transparentCellIds = new Map<string, string>()
-  private readonly undoStack: AnimatorDocument[] = []
-  private readonly redoStack: AnimatorDocument[] = []
+  private readonly undoStack: HistoryEntry[] = []
+  private readonly redoStack: HistoryEntry[] = []
+  /** Session scene-node clipboard (Ctrl+C/V/X/D); survives selection changes. */
+  private nodeClipboard: NodeClipboard | null = null
   /** Depth of the coalesced interaction currently open (drags push once). */
   private interactionDepth = 0
   /** Real document parked while a symbol is being edited in isolation. */
@@ -206,7 +267,7 @@ export class Editor {
   private readonly frameListeners = new Set<() => void>()
   private readonly uiListeners = new Set<() => void>()
   private readonly messageListeners = new Set<
-    (message: string, options: { persistent: boolean }) => void
+    (message: string, options: ResolvedMessageOptions) => void
   >()
   private rafId: number | null = null
   private lastTick: number | null = null
@@ -256,7 +317,7 @@ export class Editor {
     this.uiListeners.add(listener)
   }
 
-  onMessage(listener: (message: string, options: { persistent: boolean }) => void): void {
+  onMessage(listener: (message: string, options: ResolvedMessageOptions) => void): void {
     this.messageListeners.add(listener)
   }
 
@@ -289,9 +350,14 @@ export class Editor {
   }
 
   /** Surfaces a status-bar message (transient by default; a persistent one
-   * stays visible until the next message replaces it). */
-  showMessage(message: string, options: { persistent?: boolean } = {}): void {
-    const resolved = { persistent: options.persistent ?? false }
+   * stays visible until the next message replaces it). Error messages feed
+   * the persistent error strip with copyable details. */
+  showMessage(message: string, options: MessageOptions = {}): void {
+    const resolved: ResolvedMessageOptions = {
+      persistent: options.persistent ?? false,
+      severity: options.severity ?? 'info',
+      details: options.details
+    }
     for (const listener of [...this.messageListeners]) {
       try {
         listener(message, resolved)
@@ -304,27 +370,30 @@ export class Editor {
   /**
    * Pushes the current document onto the undo stack before a mutation. Skipped
    * inside a coalesced interaction so a whole drag becomes a single entry.
+   * The label names the action for the `Undo: <label>` status message.
    */
-  private pushHistory(): void {
+  private pushHistory(label: string): void {
     if (this.interactionDepth > 0) return
-    this.pushSnapshot()
+    this.pushSnapshot(label)
   }
 
-  private pushSnapshot(): void {
-    this.undoStack.push(
-      shareSnapshot(this.document, this.undoStack[this.undoStack.length - 1] ?? null)
-    )
-    if (this.undoStack.length > Editor.HISTORY_LIMIT) this.undoStack.shift()
+  private pushSnapshot(label: string): void {
+    this.undoStack.push({
+      snapshot: shareSnapshot(this.document, this.undoStack[this.undoStack.length - 1]?.snapshot ?? null),
+      label
+    })
+    if (this.undoStack.length > this.historyLimit) this.undoStack.shift()
     this.redoStack.length = 0
   }
 
   /**
    * Opens a coalesced interaction (e.g. a pointer drag): exactly one history
-   * entry is committed for everything mutated until `endInteraction`.
+   * entry is committed for everything mutated until `endInteraction`. The
+   * label names the whole gesture.
    */
-  beginInteraction(): void {
+  beginInteraction(label: string): void {
     this.interactionDepth += 1
-    this.pushSnapshot()
+    this.pushSnapshot(label)
   }
 
   endInteraction(): void {
@@ -332,29 +401,31 @@ export class Editor {
   }
 
   undo(): void {
-    const snapshot = this.undoStack.pop()
-    if (!snapshot) {
+    const entry = this.undoStack.pop()
+    if (!entry) {
       this.showMessage('Nothing to undo')
       return
     }
-    this.redoStack.push(
-      shareSnapshot(this.document, this.redoStack[this.redoStack.length - 1] ?? null)
-    )
+    this.redoStack.push({
+      snapshot: shareSnapshot(this.document, this.redoStack[this.redoStack.length - 1]?.snapshot ?? null),
+      label: entry.label
+    })
     // Installs clone: stack objects may share subtrees with each other, so
     // the live document must be independent of every snapshot.
-    this.applySnapshot(cloneDocument(snapshot), 'Undo')
+    this.applySnapshot(cloneDocument(entry.snapshot), `Undo: ${entry.label}`)
   }
 
   redo(): void {
-    const snapshot = this.redoStack.pop()
-    if (!snapshot) {
+    const entry = this.redoStack.pop()
+    if (!entry) {
       this.showMessage('Nothing to redo')
       return
     }
-    this.undoStack.push(
-      shareSnapshot(this.document, this.undoStack[this.undoStack.length - 1] ?? null)
-    )
-    this.applySnapshot(cloneDocument(snapshot), 'Redo')
+    this.undoStack.push({
+      snapshot: shareSnapshot(this.document, this.undoStack[this.undoStack.length - 1]?.snapshot ?? null),
+      label: entry.label
+    })
+    this.applySnapshot(cloneDocument(entry.snapshot), `Redo: ${entry.label}`)
   }
 
   private applySnapshot(snapshot: AnimatorDocument, message: string): void {
@@ -395,8 +466,30 @@ export class Editor {
     if (symbolProblem) this.showMessage(symbolProblem)
   }
 
-  newDocument(): void {
-    this.setDocument(createDocument('Untitled', 960, 540, 24))
+  newDocument(options: { width?: number; height?: number; fps?: number; demo?: boolean } = {}): void {
+    const width = options.width ?? 960
+    const height = options.height ?? 540
+    const fps = options.fps ?? 24
+    this.setDocument(
+      options.demo === false
+        ? createDocument('Untitled', width, height, fps)
+        : createStarterDocument(width, height, fps)
+    )
+  }
+
+  /** Applies preference values that affect live editor state. Stage size and
+   * fps are only read when a new document is created, so they are not applied
+   * here (the dialog explains that in the UI). */
+  applyPreferences(preferences: AppPreferences): void {
+    this.historyLimit = preferences.undoDepth
+    if (this.undoStack.length > this.historyLimit) {
+      this.undoStack.splice(0, this.undoStack.length - this.historyLimit)
+    }
+    const gridChanged = this.gridSize !== preferences.gridSize
+    this.gridSize = preferences.gridSize
+    this.setBrushSize(preferences.brushSize)
+    this.setBrushOpacity(preferences.brushOpacity)
+    if (gridChanged) this.uiChanged()
   }
 
   /**
@@ -587,7 +680,7 @@ export class Editor {
 
   setFps(fps: number): void {
     if (!Number.isFinite(fps) || fps < 1 || fps > 120 || fps === this.document.fps) return
-    this.pushHistory()
+    this.pushHistory('Set fps')
     this.document.fps = Math.round(fps)
     this.docChanged()
   }
@@ -605,7 +698,7 @@ export class Editor {
     ) {
       return
     }
-    this.pushHistory()
+    this.pushHistory('Set palette')
     this.document.palette = next
     this.docChanged()
   }
@@ -620,7 +713,7 @@ export class Editor {
     if (!rgb) return
     const hex = formatHexColor(rgb)
     if (this.document.palette.includes(hex)) return
-    this.pushHistory()
+    this.pushHistory('Add palette color')
     this.document.palette = [...this.document.palette, hex]
     this.docChanged()
   }
@@ -631,7 +724,7 @@ export class Editor {
     const hex = rgb ? formatHexColor(rgb) : color
     const index = this.document.palette.indexOf(hex)
     if (index === -1) return
-    this.pushHistory()
+    this.pushHistory('Remove palette color')
     const next = [...this.document.palette]
     next.splice(index, 1)
     this.document.palette = next
@@ -641,7 +734,7 @@ export class Editor {
   addNode(node: SceneNode): void {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) return
-    this.pushHistory()
+    this.pushHistory('Add node')
     this.insertNode(node)
   }
 
@@ -650,7 +743,7 @@ export class Editor {
   addImageWithAsset(node: ImageNode): void {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) return
-    this.pushHistory()
+    this.pushHistory('Add image')
     this.insertNode(node)
     this.document.assets.push(
       createDocumentAsset({
@@ -669,7 +762,7 @@ export class Editor {
   addNodeWithAssets(node: SceneNode, assets: Asset[]): void {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) return
-    this.pushHistory()
+    this.pushHistory('Add node')
     this.insertNode(node)
     this.document.assets.push(...assets)
     this.docChanged()
@@ -694,7 +787,7 @@ export class Editor {
   updateSelectedNode(update: (node: SceneNode) => void): boolean {
     const primary = this.primarySelectedNodeId
     if (!primary) return false
-    return this.updateNodesById([primary], update)
+    return this.updateNodesById([primary], update, 'Edit node')
   }
 
   /**
@@ -711,7 +804,7 @@ export class Editor {
     const keyframe = layer.keyframes[index]
     const nodeIndex = keyframe.nodes.findIndex((node) => node.id === primary)
     if (nodeIndex === -1) return false
-    this.pushHistory()
+    this.pushHistory('Edit node')
     keyframe.nodes[nodeIndex] = replace(keyframe.nodes[nodeIndex])
     this.docChanged()
     this.uiChanged()
@@ -723,18 +816,22 @@ export class Editor {
    * first (object-level keyframes; other objects hold through). One history
    * entry for the whole set.
    */
-  updateSelectedNodes(update: (node: SceneNode) => void): boolean {
-    return this.updateNodesById(this.selectedNodeIds, update)
+  updateSelectedNodes(update: (node: SceneNode) => void, label = 'Edit nodes'): boolean {
+    return this.updateNodesById(this.selectedNodeIds, update, label)
   }
 
-  private updateNodesById(ids: string[], update: (node: SceneNode) => void): boolean {
+  private updateNodesById(
+    ids: string[],
+    update: (node: SceneNode) => void,
+    label: string
+  ): boolean {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const keyable = ids.filter(
       (id) => findNearestNodeKeyframeIndex(layer, id, this.currentFrame) !== -1
     )
     if (keyable.length === 0) return false
-    this.pushHistory()
+    this.pushHistory(label)
     let changed = false
     for (const id of keyable) {
       if (this.ensureNodeKeyframeMutation(layer, id)) changed = true
@@ -748,7 +845,7 @@ export class Editor {
     this.updateSelectedNodes((node) => {
       node.center.x += dx
       node.center.y += dy
-    })
+    }, 'Move nodes')
   }
 
   /** Deletes every selected node of the current layer at the current frame. */
@@ -759,7 +856,7 @@ export class Editor {
       this.isNodeInActiveKeyframe(layer, id)
     )
     if (removable.length === 0) return
-    this.pushHistory()
+    this.pushHistory('Delete nodes')
     let removed = false
     for (const id of removable) {
       if (removeNodeFromLayer(layer, this.currentFrame, id)) removed = true
@@ -777,6 +874,218 @@ export class Editor {
   }
 
   /**
+   * Aligns the selected objects against the union bounds of the selection
+   * (evaluated at the current frame). Auto-keying behaves like a drag; one
+   * undo entry. Returns true when something moved.
+   */
+  alignSelected(mode: AlignMode): boolean {
+    return this.applySelectionOffsets(
+      'Align nodes',
+      (rects) => alignOffsets(rects, mode),
+      'Select at least two objects to align them',
+      (count) => `Aligned ${count} objects`
+    )
+  }
+
+  /**
+   * Distributes the selected objects evenly along `axis` (centers spaced
+   * evenly, outermost two fixed). Needs at least three objects; one undo
+   * entry. Returns true when something moved.
+   */
+  distributeSelected(axis: DistributeAxis): boolean {
+    return this.applySelectionOffsets(
+      'Distribute nodes',
+      (rects) => distributeOffsets(rects, axis),
+      'Select at least three objects to distribute them',
+      (count) => `Distributed ${count} objects`
+    )
+  }
+
+  private applySelectionOffsets(
+    label: string,
+    compute: (rects: Rect[]) => { dx: number; dy: number }[],
+    needMessage: string,
+    doneMessage: (count: number) => string
+  ): boolean {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
+    const selected = this.selectedNodeIds
+    const selectedSet = new Set(selected)
+    const nodes = evaluateLayerAtFrame(layer, this.currentFrame).filter((node) =>
+      selectedSet.has(node.id)
+    )
+    if (nodes.length < 2) {
+      this.showMessage(needMessage)
+      return false
+    }
+    const offsets = compute(nodes.map((node) => nodeBounds(node)))
+    if (offsets.every((offset) => offset.dx === 0 && offset.dy === 0)) return false
+    const deltaById = new Map(nodes.map((node, index) => [node.id, offsets[index]]))
+    const moved = this.updateNodesById(
+      nodes.map((node) => node.id),
+      (node) => {
+        const delta = deltaById.get(node.id)
+        if (!delta) return
+        node.center.x += delta.dx
+        node.center.y += delta.dy
+      },
+      label
+    )
+    if (moved) this.showMessage(doneMessage(nodes.length))
+    return moved
+  }
+
+  /**
+   * Copies the selected objects into the session node clipboard: each entry
+   * keeps the pose evaluated at the copy-time playhead plus its full keyframe
+   * track (offsets relative to the playhead), so a paste can recreate the
+   * animation. Returns the number of copied objects.
+   */
+  copySelectedNodes(): number {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer)) return 0
+    const selected = new Set(this.selectedNodeIds)
+    const evaluated = evaluateLayerAtFrame(layer, this.currentFrame).filter((node) =>
+      selected.has(node.id)
+    )
+    if (evaluated.length === 0) return 0
+    const entries: NodeClipboardEntry[] = evaluated.map((node) => {
+      const poses: NodeClipboardPose[] = []
+      for (const keyframe of layer.keyframes) {
+        const keyed = keyframe.nodes.find((candidate) => candidate.id === node.id)
+        if (keyed) poses.push({ offset: keyframe.frame - this.currentFrame, node: cloneNode(keyed) })
+      }
+      return { node: cloneNode(node), poses }
+    })
+    this.nodeClipboard = { layerId: layer.id, entries }
+    const count = entries.length
+    this.showMessage(`Copied ${count} object${count === 1 ? '' : 's'}`)
+    return count
+  }
+
+  /** Copies the selected objects, then deletes them — one undo entry. */
+  cutSelectedNodes(): number {
+    const count = this.copySelectedNodes()
+    if (count === 0) return 0
+    this.beginInteraction('Cut nodes')
+    try {
+      this.deleteSelected()
+    } finally {
+      this.endInteraction()
+    }
+    this.showMessage(`Cut ${count} object${count === 1 ? '' : 's'}`)
+    return count
+  }
+
+  /**
+   * Pastes the node clipboard into the source layer (or the current editable
+   * object layer when the source is gone): every object lands at the current
+   * frame with the usual auto-key pattern, its track follows the copy-time
+   * offsets, and everything is offset by (10, 10) so copies are visible.
+   * Returns the number of pasted objects.
+   */
+  pasteNodes(): number {
+    const clipboard = this.nodeClipboard
+    if (!clipboard || clipboard.entries.length === 0) {
+      this.showMessage('Nothing to paste')
+      return 0
+    }
+    const source = getLayer(this.document, clipboard.layerId)
+    const layer =
+      source && isObjectLayer(source) && !source.locked
+        ? source
+        : this.currentLayer && isObjectLayer(this.currentLayer) && !this.currentLayer.locked
+          ? this.currentLayer
+          : null
+    if (!layer) {
+      this.showMessage('Select a visible, unlocked object layer to paste onto')
+      return 0
+    }
+    this.pushHistory('Paste nodes')
+    const pasted = this.pasteClipboardEntries(clipboard.entries, layer, this.currentFrame)
+    if (pasted.length === 0) {
+      this.showMessage('Nothing to paste')
+      return 0
+    }
+    this.selectedNodeIds = pasted.map((node) => node.id)
+    this.docChanged()
+    this.uiChanged()
+    this.showMessage(`Pasted ${pasted.length} object${pasted.length === 1 ? '' : 's'}`)
+    return pasted.length
+  }
+
+  /**
+   * Duplicates the selected objects at the current frame without touching the
+   * clipboard: same track-preserving copy as paste, offset by (10, 10). The
+   * duplicates become the selection. Returns the number of copies.
+   */
+  duplicateSelectedNodes(): number {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer) || layer.locked) return 0
+    const selected = new Set(this.selectedNodeIds)
+    const evaluated = evaluateLayerAtFrame(layer, this.currentFrame).filter((node) =>
+      selected.has(node.id)
+    )
+    if (evaluated.length === 0) return 0
+    const entries: NodeClipboardEntry[] = evaluated.map((node) => ({
+      node: cloneNode(node),
+      poses: [{ offset: 0, node: cloneNode(node) }]
+    }))
+    this.pushHistory('Duplicate nodes')
+    const copies = this.pasteClipboardEntries(entries, layer, this.currentFrame)
+    if (copies.length === 0) return 0
+    this.selectedNodeIds = copies.map((node) => node.id)
+    this.docChanged()
+    this.uiChanged()
+    this.showMessage(`Duplicated ${copies.length} object${copies.length === 1 ? '' : 's'}`)
+    return copies.length
+  }
+
+  /** Selects every object present in the current layer's active keyframe. */
+  selectAllNodes(): number {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer)) return 0
+    const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe || keyframe.nodes.length === 0) return 0
+    this.selectedNodeIds = keyframe.nodes.map((node) => node.id)
+    this.uiChanged()
+    return this.selectedNodeIds.length
+  }
+
+  /** Inserts re-identified copies of the entries and returns the base copies. */
+  private pasteClipboardEntries(
+    entries: readonly NodeClipboardEntry[],
+    layer: ObjectLayer,
+    frame: number
+  ): SceneNode[] {
+    const pasted: SceneNode[] = []
+    const duration = this.duration
+    for (const entry of entries) {
+      const base = reIdentifyNode(cloneNode(entry.node))
+      base.center.x += 10
+      base.center.y += 10
+      const baseKeyframe =
+        findKeyframeAtFrame(layer, frame) ?? insertBlankKeyframe(layer, frame)
+      if (!baseKeyframe) continue
+      baseKeyframe.nodes.push(base)
+      pasted.push(base)
+      // The track lands relative to the paste frame; poses outside the
+      // timeline are dropped so the copy never extends the document.
+      for (const pose of entry.poses) {
+        const poseFrame = frame + pose.offset
+        if (poseFrame < 0 || poseFrame >= duration || pose.offset === 0) continue
+        const copy = reIdentifyNode(cloneNode(pose.node))
+        copy.center.x += 10
+        copy.center.y += 10
+        const keyframe =
+          findKeyframeAtFrame(layer, poseFrame) ?? insertBlankKeyframe(layer, poseFrame)
+        if (keyframe) keyframe.nodes.push(copy)
+      }
+    }
+    return pasted
+  }
+
+  /**
    * Adds a keyframe for every selected object at the current frame (F6): only
    * the selected objects get a pose, every other object keeps holding through.
    * Returns true when a keyframe was created.
@@ -788,7 +1097,7 @@ export class Editor {
       (id) => findNearestNodeKeyframeIndex(layer, id, this.currentFrame) !== -1
     )
     if (ids.length === 0) return false
-    this.pushHistory()
+    this.pushHistory('Insert keyframe')
     let created = false
     for (const id of ids) {
       if (this.ensureNodeKeyframeMutation(layer, id)) created = true
@@ -823,7 +1132,7 @@ export class Editor {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked) return false
     if (!this.canKeyNode(layer, nodeId)) return false
-    this.pushHistory()
+    this.pushHistory('Insert keyframe')
     if (!this.ensureNodeKeyframeMutation(layer, nodeId)) return false
     this.docChanged()
     this.showMessage('New keyframe created')
@@ -840,7 +1149,7 @@ export class Editor {
     if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const ids = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
     if (ids.length === 0) return false
-    this.pushHistory()
+    this.pushHistory('Insert keyframe')
     let changed = false
     for (const id of ids) {
       if (this.ensureNodeKeyframeMutation(layer, id)) changed = true
@@ -881,7 +1190,7 @@ export class Editor {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const keyable = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
-    this.pushHistory()
+    this.pushHistory('Group nodes')
     for (const id of keyable) {
       this.ensureNodeKeyframeMutation(layer, id)
     }
@@ -931,7 +1240,7 @@ export class Editor {
       (node): node is GroupNode => node.type === 'group' && this.selectedNodeIds.includes(node.id)
     )
     if (groups.length === 0) return false
-    this.pushHistory()
+    this.pushHistory('Ungroup nodes')
     const insertedIds: string[] = []
     for (const group of groups) {
       const index = keyframe.nodes.indexOf(group)
@@ -958,7 +1267,7 @@ export class Editor {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked) return false
     const keyable = this.selectedNodeIds.filter((id) => this.canKeyNode(layer, id))
-    this.pushHistory()
+    this.pushHistory('Create symbol')
     for (const id of keyable) {
       this.ensureNodeKeyframeMutation(layer, id)
     }
@@ -1078,7 +1387,7 @@ export class Editor {
       this.resources.put(resourceId, bytes)
     }
     const known = this.document.assets.some((entry) => entry.id === asset.id)
-    this.beginInteraction()
+    this.beginInteraction('Place asset')
     try {
       if (!known) this.document.assets.push(structuredClone(asset))
       const placed = this.placeAsset(asset.id, at)
@@ -1102,7 +1411,7 @@ export class Editor {
       naturalWidth: Math.max(1, natural.width),
       naturalHeight: Math.max(1, natural.height)
     })
-    this.pushHistory()
+    this.pushHistory('Add image asset')
     this.document.assets.push(asset)
     this.docChanged()
     return asset.id
@@ -1113,7 +1422,7 @@ export class Editor {
     const asset = this.document.assets.find((entry) => entry.id === id)
     if (!asset) return null
     const copy = duplicateAssetOp(asset, createId('asset'), `${asset.name} copy`)
-    this.pushHistory()
+    this.pushHistory('Duplicate asset')
     this.document.assets.push(copy)
     this.docChanged()
     return copy.id
@@ -1123,7 +1432,7 @@ export class Editor {
   renameAsset(id: string, name: string): void {
     const asset = this.document.assets.find((entry) => entry.id === id)
     if (!asset) return
-    this.pushHistory()
+    this.pushHistory('Rename asset')
     asset.name = name
     this.docChanged()
   }
@@ -1142,7 +1451,7 @@ export class Editor {
     const index = this.document.assets.findIndex((entry) => entry.id === id)
     if (index === -1) return 0
     const instances = countAssetInstancesOp(this.document, id)
-    this.pushHistory()
+    this.pushHistory('Delete asset')
     this.document.assets.splice(index, 1)
     this.docChanged()
     return instances
@@ -1163,7 +1472,7 @@ export class Editor {
       (node): node is SymbolNode => node.type === 'symbol' && this.selectedNodeIds.includes(node.id)
     )
     if (instances.length === 0) return false
-    this.pushHistory()
+    this.pushHistory('Break apart')
     const newIds: string[] = []
     for (const instance of instances) {
       const asset = this.document.assets.find((entry) => entry.id === instance.assetId)
@@ -1241,7 +1550,7 @@ export class Editor {
       if (asset && asset.kind === 'symbol' && asset.content && keyframe) {
         const children = keyframe.nodes.map(cloneNode)
         const natural = groupNaturalSize(children)
-        this.pushHistory()
+        this.pushHistory('Edit symbol')
         asset.content = {
           ...asset.content,
           width: natural.width,
@@ -1278,7 +1587,7 @@ export class Editor {
   commitStroke(resourceId: string, frame: number = this.currentFrame): boolean {
     const layer = this.currentLayer
     if (!layer || !isDrawingLayer(layer) || layer.locked) return false
-    this.pushHistory()
+    this.pushHistory('Paint stroke')
     setCellContentOp(layer, frame, resourceId)
     this.docChanged()
     return true
@@ -1324,7 +1633,7 @@ export class Editor {
     }
     const seed = await this.cellSeedResource(layer, true)
     if (!seed) return false
-    this.pushHistory()
+    this.pushHistory('Insert cell')
     insertCellOp(layer, this.currentFrame, seed)
     this.docChanged()
     this.showMessage('Cell inserted')
@@ -1342,7 +1651,7 @@ export class Editor {
     }
     const seed = await this.cellSeedResource(layer, false)
     if (!seed) return false
-    this.pushHistory()
+    this.pushHistory('Insert blank cell')
     insertCellOp(layer, this.currentFrame, seed)
     this.docChanged()
     this.showMessage('Blank cell inserted')
@@ -1360,7 +1669,7 @@ export class Editor {
     }
     const seed = await this.cellSeedResource(layer, false)
     if (!seed) return false
-    this.pushHistory()
+    this.pushHistory('Clear cell')
     setCellContentOp(layer, this.currentFrame, seed)
     this.docChanged()
     this.showMessage('Cell cleared')
@@ -1376,7 +1685,7 @@ export class Editor {
       this.showMessage('No cell at this frame')
       return false
     }
-    this.pushHistory()
+    this.pushHistory('Remove cell')
     removeCellOp(layer, this.currentFrame)
     this.docChanged()
     this.showMessage('Cell removed')
@@ -1392,7 +1701,7 @@ export class Editor {
     const layer = getLayer(this.document, layerId)
     if (!layer || !isDrawingLayer(layer) || layer.locked) return false
     if (!Number.isInteger(frame) || frame < 0 || !this.resources.getUrl(resourceId)) return false
-    this.pushHistory()
+    this.pushHistory('Set cell')
     setCellContentOp(layer, frame, resourceId)
     this.docChanged()
     return true
@@ -1410,7 +1719,7 @@ export class Editor {
     const source = Math.floor(fromFrame)
     const target = Math.min(Math.max(0, Math.floor(toFrame)), Math.max(0, this.duration - 1))
     if (target === source || !findCellAtFrame(layer, source)) return false
-    this.pushHistory()
+    this.pushHistory('Move cell')
     moveCellOp(layer, source, target)
     this.docChanged()
     this.showMessage(`Cell moved to frame ${target + 1}`)
@@ -1444,7 +1753,7 @@ export class Editor {
       if (!seed) return false
       blankResourceId = seed
     }
-    this.pushHistory()
+    this.pushHistory('Set cell end')
     setCellEndOp(layer, source, end, total, blankResourceId)
     this.docChanged()
     this.showMessage('Cell end frame updated')
@@ -1476,7 +1785,7 @@ export class Editor {
       this.showMessage('The move would leave the timeline')
       return false
     }
-    this.pushHistory()
+    this.pushHistory('Move keyframes')
     moveNodeKeyframes(layer, nodeId, shift, total)
     this.docChanged()
     return true
@@ -1507,7 +1816,7 @@ export class Editor {
       if (shift !== 0) shifts.set(nodeId, shift)
     }
     if (shifts.size === 0) return false
-    this.pushHistory()
+    this.pushHistory('Move keyframes')
     for (const [nodeId, shift] of shifts) moveNodeKeyframes(layer, nodeId, shift, total)
     this.docChanged()
     return true
@@ -1537,6 +1846,19 @@ export class Editor {
     this.uiChanged()
   }
 
+  /** Grid move/create snapping step: 0 (off) while the grid overlay is
+   * hidden, the preference grid size while it is visible. */
+  get gridSnapSize(): number {
+    return this.gridVisible ? this.gridSize : 0
+  }
+
+  /** Shows/hides the stage grid overlay; visible also enables snapping. */
+  toggleGrid(): void {
+    this.gridVisible = !this.gridVisible
+    this.showMessage(this.gridVisible ? `Grid on (${this.gridSize} px snap)` : 'Grid off')
+    this.uiChanged()
+  }
+
   /** Brush/eraser width in stage pixels, clamped to 1–100. */
   setBrushSize(size: number): void {
     if (!Number.isFinite(size)) return
@@ -1558,7 +1880,7 @@ export class Editor {
     if (!Number.isFinite(scale)) return
     const next = Math.min(4, Math.max(1, Math.round(scale)))
     if (next === layer.resolutionScale) return
-    this.pushHistory()
+    this.pushHistory('Set resolution')
     layer.resolutionScale = next
     this.docChanged()
   }
@@ -1566,7 +1888,7 @@ export class Editor {
   insertFrameHere(): void {
     const layer = this.currentLayer
     if (!layer || layer.locked) return
-    this.pushHistory()
+    this.pushHistory('Insert frame')
     insertFrame(this.document, this.currentLayerId, this.currentFrame)
     this.docChanged()
   }
@@ -1580,7 +1902,7 @@ export class Editor {
   removeFrameHere(): boolean {
     const layer = this.currentLayer
     if (!layer || layer.locked) return false
-    this.pushHistory()
+    this.pushHistory('Remove frame')
     removeFrame(this.document, this.currentFrame)
     this.currentFrame = Math.min(this.currentFrame, Math.max(0, this.duration - 1))
     this.docChanged()
@@ -1596,7 +1918,7 @@ export class Editor {
   setDuration(frames: number): boolean {
     const target = Math.max(1, Math.floor(frames))
     if (!Number.isFinite(target) || target === this.duration) return false
-    this.pushHistory()
+    this.pushHistory('Set duration')
     while (this.duration < target) {
       insertFrame(this.document, this.currentLayerId, this.duration - 1)
     }
@@ -1619,7 +1941,7 @@ export class Editor {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked) return false
     if (!this.hasNodeKeyframeAt(this.currentLayerId, nodeId, this.currentFrame)) return false
-    this.pushHistory()
+    this.pushHistory('Remove keyframe')
     if (!removeNodeFromLayer(layer, this.currentFrame, nodeId)) return false
     this.docChanged()
     return true
@@ -1641,7 +1963,7 @@ export class Editor {
     if (!layer || !isObjectLayer(layer) || layer.locked) return
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe) return
-    this.pushHistory()
+    this.pushHistory('Toggle tween')
     setKeyframeTween(layer, this.currentFrame, keyframe.tween ? undefined : { easing: 'ease-in-out' })
     this.docChanged()
     this.uiChanged()
@@ -1658,7 +1980,7 @@ export class Editor {
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe?.tween) return
     if (easingsEqual(keyframe.tween.easing, easing)) return
-    this.pushHistory()
+    this.pushHistory('Set easing')
     const next: KeyframeTween = keyframe.tween.path
       ? { easing, path: keyframe.tween.path }
       : { easing }
@@ -1678,7 +2000,7 @@ export class Editor {
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe?.tween) return
     if ((keyframe.tween.path ?? 'linear') === path) return
-    this.pushHistory()
+    this.pushHistory('Set motion path')
     const next: KeyframeTween = { easing: keyframe.tween.easing }
     if (path === 'smooth') next.path = 'smooth'
     setKeyframeTween(layer, this.currentFrame, next)
@@ -1718,7 +2040,7 @@ export class Editor {
       return keyframe !== undefined && keyframe.nodes.some((node) => node.id === move.nodeId)
     })
     if (!effective) return false
-    this.pushHistory()
+    this.pushHistory('Move keyframes')
     moveKeyframeEntries(layer, moves, totalFrames)
     this.docChanged()
     return true
@@ -1745,7 +2067,7 @@ export class Editor {
       return frame >= 0 && frame <= totalFrames - 1
     })
     if (!lands) return false
-    this.pushHistory()
+    this.pushHistory('Paste keyframes')
     applyKeyframeChunk(layer, entries, targetFrame, totalFrames)
     this.docChanged()
     return true
@@ -1760,7 +2082,7 @@ export class Editor {
   setHoldStep(step: number): void {
     if (!Number.isInteger(step) || step < 1 || step > 16) return
     if (this.holdStep === step) return
-    this.pushHistory()
+    this.pushHistory('Set hold step')
     if (step === 1) delete this.document.holdStep
     else this.document.holdStep = step
     this.docChanged()
@@ -1806,7 +2128,7 @@ export class Editor {
    * it current. Camera and audio layers have dedicated flows
    * (`addCameraLayer` / `addAudioLayer`). */
   addLayerAtBottom(kind: 'object' | 'drawing' = 'object'): void {
-    this.pushHistory()
+    this.pushHistory('Add layer')
     const layer =
       kind === 'drawing'
         ? addLayerOp(this.document, `Layer ${this.document.layers.length + 1}`, 'bottom', 'drawing')
@@ -1820,7 +2142,7 @@ export class Editor {
   /** Removes a layer by id (the last remaining layer is never removed). */
   removeLayer(layerId: string): void {
     if (this.document.layers.length <= 1 || !getLayer(this.document, layerId)) return
-    this.pushHistory()
+    this.pushHistory('Remove layer')
     removeLayerOp(this.document, layerId)
     if (this.currentLayerId === layerId) {
       this.currentLayerId = this.document.layers[0]?.id ?? ''
@@ -1860,7 +2182,7 @@ export class Editor {
       this.showMessage('The document already has a camera layer')
       return null
     }
-    this.pushHistory()
+    this.pushHistory('Add camera layer')
     const layer = addLayerOp(this.document, 'Camera', 'bottom', 'camera')
     insertCameraKeyframe(this.document, 0, defaultCameraPose(this.document))
     this.currentLayerId = layer.id
@@ -1880,7 +2202,7 @@ export class Editor {
     const layer = this.cameraLayer
     if (!layer || layer.locked) return false
     if (findCameraKeyframeAtFrame(layer, this.currentFrame)) return true
-    this.pushHistory()
+    this.pushHistory('Camera keyframe')
     if (!insertCameraKeyframe(this.document, this.currentFrame)) return false
     this.docChanged()
     return true
@@ -1918,7 +2240,7 @@ export class Editor {
     ) {
       return false
     }
-    this.pushHistory()
+    this.pushHistory('Camera pose')
     if (keyframe) {
       keyframe.pose = next
     } else {
@@ -1934,7 +2256,7 @@ export class Editor {
     const layer = this.cameraLayer
     if (!layer || layer.locked) return false
     if (!findCameraKeyframeAtFrame(layer, this.currentFrame)) return false
-    this.pushHistory()
+    this.pushHistory('Remove camera keyframe')
     if (!removeCameraKeyframeOp(this.document, this.currentFrame)) return false
     this.docChanged()
     return true
@@ -1946,7 +2268,7 @@ export class Editor {
     if (!layer || layer.locked) return
     const keyframe = findCameraKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe) return
-    this.pushHistory()
+    this.pushHistory('Toggle camera tween')
     keyframe.tween = keyframe.tween ? undefined : { easing: 'ease-in-out' }
     this.docChanged()
   }
@@ -1968,7 +2290,7 @@ export class Editor {
     ) {
       return
     }
-    this.pushHistory()
+    this.pushHistory('Camera tween')
     keyframe.tween = tween ? structuredClone(tween) : undefined
     this.docChanged()
   }
@@ -1981,7 +2303,7 @@ export class Editor {
     const keyframe = findCameraKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe?.tween) return
     if (easingsEqual(keyframe.tween.easing, easing)) return
-    this.pushHistory()
+    this.pushHistory('Camera easing')
     const next: KeyframeTween = keyframe.tween.path
       ? { easing, path: keyframe.tween.path }
       : { easing }
@@ -1998,7 +2320,7 @@ export class Editor {
     const keyframe = findCameraKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe?.tween) return
     if ((keyframe.tween.path ?? 'linear') === path) return
-    this.pushHistory()
+    this.pushHistory('Camera motion path')
     const next: KeyframeTween = { easing: keyframe.tween.easing }
     if (path === 'smooth') next.path = 'smooth'
     keyframe.tween = next
@@ -2037,7 +2359,7 @@ export class Editor {
         findCameraKeyframeAtFrame(layer, move.fromFrame) !== undefined
     )
     if (!effective) return false
-    this.pushHistory()
+    this.pushHistory('Move camera keyframes')
     moveCameraKeyframesOp(layer, moves, totalFrames)
     this.docChanged()
     return true
@@ -2053,7 +2375,7 @@ export class Editor {
       this.showMessage('Audio resource is not available in this session')
       return null
     }
-    this.pushHistory()
+    this.pushHistory('Add audio layer')
     const layer = addLayerOp(this.document, name || 'Audio', 'bottom', 'audio', resourceId)
     layer.startFrame = Number.isFinite(startFrame) ? Math.max(0, Math.round(startFrame)) : 0
     this.currentLayerId = layer.id
@@ -2069,7 +2391,7 @@ export class Editor {
     if (!layer || !isAudioLayer(layer) || layer.locked || !Number.isFinite(volume)) return
     const next = Math.min(1, Math.max(0, volume))
     if (next === layer.volume) return
-    this.pushHistory()
+    this.pushHistory('Set audio volume')
     layer.volume = next
     this.docChanged()
     this.uiChanged()
@@ -2092,7 +2414,7 @@ export class Editor {
     }
     const clamped = Math.max(0, Math.round(startFrame))
     if (clamped === layer.startFrame) return false
-    this.pushHistory()
+    this.pushHistory('Move audio clip')
     setAudioClipStartOp(layer, startFrame)
     this.docChanged()
     return true
@@ -2104,7 +2426,7 @@ export class Editor {
     if (fromIndex === -1) return
     const clamped = Math.min(Math.max(0, toIndex), this.document.layers.length - 1)
     if (clamped === fromIndex) return
-    this.pushHistory()
+    this.pushHistory('Move layer')
     moveLayerOp(this.document, layerId, clamped)
     this.docChanged()
     this.uiChanged()
@@ -2113,7 +2435,7 @@ export class Editor {
   renameLayer(layerId: string, name: string): void {
     const layer = getLayer(this.document, layerId)
     if (!layer) return
-    this.pushHistory()
+    this.pushHistory('Rename layer')
     renameLayerOp(this.document, layerId, name)
     this.docChanged()
   }
@@ -2125,7 +2447,7 @@ export class Editor {
     if (!layer.keyframes.some((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))) {
       return
     }
-    this.pushHistory()
+    this.pushHistory('Delete node')
     removeNodeFromAllKeyframes(layer, nodeId)
     this.selectedNodeIds = this.selectedNodeIds.filter((id) => id !== nodeId)
     this.docChanged()
@@ -2139,7 +2461,7 @@ export class Editor {
     if (!layer.keyframes.some((keyframe) => keyframe.nodes.some((node) => node.id === nodeId))) {
       return
     }
-    this.pushHistory()
+    this.pushHistory('Rename node')
     renameNodeInLayer(layer, nodeId, name)
     this.docChanged()
   }
@@ -2147,7 +2469,7 @@ export class Editor {
   toggleLayerVisibility(layerId: string): void {
     const layer = getLayer(this.document, layerId)
     if (!layer) return
-    this.pushHistory()
+    this.pushHistory('Toggle visibility')
     layer.visible = !layer.visible
     this.docChanged()
     this.uiChanged()
@@ -2156,7 +2478,7 @@ export class Editor {
   toggleLayerLock(layerId: string): void {
     const layer = getLayer(this.document, layerId)
     if (!layer) return
-    this.pushHistory()
+    this.pushHistory('Toggle lock')
     layer.locked = !layer.locked
     this.docChanged()
     this.uiChanged()

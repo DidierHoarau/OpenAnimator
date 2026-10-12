@@ -734,7 +734,12 @@ describe('TimelineView — keyframe markers, range copy/paste and options', () =
     const host = document.createElement('main')
     document.body.appendChild(host)
     const stageView = new StageView(editor, host)
-    registerKeyboard(editor, stageView, view)
+    registerKeyboard({
+      editor,
+      stageView,
+      timelineView: view,
+      panels: { toggleLibrary: () => {}, toggleProperties: () => {} }
+    })
 
     const messages: string[] = []
     editor.onMessage((message) => messages.push(message))
