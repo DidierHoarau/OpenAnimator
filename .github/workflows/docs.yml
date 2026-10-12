@@ -44,7 +44,11 @@ jobs:
       - name: Build docs site
         run: npm run docs:build
 
+      # `enablement: true` turns Pages on (build type: workflow) on the first
+      # run; afterwards it is a no-op.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
 
       - uses: actions/upload-pages-artifact@v3
         with:
