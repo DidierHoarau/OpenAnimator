@@ -1,5 +1,6 @@
 import { el } from '../dom'
 import type { Editor } from '../editor'
+import { createModal } from '../modal'
 import { validateScriptPayload } from '@shared/scripting/commands'
 import type { ScriptIssue } from '@shared/scripting/commands'
 import { SCRIPT_EXAMPLES } from '@shared/scripting/examples'
@@ -18,19 +19,19 @@ export interface ScriptConsoleOptions {
  * the payload can be repaired and retried (validate-and-retry flow).
  */
 export function showScriptConsole(editor: Editor, options: ScriptConsoleOptions = {}): void {
-  const overlay = el('div', 'modal-overlay')
-  const modal = el('div', 'modal script-modal')
-
-  const header = el('div', 'modal-header')
-  const closeButton = el('button', 'modal-close', '×')
-  closeButton.title = 'Close the script console'
-  header.append(el('h2', 'modal-title', 'Script console'), closeButton)
-
   const payloadInput = el('textarea', 'script-input') as HTMLTextAreaElement
   payloadInput.spellcheck = false
   payloadInput.placeholder =
     'Paste a {"commands": [...]} payload, or pick an example below. See docs/scripting.md.'
   payloadInput.rows = 14
+
+  const { modal, close } = createModal({ modalClass: 'script-modal', initialFocus: payloadInput })
+
+  const header = el('div', 'modal-header')
+  const closeButton = el('button', 'modal-close', '×')
+  closeButton.title = 'Close the script console'
+  closeButton.addEventListener('click', close)
+  header.append(el('h2', 'modal-title', 'Script console'), closeButton)
 
   const exampleSelect = el('select', 'script-example') as HTMLSelectElement
   exampleSelect.appendChild(document.createElement('option'))
@@ -53,8 +54,7 @@ export function showScriptConsole(editor: Editor, options: ScriptConsoleOptions 
   const cancelButton = el('button', undefined, 'Close')
   const validateButton = el('button', undefined, 'Validate')
   const runButton = el('button', 'primary', 'Run script')
-  cancelButton.addEventListener('click', () => overlay.remove())
-  closeButton.addEventListener('click', () => overlay.remove())
+  cancelButton.addEventListener('click', close)
   actions.append(cancelButton, validateButton, runButton)
 
   const showIssues = (title: string, issues: ScriptIssue[]): void => {
@@ -112,8 +112,6 @@ export function showScriptConsole(editor: Editor, options: ScriptConsoleOptions 
   })
 
   modal.append(header, exampleSelect, payloadInput, output, actions)
-  overlay.appendChild(modal)
-  document.body.appendChild(overlay)
   payloadInput.focus()
 }
 

@@ -14,7 +14,7 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/shared/**'],
+      include: ['src/shared/**', 'src/renderer/src/export/runExport.ts', 'src/renderer/src/modal.ts'],
       reporter: ['text', 'html', 'lcov'],
       thresholds: {
         lines: 75,

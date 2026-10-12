@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { encodeGif, gifDelayMs } from './gifEncode'
+import { createIncrementalGifEncoder, encodeGif, gifDelayMs } from './gifEncode'
 
 function solidFrame(value: number, alpha = 255, size = 4): { data: Uint8Array; width: number; height: number } {
   const data = new Uint8Array(size * size * 4)
@@ -69,5 +69,33 @@ describe('encodeGif', () => {
   it('derives the delay from the export fps', () => {
     expect(gifDelayMs({ fps: 12 })).toBe(83)
     expect(gifDelayMs({ fps: 50 })).toBe(20)
+  })
+})
+
+describe('createIncrementalGifEncoder', () => {
+  it('produces the exact same bytes as the batch encoder', () => {
+    const frames = [
+      { ...solidFrame(10, 0), delayMs: 83 },
+      { ...solidFrame(120), delayMs: 83 },
+      { ...solidFrame(240, 128), delayMs: 83 }
+    ]
+    expect(encodeGif(frames)).toEqual(
+      (() => {
+        const encoder = createIncrementalGifEncoder()
+        for (const frame of frames) encoder.addFrame(frame)
+        return encoder.finish()
+      })()
+    )
+  })
+
+  it('preserves transparency flags and delays frame by frame', () => {
+    const encoder = createIncrementalGifEncoder()
+    encoder.addFrame({ ...solidFrame(10, 0), delayMs: 100 })
+    const gif = encoder.finish()
+
+    const gce = findGce(gif)
+    expect(gce).toBeGreaterThan(0)
+    expect((gif[gce + 3] & 0b1) === 1).toBe(true)
+    expect(gif[gce + 4] | (gif[gce + 5] << 8)).toBe(10)
   })
 })

@@ -4,6 +4,7 @@ import { createId } from '@shared/document'
 import { importSvgAsVectors } from '@shared/svgImport'
 
 import type { Editor } from './editor'
+import { showAlertDialog } from './modal'
 
 /** How an imported file's bytes are handled. */
 export type ImageFormat = 'png' | 'jpg' | 'webp' | 'gif' | 'svg'
@@ -220,10 +221,17 @@ export async function importImageBytes(
   return true
 }
 
-/** Picks an image file through the OS dialog; null when canceled. */
+/** Picks an image file through the OS dialog; null when canceled. A read
+ * failure of a chosen file is surfaced through an in-app alert. */
 export async function pickImageFile(): Promise<{ fileName: string; bytes: Uint8Array } | null> {
   const result = await window.api.pickImageFile('Import image')
-  return result.canceled ? null : { fileName: result.fileName, bytes: result.bytes }
+  if (result.canceled) {
+    if (result.error) {
+      void showAlertDialog({ title: 'Import failed', message: result.error })
+    }
+    return null
+  }
+  return { fileName: result.fileName, bytes: result.bytes }
 }
 
 /** Imports an image picked through the OS file dialog (Ctrl+I / toolbar). */

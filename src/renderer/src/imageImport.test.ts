@@ -161,7 +161,7 @@ describe('importImageBytes', () => {
     await importImageBytes(editor, 'icon.svg', SVG_BYTES, undefined, encoded)
     expect(encoded.encodePng).toHaveBeenCalledWith(SVG_BYTES, 'image/svg+xml', { width: 40, height: 30 }, 2)
     expect(addResource).toHaveBeenCalledWith(RASTER_PNG, 'icon.svg')
-    expect(message).toHaveBeenCalledWith('SVG imported as a raster image: no supported drawable shapes were found')
+    expect(message).toHaveBeenCalledWith('SVG imported as a raster image: no supported drawable shapes were found', { persistent: false })
     const node = editor.document.layers[0].keyframes[0].nodes[0] as ImageNode
     expect(node.type).toBe('image')
     expect(node.naturalWidth).toBe(80)
@@ -180,7 +180,7 @@ describe('importImageBytes', () => {
     )
     await importImageBytes(editor, 'photo.svg', withFilter, undefined, deps())
     expect(addResource).toHaveBeenCalled()
-    expect(message).toHaveBeenCalledWith('SVG imported as a raster image: unsupported element <filter>')
+    expect(message).toHaveBeenCalledWith('SVG imported as a raster image: unsupported element <filter>', { persistent: false })
   })
 
   it('imports supported SVGs as editable vectors on one undo step', async () => {
@@ -266,7 +266,7 @@ describe('importImageBytes', () => {
     expect(ok).toBe(false)
     expect(addResource).not.toHaveBeenCalled()
     expect(editor.document.layers[0].keyframes[0].nodes.length).toBe(0)
-    expect(message).toHaveBeenCalledWith('Select a visible, unlocked object layer to import the image')
+    expect(message).toHaveBeenCalledWith('Select a visible, unlocked object layer to import the image', { persistent: false })
   })
 
   it('rejects unsupported formats with a status message', async () => {
@@ -283,7 +283,7 @@ describe('importImageBytes', () => {
     )
     expect(ok).toBe(false)
     expect(addResource).not.toHaveBeenCalled()
-    expect(message).toHaveBeenCalledWith('Unsupported image format (PNG, JPG, WebP, GIF or SVG)')
+    expect(message).toHaveBeenCalledWith('Unsupported image format (PNG, JPG, WebP, GIF or SVG)', { persistent: false })
   })
 
   it('reports a decode failure without touching the document', async () => {

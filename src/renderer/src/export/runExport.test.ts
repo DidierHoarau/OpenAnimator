@@ -4,10 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument, createDrawingLayer } from '@shared/document'
 import type { ExportOptions } from '@shared/exportOptions'
+import { createIncrementalGifEncoder } from '@shared/gifEncode'
 import type { TextNode } from '@shared/model'
 import { Editor } from '../editor'
 
-import { runExport, type ExportRunnerDeps } from './runExport'
+import type { GifEncodeClient } from './gifEncodeClient'
+import { createDefaultExportRunnerDeps, runExport, type ExportRunnerDeps } from './runExport'
 
 // The real encoder needs WebCodecs (absent here), so the video path is driven
 // through controllable stubs; everything else stays the actual module.
@@ -27,11 +29,31 @@ vi.mock('./videoEncoder', async (importOriginal) => {
 
 const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 
+interface FakeStream {
+  path: string
+  chunks: Uint8Array[]
+  committed: boolean | null
+}
+
+function inlineGifClient(): GifEncodeClient {
+  const encoder = createIncrementalGifEncoder()
+  return {
+    addFrame: (frame) => {
+      encoder.addFrame(frame)
+      return Promise.resolve()
+    },
+    finish: () => Promise.resolve(encoder.finish()),
+    dispose: () => undefined
+  }
+}
+
 function fakeDeps(overrides: Partial<ExportRunnerDeps> = {}): ExportRunnerDeps & {
   written: Array<{ path: string; bytes: Uint8Array }>
+  streams: FakeStream[]
   messages: string[]
   progress: Array<{ done: number; total: number }>
   picked: Array<{ defaultName: string; filters: unknown }>
+  diagnostics: string[][]
 } {
   const fakeContext = {
     clearRect: () => {},
@@ -59,19 +81,49 @@ function fakeDeps(overrides: Partial<ExportRunnerDeps> = {}): ExportRunnerDeps &
       deps.written.push({ path, bytes })
       return Promise.resolve({ ok: true })
     },
+    openExportStream: (path: string) => {
+      deps.streams.push({ path, chunks: [], committed: null })
+      return Promise.resolve({ ok: true, token: String(deps.streams.length - 1) })
+    },
+    writeExportStream: (token: string, chunk: Uint8Array) => {
+      deps.streams[Number(token)].chunks.push(chunk)
+      return Promise.resolve({ ok: true })
+    },
+    finishExportStream: (token: string, commit: boolean) => {
+      deps.streams[Number(token)].committed = commit
+      return Promise.resolve({ ok: true })
+    },
+    createGifEncodeClient: () => Promise.resolve(inlineGifClient()),
     showMessage: (message: string) => {
       deps.messages.push(message)
     },
     onProgress: (progress: { done: number; total: number }) => {
       deps.progress.push(progress)
     },
+    onDiagnostics: (entries: string[]) => {
+      deps.diagnostics.push(entries)
+    },
     written: [],
+    streams: [],
     messages: [],
     progress: [],
     picked: [],
+    diagnostics: [],
     ...overrides
   }
   return deps as ExportRunnerDeps & typeof deps
+}
+
+/** Concatenated chunk bytes of one staged stream (defaults to the first). */
+function streamBytes(deps: { streams: FakeStream[] }, index = 0): Uint8Array {
+  const chunks = deps.streams[index].chunks
+  const merged = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0))
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return merged
 }
 
 function drawingEditor(frames = 2): Editor {
@@ -96,16 +148,19 @@ function options(overrides: Partial<ExportOptions> = {}): ExportOptions {
 }
 
 describe('runExport', () => {
-  it('exports a PNG sequence ZIP with one entry per frame', async () => {
+  it('streams a PNG sequence ZIP with one entry per frame', async () => {
     const editor = drawingEditor()
     const deps = fakeDeps()
     const result = await runExport(editor, options(), deps, { canceled: false })
 
     expect(result).toBe(true)
     expect(deps.picked[0].defaultName).toBe('demo.zip')
-    expect(deps.written).toHaveLength(1)
-    expect(deps.written[0].path).toBe('/tmp/out')
-    const entries = unzipSync(deps.written[0].bytes)
+    // Streamed: no one-shot write, the staged temp is committed instead.
+    expect(deps.written).toHaveLength(0)
+    expect(deps.streams).toHaveLength(1)
+    expect(deps.streams[0].path).toBe('/tmp/out')
+    expect(deps.streams[0].committed).toBe(true)
+    const entries = unzipSync(streamBytes(deps))
     expect(Object.keys(entries).sort()).toEqual(['frame_0000.png', 'frame_0001.png'])
     expect(deps.messages).toEqual(['Exported to /tmp/out'])
     expect(deps.progress).toEqual([
@@ -132,6 +187,7 @@ describe('runExport', () => {
 
     expect(result).toBe(false)
     expect(deps.written).toHaveLength(0)
+    expect(deps.streams).toHaveLength(0)
     expect(deps.messages[0]).toContain('WebCodecs')
   })
 
@@ -144,9 +200,10 @@ describe('runExport', () => {
 
     expect(result).toBe(false)
     expect(deps.written).toHaveLength(0)
+    expect(deps.streams).toHaveLength(0)
   })
 
-  it('stops between frames and reports when cancellation is requested', async () => {
+  it('aborts the staged stream between frames and reports when cancellation is requested', async () => {
     const editor = drawingEditor()
     const signal = { canceled: false }
     const deps = fakeDeps()
@@ -163,15 +220,41 @@ describe('runExport', () => {
 
     expect(result).toBe(false)
     expect(deps.written).toHaveLength(0)
+    expect(deps.streams[0].committed).toBe(false)
     expect(deps.messages).toContain('Export canceled')
   })
 
-  it('surfaces write failures through the status bar and keeps the result false', async () => {
+  it('aborts the staged stream when a chunk write fails', async () => {
     const editor = drawingEditor()
     const deps = fakeDeps({
-      writeExportFile: () => Promise.resolve({ ok: false, error: 'disk full' })
+      writeExportStream: () => Promise.resolve({ ok: false, error: 'disk full' })
     })
     const result = await runExport(editor, options(), deps, { canceled: false })
+
+    expect(result).toBe(false)
+    expect(deps.streams[0].committed).toBe(false)
+    expect(deps.messages).toEqual(['Export failed: disk full'])
+  })
+
+  it('reports staged-open failures without committing anything', async () => {
+    const editor = drawingEditor()
+    const deps = fakeDeps({
+      openExportStream: () => Promise.resolve({ ok: false, error: 'read-only filesystem' })
+    })
+    const result = await runExport(editor, options(), deps, { canceled: false })
+
+    expect(result).toBe(false)
+    expect(deps.streams).toHaveLength(0)
+    expect(deps.messages).toEqual(['Export failed: read-only filesystem'])
+  })
+
+  it('surfaces one-shot write failures through the status bar and keeps the result false', async () => {
+    const editor = drawingEditor()
+    const deps = fakeDeps({
+      writeExportFile: () => Promise.resolve({ ok: false, error: 'disk full' }),
+      createGifEncodeClient: () => Promise.resolve(inlineGifClient())
+    })
+    const result = await runExport(editor, options({ format: 'gif' }), deps, { canceled: false })
 
     expect(result).toBe(false)
     expect(deps.messages).toEqual(['Export failed: disk full'])
@@ -260,7 +343,8 @@ describe('runExport — audio in video exports', () => {
     await runExport(editor, options({ format: 'gif' }), deps, { canceled: false })
 
     expect(renderAudioMix).not.toHaveBeenCalled()
-    expect(deps.written).toHaveLength(2)
+    expect(deps.written).toHaveLength(1)
+    expect(deps.streams[0].committed).toBe(true)
   })
 
   it('exports the video silently when the mixdown itself fails', async () => {
@@ -350,7 +434,7 @@ describe('runExport — vector and spritesheet formats', () => {
     expect(deps.messages).toEqual(['Exported to /tmp/out'])
   })
 
-  it('packs spritesheet atlases with metadata', async () => {
+  it('streams spritesheet atlases with metadata', async () => {
     const editor = drawingEditor(6)
     const deps = fakeDeps({ appVersion: () => Promise.resolve('9.9.9') })
     const result = await runExport(
@@ -362,7 +446,9 @@ describe('runExport — vector and spritesheet formats', () => {
 
     expect(result).toBe(true)
     expect(deps.picked[0].defaultName).toBe('demo.zip')
-    const entries = unzipSync(deps.written[0].bytes)
+    expect(deps.written).toHaveLength(0)
+    expect(deps.streams[0].committed).toBe(true)
+    const entries = unzipSync(streamBytes(deps))
     expect(Array.from(entries['atlas.png'].slice(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47])
     const metadata = JSON.parse(strFromU8(entries['atlas.json'])) as {
       meta: { version: string }
@@ -372,7 +458,7 @@ describe('runExport — vector and spritesheet formats', () => {
     expect(metadata.openanimator.frameCount).toBe(6)
   })
 
-  it('appends the export diagnostic count to the success message', async () => {
+  it('appends the export diagnostic count and hands the list to onDiagnostics', async () => {
     const editor = drawingEditor()
     const layer = editor.document.layers[0]
     if (layer.kind !== 'object') throw new Error('expected an object layer')
@@ -397,5 +483,67 @@ describe('runExport — vector and spritesheet formats', () => {
 
     expect(result).toBe(true)
     expect(deps.messages).toEqual(['Exported to /tmp/out (1 export diagnostic)'])
+    expect(deps.diagnostics).toHaveLength(1)
+    expect(deps.diagnostics[0]).toHaveLength(1)
+    expect(deps.diagnostics[0][0]).toContain('Missing Font')
+  })
+})
+
+describe('createDefaultExportRunnerDeps', () => {
+  it('wires every dependency to the window.api surface', async () => {
+    const api = {
+      pickExportPath: vi.fn(() => Promise.resolve({ canceled: true as const })),
+      writeExportFile: vi.fn(() => Promise.resolve({ ok: true as const })),
+      openExportStream: vi.fn(() => Promise.resolve({ ok: true as const, token: 't1' })),
+      writeExportStream: vi.fn(() => Promise.resolve({ ok: true as const })),
+      finishExportStream: vi.fn(() => Promise.resolve({ ok: true as const })),
+      versions: vi.fn(() =>
+        Promise.resolve({ app: '1.2.3', electron: 'e', chrome: 'c', node: 'n' })
+      )
+    }
+    const previous = window.api
+    window.api = api as unknown as typeof window.api
+    // No Worker in this environment: the GIF factory falls back to the inline
+    // encoder, which the wiring exercises end to end.
+    vi.stubGlobal('Worker', undefined)
+    try {
+      const editor = drawingEditor()
+      const messages: Array<{ message: string; persistent: boolean }> = []
+      editor.onMessage((message, options) => messages.push({ message, persistent: options.persistent }))
+      const deps = createDefaultExportRunnerDeps(editor)
+
+      expect(await deps.pickExportPath({ defaultName: 'x.zip', filters: [] })).toEqual({
+        canceled: true
+      })
+      expect(await deps.writeExportFile('/tmp/x', new Uint8Array([1]))).toEqual({ ok: true })
+      const opened = await deps.openExportStream('/tmp/x')
+      expect(opened).toEqual({ ok: true, token: 't1' })
+      if (!opened.ok) throw new Error('stream did not open')
+      await deps.writeExportStream(opened.token, new Uint8Array([2]))
+      await deps.finishExportStream(opened.token, true)
+      expect(api.writeExportStream).toHaveBeenCalledWith('t1', new Uint8Array([2]))
+      expect(api.finishExportStream).toHaveBeenCalledWith('t1', true)
+
+      deps.showMessage('hello')
+      expect(messages).toEqual([{ message: 'hello', persistent: false }])
+
+      expect(await deps.appVersion?.()).toBe('1.2.3')
+      expect(await deps.resolveResourceDataUrl('missing')).toBeNull()
+
+      const client = await deps.createGifEncodeClient?.()
+      if (!client) throw new Error('no GIF client')
+      await client.addFrame({
+        data: new Uint8ClampedArray(4),
+        width: 1,
+        height: 1,
+        delayMs: 100
+      })
+      const gif = await client.finish()
+      client.dispose()
+      expect(String.fromCharCode(...gif.slice(0, 6))).toBe('GIF89a')
+    } finally {
+      vi.unstubAllGlobals()
+      window.api = previous
+    }
   })
 })

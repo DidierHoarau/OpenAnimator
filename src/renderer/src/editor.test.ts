@@ -937,7 +937,7 @@ describe('Editor — document palette', () => {
     )
     editor.addPaletteColor('#ffffff')
     expect(editor.document.palette).toHaveLength(48)
-    expect(message).toHaveBeenCalledWith('Palette is full (48 colors)')
+    expect(message).toHaveBeenCalledWith('Palette is full (48 colors)', { persistent: false })
   })
 
   it('removePaletteColor removes by normalized color as one undo step', () => {

@@ -14,6 +14,12 @@ export const APP_OPEN_RELEASE_CHANNEL = 'openanimator:open-release'
  * argument, second instance or macOS open-file event). */
 export const APP_OPEN_FILE_CHANNEL = 'openanimator:open-file'
 
+/** IPC channel asking the renderer whether the window may close (main→renderer). */
+export const APP_CLOSE_REQUEST_CHANNEL = 'openanimator:close-request'
+
+/** IPC channel answering a close request with `allow: boolean` (renderer→main). */
+export const APP_CLOSE_RESPONSE_CHANNEL = 'openanimator:close-response'
+
 import type { AnimatorDocument, Asset } from './model'
 import type { FontEmbeddingPolicy } from './fontPolicy'
 import type { RecoveryInfo } from './recovery'
@@ -35,6 +41,9 @@ export const LIBRARY_REMOVE_CHANNEL = 'openanimator:library-remove'
 export const LIBRARY_RENAME_CHANNEL = 'openanimator:library-rename'
 export const EXPORT_PICK_PATH_CHANNEL = 'openanimator:export-pick-path'
 export const EXPORT_WRITE_CHANNEL = 'openanimator:export-write'
+export const EXPORT_STREAM_OPEN_CHANNEL = 'openanimator:export-stream-open'
+export const EXPORT_STREAM_WRITE_CHANNEL = 'openanimator:export-stream-write'
+export const EXPORT_STREAM_COMMIT_CHANNEL = 'openanimator:export-stream-commit'
 export const PALETTE_GET_CHANNEL = 'openanimator:palette-get'
 export const PALETTE_SET_CHANNEL = 'openanimator:palette-set'
 export const FONT_LIST_CHANNEL = 'openanimator:font-list'
@@ -44,6 +53,7 @@ export const RECOVERY_WRITE_CHANNEL = 'openanimator:recovery-write'
 export const RECOVERY_CHECK_CHANNEL = 'openanimator:recovery-check'
 export const RECOVERY_READ_CHANNEL = 'openanimator:recovery-read'
 export const RECOVERY_CLEAR_CHANNEL = 'openanimator:recovery-clear'
+export const RECOVERY_LIST_UNSAVED_CHANNEL = 'openanimator:recovery-list-unsaved'
 
 export interface AppVersions {
   app: string
@@ -52,7 +62,11 @@ export interface AppVersions {
   node: string
 }
 
-export type SaveAsResult = { canceled: true } | { canceled: false; path: string }
+/** Result of a "pick a destination file" dialog: canceled, or a path. */
+export type PickPathResult = { canceled: true } | { canceled: false; path: string }
+
+/** Result of a Save As flow: canceled, a written path, or a write failure. */
+export type SaveAsResult = PickPathResult | { canceled: false; error: string }
 
 export type SaveToResult = { ok: true } | { ok: false; error: string }
 
@@ -72,7 +86,7 @@ export type ReadResult =
   | { ok: false; error: string }
 
 export type ImagePickResult =
-  | { canceled: true }
+  | { canceled: true; error?: string }
   | { canceled: false; fileName: string; bytes: Uint8Array }
 
 /** Audio files are picked through the same raw-bytes contract as images. */
@@ -110,6 +124,9 @@ export interface ExportPathRequest {
 
 export type ExportWriteResult = { ok: true } | { ok: false; error: string }
 
+/** Open result of a staged export write; the token addresses the stream. */
+export type ExportStreamOpenResult = { ok: true; token: string } | { ok: false; error: string }
+
 /** One installed system font family, with its upright weights. */
 export interface SystemFont {
   family: string
@@ -146,9 +163,15 @@ export interface OpenAnimatorApi {
   removeLibraryAsset(id: string): Promise<void>
   renameLibraryAsset(id: string, name: string): Promise<void>
   /** Asks the user for an export destination through a save dialog. */
-  pickExportPath(request: ExportPathRequest): Promise<SaveAsResult>
+  pickExportPath(request: ExportPathRequest): Promise<PickPathResult>
   /** Writes rendered export bytes to the chosen destination. */
   writeExportFile(path: string, bytes: Uint8Array): Promise<ExportWriteResult>
+  /** Opens a staged export write: chunks go to `<path>.tmp` until commit. */
+  openExportStream(path: string): Promise<ExportStreamOpenResult>
+  /** Appends one chunk to a staged export write. */
+  writeExportStream(token: string, chunk: Uint8Array): Promise<ExportWriteResult>
+  /** Commits (atomic rename) or aborts (delete the temp) a staged write. */
+  finishExportStream(token: string, commit: boolean): Promise<ExportWriteResult>
   /** Reads the persistent global color palette. */
   loadGlobalPalette(): Promise<string[]>
   /** Replaces the persistent global color palette. */
@@ -168,10 +191,17 @@ export interface OpenAnimatorApi {
   onUpdateAvailable(listener: (info: UpdateAvailableInfo) => void): () => void
   /** Listens for `.oanim` paths to open; returns an unsubscribe function. */
   onOpenFile(listener: (path: string) => void): () => void
-  /** Writes an autosave recovery snapshot of the document. */
-  writeRecovery(path: string, document: AnimatorDocument): Promise<SaveToResult>
+  /** Listens for window-close requests; returns an unsubscribe function. */
+  onCloseRequest(listener: () => void): () => void
+  /** Answers the latest close request: `allow` closes the window or quits. */
+  respondToCloseRequest(allow: boolean): Promise<void>
+  /** Writes an autosave recovery snapshot of the document. `path` is the
+   * project path, or a session key for a never-saved document. */
+  writeRecovery(path: string, document: AnimatorDocument, untitled: boolean): Promise<SaveToResult>
   /** Pending recovery snapshot for the project, when newer than the file. */
   checkRecovery(path: string): Promise<RecoveryInfo | null>
+  /** Untitled-document recovery snapshots, newest first. */
+  listUnsavedRecoveries(): Promise<RecoveryInfo[]>
   /** Reads the recovery snapshot of the project. */
   readRecovery(path: string): Promise<ReadResult>
   /** Deletes the recovery snapshot of the project. */

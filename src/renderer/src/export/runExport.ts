@@ -1,16 +1,30 @@
+import { strToU8 } from 'fflate'
+
 import type { Editor } from '../editor'
 import type { ExportOptions } from '@shared/exportOptions'
-import { EXPORT_FORMATS, exportExtension, exportFrameCount, exportPixelSize } from '@shared/exportOptions'
-import { encodeGif, gifDelayMs } from '@shared/gifEncode'
-import { packPngSequence } from '@shared/pngSequence'
+import {
+  EXPORT_FORMATS,
+  exportExtension,
+  exportFrameCount,
+  exportPixelSize
+} from '@shared/exportOptions'
+import { gifDelayMs } from '@shared/gifEncode'
 import { buildLottieAnimation, packDotLottie, serializeLottie } from '@shared/lottieExport'
 import { exportAnimatedSvg } from '@shared/exportSvgAnimation'
-import { buildSpritesheetMetadata, computeSpritesheetGrid, packSpritesheet } from '@shared/spritesheet'
-import type { ExportPathRequest, ExportWriteResult, SaveAsResult } from '@shared/api'
+import { buildSpritesheetMetadata, computeSpritesheetGrid } from '@shared/spritesheet'
+import { StreamingZip } from '@shared/streamingZip'
+import type {
+  ExportPathRequest,
+  ExportStreamOpenResult,
+  ExportWriteResult,
+  PickPathResult
+} from '@shared/api'
 
 import { FrameRasterizer, createDefaultFrameRasterDeps } from './frameRaster'
 import type { FrameRasterDeps } from './frameRaster'
 import { createEditorAudioMixdown } from './audioMixdown'
+import { createGifEncodeClient } from './gifEncodeClient'
+import type { GifEncodeClient } from './gifEncodeClient'
 import { reconcileEmbeddedFonts } from '../fontEmbedding'
 import { createResourceDataUrlResolver } from './resourceDataUrl'
 import { textNodeOutline } from '../textOutlines'
@@ -23,11 +37,21 @@ export interface ExportProgress {
 }
 
 export interface ExportRunnerDeps extends FrameRasterDeps {
-  pickExportPath(request: ExportPathRequest): Promise<SaveAsResult>
+  pickExportPath(request: ExportPathRequest): Promise<PickPathResult>
   writeExportFile(path: string, bytes: Uint8Array): Promise<ExportWriteResult>
+  /** Staged write used by the archive formats: bytes stream into `<dest>.tmp`
+   * and are renamed onto the destination only when the export completes. */
+  openExportStream(path: string): Promise<ExportStreamOpenResult>
+  writeExportStream(token: string, chunk: Uint8Array): Promise<ExportWriteResult>
+  finishExportStream(token: string, commit: boolean): Promise<ExportWriteResult>
   /** Status-bar feedback (progress milestones, results, errors). */
   showMessage(message: string): void
   onProgress?(progress: ExportProgress): void
+  /** Non-fatal export notes (vector placeholders), surfaced in the dialog. */
+  onDiagnostics?(diagnostics: string[]): void
+  /** GIF encoder factory: a worker in the export UI, the inline encoder in
+   * environments without one. */
+  createGifEncodeClient?(): Promise<GifEncodeClient>
   /** Embeds the font subsets the document renders (optional; harnesses that
    * rasterize fixtures directly may omit it). */
   reconcileFonts?(): Promise<unknown>
@@ -47,6 +71,10 @@ export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps 
     resolveResourceDataUrl: createResourceDataUrlResolver(editor.resources),
     pickExportPath: (request) => window.api.pickExportPath(request),
     writeExportFile: (path, bytes) => window.api.writeExportFile(path, bytes),
+    openExportStream: (path) => window.api.openExportStream(path),
+    writeExportStream: (token, chunk) => window.api.writeExportStream(token, chunk),
+    finishExportStream: (token, commit) => window.api.finishExportStream(token, commit),
+    createGifEncodeClient,
     showMessage: (message) => editor.showMessage(message),
     reconcileFonts: () => reconcileEmbeddedFonts(editor),
     renderAudioMix: createEditorAudioMixdown(editor),
@@ -55,13 +83,18 @@ export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps 
   }
 }
 
+/** The atlas PNG streams to the stage in bounded slices, not one huge chunk. */
+const ATLAS_CHUNK_BYTES = 1024 * 1024
+
 /**
  * Runs one export end to end: asks for the destination, encodes the chosen
  * format — rasterizing frame ranges through the shared pipeline or building
- * vector output directly — and writes the result. Returns true when a file
- * was written; canceling or errors surface through the status bar and return
- * false. `signal.canceled` is polled between frames — the dialog sets it from
- * its Cancel button.
+ * vector output directly — and writes the result. The archive formats stream
+ * through a staged temp file (committed on success, aborted on failure or
+ * cancel); the others write atomically in one shot. Returns true when a file
+ * was committed; canceling or errors surface through the status bar and
+ * return false. `signal.canceled` is polled between frames — the dialog sets
+ * it from its Cancel button.
  */
 export async function runExport(
   editor: Editor,
@@ -92,7 +125,7 @@ export async function runExport(
     // Embed the font subsets the document renders before rasterizing, so the
     // exported frames keep their typography everywhere.
     await deps.reconcileFonts?.()
-    let bytes: Uint8Array
+    let bytes: Uint8Array | null = null
     if (options.format === 'lottie' || options.format === 'dotlottie') {
       const built = await buildLottieAnimation(
         document,
@@ -149,26 +182,51 @@ export async function runExport(
         toFrame: options.toFrame,
         version: await appVersionOf(deps)
       })
-      bytes = packSpritesheet(await rasterizer.canvasToPng(atlas), metadata)
+      const atlasPng = await rasterizer.canvasToPng(atlas)
+      await withExportStream(deps, pick.path, async (zip) => {
+        zip.addFile('atlas.png', atlasPng, ATLAS_CHUNK_BYTES)
+        zip.addFile('atlas.json', strToU8(JSON.stringify(metadata, null, 2)))
+      })
     } else if (options.format === 'png-sequence') {
-      const pngs: Uint8Array[] = []
-      for (let frame = options.fromFrame; frame <= options.toFrame; frame++) {
-        throwIfCanceled(signal)
-        const canvas = await rasterizer.rasterizeToCanvas(frame)
-        pngs.push(await rasterizer.canvasToPng(canvas))
-        reportProgress(deps, pngs.length, total)
-      }
-      bytes = packPngSequence(pngs)
+      // One frame in memory at a time: rasterize, push into the streaming
+      // zip, and let the sink write it out before rasterizing the next.
+      let rendered = 0
+      await withExportStream(deps, pick.path, async (zip) => {
+        for (let frame = options.fromFrame; frame <= options.toFrame; frame++) {
+          throwIfCanceled(signal)
+          const canvas = await rasterizer.rasterizeToCanvas(frame)
+          const png = await rasterizer.canvasToPng(canvas)
+          zip.addFile(`frame_${String(rendered).padStart(4, '0')}.png`, png)
+          rendered++
+          reportProgress(deps, rendered, total)
+        }
+      })
     } else if (options.format === 'gif') {
       const delayMs = gifDelayMs(options)
-      const frames = []
-      for (let frame = options.fromFrame; frame <= options.toFrame; frame++) {
+      const client = deps.createGifEncodeClient
+        ? await deps.createGifEncodeClient()
+        : await createGifEncodeClient()
+      try {
+        let done = 0
+        for (let frame = options.fromFrame; frame <= options.toFrame; frame++) {
+          throwIfCanceled(signal)
+          const canvas = await rasterizer.rasterizeToCanvas(frame)
+          await client.addFrame({
+            data: rasterizer.canvasToRgba(canvas),
+            width,
+            height,
+            delayMs
+          })
+          done++
+          reportProgress(deps, done, total)
+        }
+        // A cancel that landed while the last frame encoded must not produce
+        // a file either.
         throwIfCanceled(signal)
-        const canvas = await rasterizer.rasterizeToCanvas(frame)
-        frames.push({ data: rasterizer.canvasToRgba(canvas), width, height, delayMs })
-        reportProgress(deps, frames.length, total)
+        bytes = await client.finish()
+      } finally {
+        client.dispose()
       }
-      bytes = encodeGif(frames)
     } else {
       if (!canEncodeVideo()) {
         throw new Error('Video export needs WebCodecs, which this environment does not provide')
@@ -197,9 +255,15 @@ export async function runExport(
       alphaDropped = !encoded.alphaIncluded
     }
 
-    const written = await deps.writeExportFile(pick.path, bytes)
-    if (!written.ok) throw new Error(written.error)
+    // A cancel that landed while the vector/video formats were built must not
+    // write a file either (streamed formats abort inside withExportStream).
+    throwIfCanceled(signal)
+    if (bytes !== null) {
+      const written = await deps.writeExportFile(pick.path, bytes)
+      if (!written.ok) throw new Error(written.error)
+    }
     deps.showMessage(successMessage(pick.path, { alphaDropped, audioDropped, diagnostics }))
+    if (diagnostics.length > 0) deps.onDiagnostics?.(diagnostics)
     return true
   } catch (error) {
     if (error instanceof CanceledError || signal.canceled) {
@@ -210,6 +274,35 @@ export async function runExport(
     console.error('OpenAnimator: export failed', error)
     deps.showMessage(`Export failed: ${message}`)
     return false
+  }
+}
+
+/**
+ * Runs one streamed archive export against a staged write: opens the temp,
+ * feeds the zip chunks to the sink, commits on success. Any error (including
+ * cancellation) aborts the staged write first and rethrows, so a failed or
+ * canceled export never creates the destination file.
+ */
+async function withExportStream(
+  deps: ExportRunnerDeps,
+  path: string,
+  produce: (zip: StreamingZip) => Promise<void>
+): Promise<void> {
+  const opened = await deps.openExportStream(path)
+  if (!opened.ok) throw new Error(opened.error)
+  const zip = new StreamingZip(async (chunk) => {
+    const result = await deps.writeExportStream(opened.token, chunk)
+    if (!result.ok) throw new Error(result.error)
+  })
+  try {
+    await produce(zip)
+    await zip.end()
+    const finished = await deps.finishExportStream(opened.token, true)
+    if (!finished.ok) throw new Error(finished.error)
+  } catch (error) {
+    zip.terminate()
+    await deps.finishExportStream(opened.token, false).catch(() => undefined)
+    throw error
   }
 }
 

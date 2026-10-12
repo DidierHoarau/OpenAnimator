@@ -6,6 +6,7 @@ import type { Asset } from '@shared/model'
 import { nodeToSvgMarkup } from '@shared/renderSvg'
 import type { Editor } from './editor'
 import { importImageViaDialog } from './imageImport'
+import { showConfirmDialog } from './modal'
 import { loadLibraryVisible, saveLibraryVisible, type StorageLike } from './sectionState'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -30,7 +31,7 @@ export interface LibraryDropTarget {
 
 export interface LibraryViewOptions {
   api?: LibraryApi
-  confirm?: (message: string) => boolean
+  confirm?: (message: string) => boolean | Promise<boolean>
   storage?: StorageLike
   dropTarget?: LibraryDropTarget
 }
@@ -62,7 +63,7 @@ export class LibraryView {
   private readonly editor: Editor
   private readonly container: HTMLElement
   private readonly api: LibraryApi | undefined
-  private readonly confirmFn: (message: string) => boolean
+  private readonly confirmFn: (message: string) => boolean | Promise<boolean>
   private readonly storage: StorageLike
   private readonly dropTarget: LibraryDropTarget | undefined
 
@@ -90,7 +91,9 @@ export class LibraryView {
     this.editor = editor
     this.container = container
     this.api = options.api
-    this.confirmFn = options.confirm ?? ((message) => window.confirm(message))
+    this.confirmFn =
+      options.confirm ??
+      ((message) => showConfirmDialog({ title: 'Confirm', message, confirmLabel: 'OK' }))
     this.storage = options.storage ?? window.localStorage
     this.dropTarget = options.dropTarget
     this.visible = loadLibraryVisible(this.storage)
@@ -455,11 +458,11 @@ export class LibraryView {
         instances > 0
           ? `Delete "${asset.name}"? ${instances} instance(s) on the stage will become placeholders.`
           : `Delete "${asset.name}"?`
-      if (!this.confirmFn(warning)) return
+      if (!(await this.confirmFn(warning))) return
       this.editor.deleteAsset(asset.id)
       return
     }
-    if (!this.confirmFn(`Remove "${asset.name}" from My Library?`)) return
+    if (!(await this.confirmFn(`Remove "${asset.name}" from My Library?`))) return
     await this.api?.removeLibraryAsset(asset.id)
     await this.refreshLibrary()
   }

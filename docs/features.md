@@ -16,7 +16,13 @@ reference where one exists; the [README](README.md) has the exhaustive list.
   content-addressed resources (`resources/<sha256>.<ext>`), written
   atomically. Documents migrate transparently from `schemaVersion` 1–6.
   Autosave writes a separate recovery snapshot and offers it back after a
-  crash.
+  crash — including for never-saved (untitled) documents, which recover
+  straight into a **Save As…**. A failed snapshot shows a persistent
+  status-bar warning instead of silently retrying.
+- **Unsaved-changes protection** — closing the window with a dirty document
+  asks **Save / Discard / Cancel** in an in-app prompt (Save covers untitled
+  documents via Save As…). All confirmations and alerts are in-app dialogs
+  with keyboard focus handling — no native popups interrupt the flow.
 
 ## Authoring
 
@@ -64,6 +70,10 @@ reference where one exists; the [README](README.md) has the exhaustive list.
   dotLottie, animated SVG and spritesheet — with per-format scale, fps,
   frame range and transparency rules. The full matrix lives in
   [Export formats](export-formats.md).
+- **Cancellable exports with viewable diagnostics** — Cancel (or ×/Escape)
+  stops a running export within a frame and never leaves a partial file
+  behind; when a successful export carries diagnostics (e.g. missing-font
+  placeholders) the dialog lists them before closing.
 - **Scripting API** — JSON command payloads validate against a published
   schema and run through the same pipeline as UI gestures (one undo entry
   per command, auto-keying included). Use the in-app **Script…** console, or

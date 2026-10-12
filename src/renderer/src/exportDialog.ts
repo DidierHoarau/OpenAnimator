@@ -2,23 +2,49 @@ import { el } from './dom'
 import type { Editor } from './editor'
 import { defaultExportOptions, sanitizeExportOptions, EXPORT_FORMATS } from '@shared/exportOptions'
 import type { ExportOptions } from '@shared/exportOptions'
+import { createModal } from './modal'
+import type { ModalHandle } from './modal'
 import { createDefaultExportRunnerDeps, runExport } from './export/runExport'
 
 /**
  * Export dialog: format, resolution scale, fps, frame range and transparent
  * background, with a progress bar and a Cancel button while the export runs.
  * All values are sanitized through the shared export-options module before
- * the runner sees them.
+ * the runner sees them. Cancel (button, × or Escape) mid-export sets the
+ * runner's cancel signal; the dialog closes once the runner settles. A
+ * successful export carrying diagnostics stays open in a done state with a
+ * collapsible list of them.
  */
 export function showExportDialog(editor: Editor): void {
   const initial = defaultExportOptions(editor.document)
 
-  const overlay = el('div', 'modal-overlay')
-  const modal = el('div', 'modal export-modal')
+  const signal = { canceled: false }
+  let running = false
+  let diagnostics: string[] = []
+  let modalHandle: ModalHandle | null = null
+
+  const cancelExport = (): void => {
+    if (signal.canceled) return
+    signal.canceled = true
+    cancelButton.disabled = true
+    closeButton.disabled = true
+    progressLabel.textContent = 'Cancelling…'
+  }
+  const requestClose = (): void => {
+    if (running) {
+      cancelExport()
+      return
+    }
+    modalHandle?.close()
+  }
+
+  modalHandle = createModal({ modalClass: 'export-modal', onRequestClose: requestClose })
+  const { modal } = modalHandle
 
   const header = el('div', 'modal-header')
   const closeButton = el('button', 'modal-close', '×')
   closeButton.title = 'Close the export dialog'
+  closeButton.addEventListener('click', requestClose)
   header.append(el('h2', 'modal-title', 'Export animation'), closeButton)
 
   const form = el('div', 'export-form')
@@ -70,11 +96,19 @@ export function showExportDialog(editor: Editor): void {
   progressWrap.appendChild(progressBar)
   const progressLabel = el('span', 'export-progress-label', '')
 
+  // Done state, shown only when a successful export carries diagnostics.
+  const doneWrap = el('div', 'export-done hidden')
+  const doneTitle = el('p', 'export-done-title', '')
+  const diagnosticsDetails = el('details', 'export-diagnostics')
+  const diagnosticsSummary = el('summary', undefined, '')
+  const diagnosticsList = el('ul', 'export-diagnostics-list')
+  diagnosticsDetails.append(diagnosticsSummary, diagnosticsList)
+  doneWrap.append(doneTitle, diagnosticsDetails)
+
   const actions = el('div', 'modal-actions')
   const exportButton = el('button', 'primary', 'Export…')
   const cancelButton = el('button', undefined, 'Cancel')
-  cancelButton.addEventListener('click', () => overlay.remove())
-  closeButton.addEventListener('click', () => overlay.remove())
+  cancelButton.addEventListener('click', requestClose)
   actions.append(cancelButton, exportButton)
 
   // MP4 is the only format that cannot carry an alpha channel; Lottie and
@@ -89,6 +123,19 @@ export function showExportDialog(editor: Editor): void {
   formatSelect.addEventListener('change', syncFormatAvailability)
   syncFormatAvailability()
 
+  const showDiagnostics = (entries: string[]): void => {
+    form.classList.add('hidden')
+    progressWrap.classList.add('hidden')
+    progressLabel.classList.add('hidden')
+    exportButton.classList.add('hidden')
+    cancelButton.textContent = 'Close'
+    doneTitle.textContent = `Export finished with ${entries.length} diagnostic${entries.length === 1 ? '' : 's'} to review.`
+    diagnosticsSummary.textContent = `${entries.length} diagnostic${entries.length === 1 ? '' : 's'}`
+    diagnosticsList.replaceChildren(...entries.map((entry) => el('li', undefined, entry)))
+    diagnosticsDetails.open = true
+    doneWrap.classList.remove('hidden')
+  }
+
   exportButton.addEventListener('click', () => {
     const raw: Partial<ExportOptions> = {
       format: formatSelect.value as ExportOptions['format'],
@@ -99,7 +146,8 @@ export function showExportDialog(editor: Editor): void {
       transparent: transparentInput.checked
     }
     const options = sanitizeExportOptions(raw, editor.document)
-    const signal = { canceled: false }
+    diagnostics = []
+    running = true
     form.classList.add('hidden')
     progressWrap.classList.remove('hidden')
     exportButton.disabled = true
@@ -108,9 +156,15 @@ export function showExportDialog(editor: Editor): void {
       onProgress: ({ done, total }) => {
         progressBar.style.width = `${Math.round((done / total) * 100)}%`
         progressLabel.textContent = `Rendering frame ${done} of ${total}…`
+      },
+      onDiagnostics: (entries) => {
+        diagnostics = entries
       }
     }, signal).then((written) => {
-      if (written || signal.canceled) overlay.remove()
+      running = false
+      if (signal.canceled) modalHandle?.close()
+      else if (written && diagnostics.length > 0) showDiagnostics(diagnostics)
+      else if (written) modalHandle?.close()
       else {
         // Failure: restore the form so the options stay editable.
         form.classList.remove('hidden')
@@ -120,9 +174,7 @@ export function showExportDialog(editor: Editor): void {
     })
   })
 
-  modal.append(header, form, progressWrap, progressLabel, actions)
-  overlay.appendChild(modal)
-  document.body.appendChild(overlay)
+  modal.append(header, form, progressWrap, progressLabel, doneWrap, actions)
 }
 
 function labeledField(label: string, control: HTMLElement): HTMLElement {

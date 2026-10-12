@@ -133,8 +133,7 @@ export function registerProjectHandlers(): void {
       await writeProjectFile(result.filePath, document)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      dialog.showErrorBox('Save failed', `Could not write the project file: ${message}`)
-      return { canceled: true }
+      return { canceled: false, error: message }
     }
     return { canceled: false, path: result.filePath }
   })
@@ -194,8 +193,7 @@ export function registerProjectHandlers(): void {
         return { canceled: false, fileName, bytes: new Uint8Array(bytes) }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        dialog.showErrorBox('Import failed', `Could not read the image file: ${message}`)
-        return { canceled: true }
+        return { canceled: true, error: `Could not read the image file: ${message}` }
       }
     }
   )
@@ -216,8 +214,7 @@ export function registerProjectHandlers(): void {
         return { canceled: false, fileName, bytes: new Uint8Array(bytes) }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        dialog.showErrorBox('Import failed', `Could not read the audio file: ${message}`)
-        return { canceled: true }
+        return { canceled: true, error: `Could not read the audio file: ${message}` }
       }
     }
   )

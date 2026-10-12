@@ -3,9 +3,9 @@ import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
 import type { MenuItemConstructorOptions } from 'electron'
 
-import { APP_API_CHANNEL, APP_MENU_COMMAND_CHANNEL, APP_OPEN_FILE_CHANNEL } from '../shared/api'
+import { APP_API_CHANNEL, APP_CLOSE_REQUEST_CHANNEL, APP_CLOSE_RESPONSE_CHANNEL, APP_MENU_COMMAND_CHANNEL, APP_OPEN_FILE_CHANNEL } from '../shared/api'
 import type { AppVersions, MenuCommand } from '../shared/api'
-import { registerExportHandlers } from './exports'
+import { abortStagedExports, registerExportHandlers } from './exports'
 import { registerFontHandlers } from './fonts'
 import { registerLibraryHandlers } from './library'
 import { projectPathFromArgv } from './openFiles'
@@ -14,12 +14,25 @@ import { registerProjectHandlers } from './projects'
 import { registerRecoveryHandlers } from './recovery'
 import { registerUpdateHandlers, setupAutoUpdates } from './updates'
 
+// Test hook: the E2E suite launches every instance with a fresh userData
+// directory so recovery snapshots cannot leak from one test to the next.
+if (process.env['OPENANIMATOR_USER_DATA_DIR']) {
+  app.setPath('userData', process.env['OPENANIMATOR_USER_DATA_DIR'])
+}
+
 let mainWindow: BrowserWindow | null = null
 /** Whether the current window's page finished its first load (the renderer
  * listener for open-file deliveries only exists from then on). */
 let mainWindowLoaded = false
 /** `.oanim` path delivered before the renderer was ready to receive it. */
 let pendingProjectPath: string | null = null
+/** Windows whose close the renderer already allowed (single window by design:
+ * the application holds the single-instance lock). */
+const closeConfirmed = new WeakSet<BrowserWindow>()
+/** Whether a close request is awaiting the renderer's answer. */
+let closeRequestPending = false
+/** Whether the current close comes from quitting (Cmd+Q, File→Quit). */
+let quitInProgress = false
 
 /** Routes a `.oanim` path to the renderer, buffering it until the window's
  * page has finished loading. */
@@ -109,6 +122,20 @@ function createWindow(): void {
       mainWindow = null
       mainWindowLoaded = false
     }
+    // An export interrupted by the close cannot keep its staged temp around.
+    void abortStagedExports()
+  })
+
+  // Unsaved-changes protection: the renderer answers close requests (in-app
+  // Save / Discard / Cancel prompt for dirty documents). A quit re-runs
+  // app.quit() once the renderer allows the close.
+  window.on('close', (event) => {
+    if (closeConfirmed.has(window)) return
+    if (window.webContents.isDestroyed()) return
+    event.preventDefault()
+    if (closeRequestPending) return
+    closeRequestPending = true
+    window.webContents.send(APP_CLOSE_REQUEST_CHANNEL)
   })
 
   window.webContents.on('did-start-loading', () => {
@@ -165,6 +192,19 @@ if (!app.requestSingleInstanceLock()) {
     registerUpdateHandlers()
     installApplicationMenu()
 
+    ipcMain.handle(APP_CLOSE_RESPONSE_CHANNEL, (event, allow: boolean): void => {
+      closeRequestPending = false
+      if (!allow) {
+        quitInProgress = false
+        return
+      }
+      const window = BrowserWindow.fromWebContents(event.sender)
+      if (!window) return
+      closeConfirmed.add(window)
+      if (quitInProgress) app.quit()
+      else window.close()
+    })
+
     ipcMain.handle(APP_API_CHANNEL, (): AppVersions => ({
       app: app.getVersion(),
       electron: process.versions.electron ?? 'unknown',
@@ -188,6 +228,10 @@ if (!app.requestSingleInstanceLock()) {
         createWindow()
       }
     })
+  })
+
+  app.on('before-quit', () => {
+    quitInProgress = true
   })
 
   app.on('window-all-closed', () => {

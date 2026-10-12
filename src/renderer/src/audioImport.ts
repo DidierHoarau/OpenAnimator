@@ -1,4 +1,5 @@
 import type { Editor } from './editor'
+import { showAlertDialog } from './modal'
 
 /** Audio formats the importer accepts (the browsers' decodable set). */
 export type AudioFormat = 'wav' | 'mp3' | 'ogg'
@@ -72,10 +73,17 @@ export async function importAudioBytes(
   }
 }
 
-/** Picks an audio file through the OS dialog; null when canceled. */
+/** Picks an audio file through the OS dialog; null when canceled. A read
+ * failure of a chosen file is surfaced through an in-app alert. */
 export async function pickAudioFile(): Promise<{ fileName: string; bytes: Uint8Array } | null> {
   const result = await window.api.pickAudioFile('Import audio')
-  return result.canceled ? null : { fileName: result.fileName, bytes: result.bytes }
+  if (result.canceled) {
+    if (result.error) {
+      void showAlertDialog({ title: 'Import failed', message: result.error })
+    }
+    return null
+  }
+  return { fileName: result.fileName, bytes: result.bytes }
 }
 
 /** Imports an audio file picked through the OS file dialog (toolbar). */

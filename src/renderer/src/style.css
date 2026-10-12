@@ -1398,6 +1398,10 @@ input:disabled {
   opacity: 1;
 }
 
+.statusbar-message.persistent {
+  color: #f87171;
+}
+
 .export-modal {
   width: min(440px, 92vw);
 }
@@ -1471,6 +1475,44 @@ input:disabled {
   font-size: 11px;
   color: var(--muted);
   min-height: 14px;
+}
+
+.export-done {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.export-done-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.export-diagnostics {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-deep);
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.export-diagnostics summary {
+  cursor: pointer;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12px;
+  user-select: none;
+}
+
+.export-diagnostics-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.4;
 }
 
 .export-modal .modal-actions {
