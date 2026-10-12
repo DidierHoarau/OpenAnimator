@@ -81,6 +81,7 @@ demo is loaded so there is something on the stage to play with.
 | `V` / `R` / `O`     | Select / Rectangle / Ellipse tool       |
 | `L` / `P` / `T`     | Line / Pen / Text tool                  |
 | `N` / `B` / `E`     | Vector brush / Brush / Eraser tool      |
+| `A` / `I`           | Direct-selection (edit path anchors) / Eyedropper tool |
 | `Space`             | Play / pause                            |
 | `F5` / `F6` / `F7`  | Insert frame / keyframe (or duplicate cell) / blank keyframe (or cell) |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / redo                       |

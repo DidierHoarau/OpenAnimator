@@ -14,7 +14,7 @@ reference where one exists; the [README](README.md) has the exhaustive list.
   **audio layers** (one clip each, waveform on the timeline).
 - Projects save as versioned ZIP `.oanim` containers: `document.json` plus
   content-addressed resources (`resources/<sha256>.<ext>`), written
-  atomically. Documents migrate transparently from `schemaVersion` 1–6.
+  atomically. Documents migrate transparently from `schemaVersion` 1–7.
   Autosave writes a separate recovery snapshot and offers it back after a
   crash — including for never-saved (untitled) documents, which recover
   straight into a **Save As…**. A failed snapshot shows a persistent
@@ -29,6 +29,20 @@ reference where one exists; the [README](README.md) has the exhaustive list.
 - **Drawing tools** — rectangle and ellipse by drag, line, a pen tool for
   path anchors and bezier handles, a vector brush (`N`) smoothing freehand
   strokes into editable paths, and a text tool.
+- **Anchor editing** — committed paths stay fully editable with the
+  direct-selection tool (`A`): drag anchors and bezier handles, double-click
+  an anchor to switch corner↔smooth or a segment to insert one, `Delete` to
+  remove, and close an open contour by dragging its endpoint onto the other
+  (or the properties button). Compound paths edit subpath by subpath, and
+  the equivalent `setPathAnchors` scripting op edits them headlessly.
+- **Stroke styles** — linecap, linejoin, dash pattern and dash offset are
+  node fields with properties-panel controls, honored by the renderer and
+  SVG export, round-tripped by SVG import, and carried through classic
+  tweens.
+- **Eyedropper and recent colors** — the `I` tool (or `Alt`+click from any
+  tool) picks the color under the pointer from the rendered stage into the
+  selection's fill/stroke (or the brush); picks and palette clicks land in a
+  session **Recent** row beside the palette strips.
 - **Keyframes** — content and blank keyframes, insert/remove at the
   playhead, drag markers to retime (multi-select shifts with `Shift`), copy
   and paste poses with their relative timing, `Move to` frame.
@@ -79,7 +93,9 @@ reference where one exists; the [README](README.md) has the exhaustive list.
   easing controls as object tweens; WAV/MP3/OGG clips with waveforms, volume
   and mute, mixed into video exports.
 - **Palettes** — a document palette saved in the project plus a global
-  palette persisted in the user-data folder, shared by every color control.
+  palette persisted in the user-data folder, shared by every color control;
+  the global palette imports and exports **GIMP (`.gpl`) palette files**
+  (imports merge with the existing colors).
 - **Editing comfort** — undo/redo (drag-coalesced single steps, depth
   configurable in Preferences), multi-select and rubber-band selection, zoom
   10%–800% with pan, panel layout persistence, onion skinning, and playback

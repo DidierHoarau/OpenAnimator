@@ -41,14 +41,19 @@ rasterization.
 | `transform` | `translate`, `scale`, `rotate(a [cx cy])`, `matrix` — baked into the geometry. `skewX`/`skewY` are unsupported. |
 | `fill`, `stroke` | `none`, `#rgb`, `#rrggbb` only (expanded to lowercase `#rrggbb`). Named colors, `rgb()`, `currentColor`, `url(#…)` paints are unsupported. |
 | `stroke-width` | Unitless/px, scaled by the accumulated transform. |
+| `stroke-linecap`, `stroke-linejoin` | `butt`/`round`/`square` and `miter`/`round`/`bevel` (case-insensitive; any other value fails the import). |
+| `stroke-dasharray` | `none` (≡ solid) or up to 16 unitless/px values, space- or comma-separated; scaled by the accumulated transform. An all-zero pattern imports as a solid stroke (SVG spec). |
+| `stroke-dashoffset` | Unitless/px, may be negative, scaled by the accumulated transform. |
 | `opacity` | `0..1`, multiplied down the tree. |
-| `style` | Only `fill`, `stroke`, `stroke-width`, `opacity` declarations; CSS wins over presentation attributes. Any other declaration fails the import. |
+| `style` | Only `fill`, `stroke`, `stroke-width`, `stroke-linecap`, `stroke-linejoin`, `stroke-dasharray`, `stroke-dashoffset`, `opacity` declarations; CSS wins over presentation attributes. Any other declaration fails the import. |
 | `id`, `version`, `baseProfile`, `overflow`, `enable-background` | Ignored metadata. |
 | `data-*`, namespaced names (`xml:space`, `xlink:*`, …) | Ignored metadata. |
 
 Every other un-namespaced attribute fails the import — that is deliberate:
-attributes like `fill-rule`, `stroke-linecap` or `class` change how the artwork
-renders and cannot be silently dropped.
+attributes like `fill-rule`, `stroke-miterlimit` or `class` change how the
+artwork renders and cannot be silently dropped. The stroke style attributes
+above round-trip: exported SVGs from the app re-import with the same
+linecap/linejoin/dash settings.
 
 ### Units and colors
 
