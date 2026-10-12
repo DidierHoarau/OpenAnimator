@@ -3,6 +3,8 @@ import type { IpcRendererEvent } from 'electron'
 
 import {
   APP_API_CHANNEL,
+  APP_CLOSE_REQUEST_CHANNEL,
+  APP_CLOSE_RESPONSE_CHANNEL,
   APP_MENU_COMMAND_CHANNEL,
   APP_OPEN_FILE_CHANNEL,
   APP_OPEN_RELEASE_CHANNEL,
@@ -13,6 +15,9 @@ import {
   DOCUMENT_SAVE_AS_CHANNEL,
   DOCUMENT_SAVE_TO_CHANNEL,
   EXPORT_PICK_PATH_CHANNEL,
+  EXPORT_STREAM_COMMIT_CHANNEL,
+  EXPORT_STREAM_OPEN_CHANNEL,
+  EXPORT_STREAM_WRITE_CHANNEL,
   EXPORT_WRITE_CHANNEL,
   FONT_LIST_CHANNEL,
   FONT_POLICY_CHANNEL,
@@ -28,6 +33,7 @@ import {
   RECENT_LIST_CHANNEL,
   RECOVERY_CHECK_CHANNEL,
   RECOVERY_CLEAR_CHANNEL,
+  RECOVERY_LIST_UNSAVED_CHANNEL,
   RECOVERY_READ_CHANNEL,
   RECOVERY_WRITE_CHANNEL,
   RESOURCE_ADD_CHANNEL,
@@ -56,6 +62,11 @@ const api: OpenAnimatorApi = {
   renameLibraryAsset: (id, name) => ipcRenderer.invoke(LIBRARY_RENAME_CHANNEL, id, name),
   pickExportPath: (request) => ipcRenderer.invoke(EXPORT_PICK_PATH_CHANNEL, request),
   writeExportFile: (path, bytes) => ipcRenderer.invoke(EXPORT_WRITE_CHANNEL, path, bytes),
+  openExportStream: (path) => ipcRenderer.invoke(EXPORT_STREAM_OPEN_CHANNEL, path),
+  writeExportStream: (token, chunk) =>
+    ipcRenderer.invoke(EXPORT_STREAM_WRITE_CHANNEL, token, chunk),
+  finishExportStream: (token, commit) =>
+    ipcRenderer.invoke(EXPORT_STREAM_COMMIT_CHANNEL, token, commit),
   loadGlobalPalette: () => ipcRenderer.invoke(PALETTE_GET_CHANNEL),
   saveGlobalPalette: (colors) => ipcRenderer.invoke(PALETTE_SET_CHANNEL, colors),
   listSystemFonts: () => ipcRenderer.invoke(FONT_LIST_CHANNEL),
@@ -83,8 +94,18 @@ const api: OpenAnimatorApi = {
       ipcRenderer.removeListener(APP_OPEN_FILE_CHANNEL, handler)
     }
   },
-  writeRecovery: (path, document) => ipcRenderer.invoke(RECOVERY_WRITE_CHANNEL, path, document),
+  onCloseRequest: (listener) => {
+    const handler = (): void => listener()
+    ipcRenderer.on(APP_CLOSE_REQUEST_CHANNEL, handler)
+    return () => {
+      ipcRenderer.removeListener(APP_CLOSE_REQUEST_CHANNEL, handler)
+    }
+  },
+  respondToCloseRequest: (allow) => ipcRenderer.invoke(APP_CLOSE_RESPONSE_CHANNEL, allow),
+  writeRecovery: (path, document, untitled) =>
+    ipcRenderer.invoke(RECOVERY_WRITE_CHANNEL, path, document, untitled),
   checkRecovery: (path) => ipcRenderer.invoke(RECOVERY_CHECK_CHANNEL, path),
+  listUnsavedRecoveries: () => ipcRenderer.invoke(RECOVERY_LIST_UNSAVED_CHANNEL),
   readRecovery: (path) => ipcRenderer.invoke(RECOVERY_READ_CHANNEL, path),
   clearRecovery: (path) => ipcRenderer.invoke(RECOVERY_CLEAR_CHANNEL, path)
 }

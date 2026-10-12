@@ -153,4 +153,90 @@ describe('showExportDialog', () => {
     expect(document.querySelector('.modal-overlay')).toBeNull()
     expect(runExport).not.toHaveBeenCalled()
   })
+
+  async function runPendingExport(): Promise<{
+    overlay: HTMLElement
+    signal: { canceled: boolean }
+    resolveRun: (written: boolean) => void
+  }> {
+    let captured: { canceled: boolean } | null = null
+    let resolveRun: (written: boolean) => void = () => undefined
+    runExport.mockImplementation((_editor, _options, _deps, signal: { canceled: boolean }) => {
+      captured = signal
+      return new Promise<boolean>((resolve) => {
+        resolveRun = resolve
+      })
+    })
+    showExportDialog(editor())
+    const overlay = document.querySelector<HTMLElement>('.modal-overlay')!
+    overlay.querySelector<HTMLButtonElement>('.modal-actions .primary')!.click()
+    await Promise.resolve()
+    if (!captured) throw new Error('the runner did not receive a cancel signal')
+    return { overlay, signal: captured, resolveRun }
+  }
+
+  it('sets the cancel signal on Cancel mid-export and closes when the runner settles', async () => {
+    const { overlay, signal, resolveRun } = await runPendingExport()
+    expect(signal.canceled).toBe(false)
+
+    const cancelButton = [...overlay.querySelectorAll<HTMLButtonElement>('.modal-actions button')]
+      .find((button) => button.textContent === 'Cancel')!
+    cancelButton.click()
+
+    expect(signal.canceled).toBe(true)
+    expect(cancelButton.disabled).toBe(true)
+    expect(document.querySelector('.export-progress-label')?.textContent).toBe('Cancelling…')
+    // The dialog stays until the runner has actually stopped.
+    expect(document.querySelector('.modal-overlay')).not.toBeNull()
+
+    resolveRun(false)
+    await vi.waitFor(() => expect(document.querySelector('.modal-overlay')).toBeNull())
+  })
+
+  it('sets the cancel signal on the × mid-export and ignores a late successful finish', async () => {
+    const { overlay, signal, resolveRun } = await runPendingExport()
+
+    overlay.querySelector<HTMLButtonElement>('.modal-close')!.click()
+    expect(signal.canceled).toBe(true)
+    expect(document.querySelector('.modal-overlay')).not.toBeNull()
+
+    resolveRun(true)
+    await vi.waitFor(() => expect(document.querySelector('.modal-overlay')).toBeNull())
+  })
+
+  it('keeps the dialog open when the runner fails without a cancel', async () => {
+    const { overlay, signal, resolveRun } = await runPendingExport()
+    expect(signal.canceled).toBe(false)
+
+    resolveRun(false)
+    await vi.waitFor(() =>
+      expect(overlay.querySelector('.export-form')?.classList.contains('hidden')).toBe(false)
+    )
+    expect(document.querySelector('.modal-overlay')).not.toBeNull()
+  })
+
+  it('keeps the dialog open in a done state when the export carries diagnostics', async () => {
+    const { overlay, resolveRun } = await runPendingExport()
+    const deps = runExport.mock.calls[0][2] as {
+      onDiagnostics?: (entries: string[]) => void
+    }
+    deps.onDiagnostics?.(['No font could be loaded for "Missing Font"'])
+
+    resolveRun(true)
+    await vi.waitFor(() =>
+      expect(overlay.querySelector('.export-done')?.classList.contains('hidden')).toBe(false)
+    )
+
+    const details = overlay.querySelector<HTMLDetailsElement>('.export-diagnostics')!
+    expect(details.open).toBe(true)
+    expect(details.textContent).toContain('No font could be loaded for "Missing Font"')
+    expect(overlay.textContent).toContain('1 diagnostic')
+    expect(document.querySelector('.modal-overlay')).not.toBeNull()
+
+    const close = [...overlay.querySelectorAll<HTMLButtonElement>('.modal-actions button')].find(
+      (button) => button.textContent === 'Close'
+    )!
+    close.click()
+    expect(document.querySelector('.modal-overlay')).toBeNull()
+  })
 })

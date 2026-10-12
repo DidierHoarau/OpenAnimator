@@ -211,20 +211,20 @@ describe('LibraryView — document tab', () => {
     expect(node.height).toBe(50)
   })
 
-  it('warns about on-stage instances before deleting an asset', () => {
+  it('warns about on-stage instances before deleting an asset', async () => {
     const { container, editor, confirmFn } = setup([symbolAsset('a', 'Rocket')])
     expect(editor.placeAsset('a')).toBe(true) // one instance is now on stage
 
     confirmFn.mockReturnValueOnce(false)
     openMenu(container, 0)
     menuItem('Delete').click()
-    expect(confirmFn).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(confirmFn).toHaveBeenCalledTimes(1))
     expect(confirmFn.mock.calls[0][0]).toContain('1 instance(s)')
     expect(editor.document.assets).toHaveLength(1)
 
     confirmFn.mockReturnValueOnce(true)
     menuItem('Delete').click()
-    expect(editor.document.assets).toHaveLength(0)
+    await vi.waitFor(() => expect(editor.document.assets).toHaveLength(0))
   })
 
   it('duplicates an asset with a fresh identity', () => {

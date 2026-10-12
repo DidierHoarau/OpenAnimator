@@ -50,7 +50,10 @@ demo is loaded so there is something on the stage to play with.
    and frame range. See [Export formats](export-formats.md) for the matrix.
 8. **Save.** `Ctrl+S` writes the `.oanim` project — a ZIP container with the
    document JSON plus every referenced resource; autosave only maintains a
-   crash-recovery snapshot, the file itself changes on explicit saves.
+   crash-recovery snapshot (never-saved documents included: an untitled
+   snapshot is offered back at startup, one click away from **Save As…**),
+   the file itself changes on explicit saves. Closing the window with
+   unsaved changes asks Save / Discard / Cancel first.
 
 ## Other first steps
 

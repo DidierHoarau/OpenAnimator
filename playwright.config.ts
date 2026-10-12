@@ -2,8 +2,9 @@ import { defineConfig } from '@playwright/test'
 
 /**
  * E2E suite driving the built Electron app (`npm run build` first). The suite
- * is serial: every instance shares the userData directory (recent projects,
- * library, recovery snapshots), and the app holds a single-instance lock.
+ * is serial (the app holds a single-instance lock); every test gets a fresh
+ * instance with its own private userData directory, so recent projects,
+ * library data and recovery snapshots cannot leak across tests.
  */
 export default defineConfig({
   testDir: './e2e',

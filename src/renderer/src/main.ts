@@ -5,6 +5,7 @@ import { createStarterDocument } from '@shared/starterDocument'
 import { AudioSystem } from './audio'
 import { detectAudioFormat, importAudioBytes, importAudioViaDialog } from './audioImport'
 import { preloadDrawingCells } from './cellPreload'
+import { registerCloseGuard } from './closeGuard'
 import { el } from './dom'
 import { Editor } from './editor'
 import { importImageBytes, importImageViaDialog } from './imageImport'
@@ -13,7 +14,7 @@ import { LibraryView } from './library'
 import { attachPanelSplitters } from './panelLayout'
 import { PropertiesView } from './properties'
 import { showExportDialog } from './exportDialog'
-import { fileLabel, newDocument, openDocument, openProjectFromPath, saveDocument, saveRecoverySnapshot, showStartupDialog } from './projects'
+import { checkUntitledRecovery, fileLabel, newDocument, openDocument, openProjectFromPath, saveDocument, saveRecoverySnapshot, showStartupDialog } from './projects'
 import { showScriptConsole } from './scripting/scriptConsole'
 import { StageView } from './stage'
 import { TimelineView } from './timeline'
@@ -148,12 +149,15 @@ function buildStatusbar(editor: Editor, stageView: StageView): HTMLElement {
   }
   update()
 
-  // Transient status-bar messages (e.g. auto-keyframe notification).
+  // Status-bar messages: transient by default (2 s), persistent ones (e.g.
+  // autosave failures) stay visible until the next message replaces them.
   let messageTimer: number | undefined
-  editor.onMessage((message) => {
+  editor.onMessage((message, options) => {
     messageInfo.textContent = message
     messageInfo.classList.add('visible')
+    messageInfo.classList.toggle('persistent', options.persistent)
     window.clearTimeout(messageTimer)
+    if (options.persistent) return
     messageTimer = window.setTimeout(() => {
       messageInfo.classList.remove('visible')
     }, 2000)
@@ -270,7 +274,10 @@ async function bootstrap(): Promise<void> {
   // macOS open-file) opens through the regular load path.
   window.api.onOpenFile((path) => void openProjectFromPath(editor, path))
   window.api.onUpdateAvailable((info) => showUpdateBanner(info))
+  registerCloseGuard(editor)
   showStartupDialog(editor)
+  // A snapshot left behind by a crash of a never-saved document as well.
+  void checkUntitledRecovery(editor)
 
   // Warm the image cache for every drawing cell when playback starts so the
   // first pass does not flash blank cells.
@@ -279,14 +286,15 @@ async function bootstrap(): Promise<void> {
   })
 
   // Debounced autosave to a recovery snapshot; the project file itself is
-  // only written by an explicit save. The scratch document of a symbol edit
-  // session is never autosaved.
+  // only written by an explicit save. Untitled documents are covered too —
+  // their session-keyed snapshot is the only protection they have. The
+  // scratch document of a symbol edit session is never autosaved.
   let saveTimer: number | undefined
   editor.onDocChange(() => {
     window.clearTimeout(saveTimer)
     saveTimer = window.setTimeout(() => {
       if (editor.editingAssetId) return
-      if (editor.filePath && editor.dirty) void saveRecoverySnapshot(editor)
+      if (editor.dirty) void saveRecoverySnapshot(editor)
     }, 400)
   })
 }

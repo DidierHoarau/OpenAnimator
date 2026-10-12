@@ -86,7 +86,8 @@ describe('RecoveryStore', () => {
     await expect(store.info(projectPath)).resolves.toEqual({
       path: projectPath,
       name: 'recovery-test',
-      savedAt: 1728700000000
+      savedAt: 1728700000000,
+      untitled: false
     })
 
     const snapshot = await store.read(projectPath)
@@ -147,5 +148,55 @@ describe('RecoveryStore', () => {
     const infoFile = (await readdir(baseDir)).find((file) => file.endsWith('.json'))!
     await writeFile(join(baseDir, infoFile), '{not json', 'utf8')
     await expect(store.info(projectPath)).resolves.toBeNull()
+  })
+
+  it('keeps offering an untitled snapshot without any project file', async () => {
+    const key = 'untitled/session-1'
+    await store.write(key, documentWithImage('draft', 'hash-a'), resources([]), 5, true)
+
+    // No file exists at the key: an untitled snapshot is pending by definition.
+    await expect(store.pending(key)).resolves.toMatchObject({ name: 'draft', untitled: true })
+    const snapshot = await store.read(key)
+    expect(snapshot.document.name).toBe('draft')
+
+    await store.clear(key)
+    await expect(store.pending(key)).resolves.toBeNull()
+  })
+
+  it('lists untitled snapshots newest first and never the file-backed ones', async () => {
+    await store.write(projectPath, documentWithImage('file-back', 'hash-a'), resources([]), 9)
+    await store.write('untitled/a', documentWithImage('older', 'hash-a'), resources([]), 10, true)
+    await store.write('untitled/b', documentWithImage('newer', 'hash-a'), resources([]), 20, true)
+
+    const unsaved = await store.listUnsaved()
+    expect(unsaved.map((info) => info.name)).toEqual(['newer', 'older'])
+  })
+
+  it('prunes untitled slots beyond the cap, keeping the newest and the file-backed ones', async () => {
+    await store.write(projectPath, documentWithImage('file-back', 'hash-a'), resources([]), 1)
+    for (let index = 1; index <= 4; index++) {
+      await store.write(`untitled/${index}`, documentWithImage(`draft-${index}`, 'hash-a'), resources([]), index, true)
+    }
+
+    const unsaved = await store.listUnsaved()
+    expect(unsaved.map((info) => info.name)).toEqual(['draft-4', 'draft-3', 'draft-2'])
+    // The oldest untitled slot is gone; the file-backed slot survives.
+    await expect(store.info('untitled/1')).resolves.toBeNull()
+    await expect(store.info(projectPath)).resolves.toMatchObject({ name: 'file-back' })
+  })
+
+  it('still parses snapshot infos written without the untitled field', async () => {
+    await store.write(projectPath, documentWithImage('legacy', 'hash-a'), resources([]), 1)
+    const infoFile = (await readdir(baseDir)).find((file) => file.endsWith('.json'))!
+    await writeFile(
+      join(baseDir, infoFile),
+      JSON.stringify({ path: projectPath, name: 'legacy', savedAt: 1 }),
+      'utf8'
+    )
+    await expect(store.info(projectPath)).resolves.toEqual({
+      path: projectPath,
+      name: 'legacy',
+      savedAt: 1
+    })
   })
 })

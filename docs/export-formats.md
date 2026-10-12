@@ -31,7 +31,18 @@ extension and requires `--format spritesheet`.
 
 The PNG-sequence, GIF and spritesheet exporters were unchanged by the vector
 work: they rasterize each frame through the shared SVG path and keep alpha on
-empty areas.
+empty areas. GIF encoding now runs in a worker thread so the dialog stays
+responsive; the output bytes are identical to the inline encoder.
+
+## Cancelling an export
+
+The export dialog's **Cancel** button (or ×, or Escape) sets the runner's
+cancel signal, and the runner stops within one frame. A canceled export never
+creates the destination file: the archive formats (PNG sequence, spritesheet)
+stream into a `*.tmp` staging file that is removed on abort, and the one-shot
+formats are only written after the last cancel check. The status bar reports
+*Export canceled*. The same discipline applies to failures — a broken export
+leaves no partial destination behind, and the form stays open for a retry.
 
 ## Lottie (`lottie`) and dotLottie (`dotlottie`)
 
@@ -142,7 +153,9 @@ descriptive error). The output is a ZIP with:
 
 The vector formats never fail on unsupported content: each degradation turns
 into a dashed placeholder and/or a diagnostic string. The app appends the
-diagnostic count to its success message; the CLI prints every diagnostic
+diagnostic count to its success message and — when a successful export
+carries any — keeps the export dialog open in a done state with a collapsible
+list of every diagnostic, until **Close**. The CLI prints every diagnostic
 line under the `Wrote …` summary. All diagnostics listed above are covered
 by unit tests, and the golden fixtures under
 `src/shared/fixtures/export/` pin the full output of both vector formats.

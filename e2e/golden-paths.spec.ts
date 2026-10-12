@@ -1,26 +1,42 @@
 import { expect, test } from '@playwright/test'
 import type { ElectronApplication, Locator, Page } from '@playwright/test'
+import { existsSync } from 'node:fs'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { dismissStartup, launchApp } from './helpers'
+import { closeApp, dismissStartup, launchApp } from './helpers'
 import type { DialogPatches } from './helpers'
 
 /** Timeline frame width in pixels (mirrors the app's timeline geometry). */
 const FRAME_WIDTH = 14
 
 let app: ElectronApplication | undefined
+let launchedPage: Page | undefined
 
 test.afterEach(async () => {
-  await app?.close()
+  if (app && launchedPage) await closeApp(app, launchedPage)
   app = undefined
+  launchedPage = undefined
 })
 
 async function start(patches: DialogPatches = {}): Promise<Page> {
   const launched = await launchApp(patches)
   app = launched.app
+  launchedPage = launched.page
   return launched.page
+}
+
+function currentApp(): ElectronApplication {
+  if (!app) throw new Error('the application has not been launched')
+  return app
+}
+
+/** Asks the main process to close the window (Window→Close, Cmd+Q, title bar). */
+async function requestWindowClose(): Promise<void> {
+  await currentApp().evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0]?.close()
+  })
 }
 
 function tempDir(): Promise<string> {
@@ -182,4 +198,69 @@ test('startup dialog starts a fresh project', async () => {
   // The fresh project replaced the demo with a single empty layer.
   await expect(page.locator('.tl-row .name').first()).toHaveText('Layer 1')
   await expect(page.locator('svg.stage ellipse')).toHaveCount(0)
+})
+
+test('cancels a running export and writes no file', async () => {
+  const dir = await tempDir()
+  const exportPath = join(dir, 'canceled.zip')
+  const page = await start({ savePath: exportPath })
+  await dismissStartup(page)
+
+  await page.locator('header.toolbar').getByRole('button', { name: 'Export…', exact: true }).click()
+  const modal = page.locator('.export-modal')
+  await expect(modal).toBeVisible()
+  await modal.locator('.export-format').selectOption('png-sequence')
+  const scale = modal.locator('.export-field', { hasText: 'Resolution scale' }).locator('input')
+  await scale.fill('4')
+  await modal.locator('button.primary').click()
+
+  // The demo export (25 frames at 4×) takes seconds; cancel mid-run.
+  await expect(modal.locator('.export-progress')).toBeVisible()
+  await modal.locator('.modal-actions button', { hasText: 'Cancel' }).click()
+
+  await expect(modal).toHaveCount(0)
+  await expect(page.locator('footer.statusbar')).toContainText('Export canceled')
+  // A canceled export never creates the destination nor leaves its temp.
+  expect(existsSync(exportPath)).toBe(false)
+  expect(existsSync(`${exportPath}.tmp`)).toBe(false)
+})
+
+test('keeps the document when the close prompt is canceled, then discards on request', async () => {
+  const page = await start()
+  await dismissStartup(page)
+  await page.getByRole('button', { name: 'New', exact: true }).click()
+  await expect(page.locator('footer.statusbar')).toContainText('file: unsaved')
+
+  // Draw a rectangle so the fresh document is dirty.
+  await page.locator('.tl-toggle').first().click()
+  await expect(page.getByText('no objects on this layer')).toBeVisible()
+  await page.locator('.tool-button[data-tool="rect"]').click()
+  const stageBox = await boxOf(page.locator('svg.stage'))
+  const centerX = stageBox.x + stageBox.width / 2
+  const centerY = stageBox.y + stageBox.height / 2
+  await page.mouse.move(centerX - 90, centerY - 60)
+  await page.mouse.down()
+  await page.mouse.move(centerX + 90, centerY + 60, { steps: 8 })
+  await page.mouse.up()
+  const shapeRow = page.locator('.tl-shape-row').first()
+  await expect(shapeRow.locator('.tl-key')).toHaveCount(1)
+
+  // Closing shows the in-app prompt instead of exiting.
+  await requestWindowClose()
+  const prompt = page.locator('.modal-overlay', { hasText: 'Unsaved changes' })
+  await expect(prompt).toBeVisible()
+
+  // Cancel keeps the window open with the document intact.
+  await prompt.locator('.modal-actions button', { hasText: 'Cancel' }).click()
+  await expect(page.locator('.modal-overlay')).toHaveCount(0)
+  await expect(page.locator('footer.statusbar')).toContainText('file: unsaved')
+  await expect(shapeRow.locator('.tl-key')).toHaveCount(1)
+
+  // Closing again and discarding lets the app exit.
+  const closed = currentApp().waitForEvent('close')
+  await requestWindowClose()
+  const discard = page.locator('.modal-overlay .modal-actions button', { hasText: 'Discard' })
+  await expect(discard).toBeVisible()
+  await discard.click()
+  await closed
 })

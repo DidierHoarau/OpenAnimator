@@ -204,7 +204,9 @@ export class Editor {
   private readonly docListeners = new Set<() => void>()
   private readonly frameListeners = new Set<() => void>()
   private readonly uiListeners = new Set<() => void>()
-  private readonly messageListeners = new Set<(message: string) => void>()
+  private readonly messageListeners = new Set<
+    (message: string, options: { persistent: boolean }) => void
+  >()
   private rafId: number | null = null
   private lastTick: number | null = null
   private accumulator = 0
@@ -253,7 +255,7 @@ export class Editor {
     this.uiListeners.add(listener)
   }
 
-  onMessage(listener: (message: string) => void): void {
+  onMessage(listener: (message: string, options: { persistent: boolean }) => void): void {
     this.messageListeners.add(listener)
   }
 
@@ -285,11 +287,13 @@ export class Editor {
     }
   }
 
-  /** Surfaces a transient status-bar message (import feedback, hints…). */
-  showMessage(message: string): void {
+  /** Surfaces a status-bar message (transient by default; a persistent one
+   * stays visible until the next message replaces it). */
+  showMessage(message: string, options: { persistent?: boolean } = {}): void {
+    const resolved = { persistent: options.persistent ?? false }
     for (const listener of [...this.messageListeners]) {
       try {
-        listener(message)
+        listener(message, resolved)
       } catch (error) {
         console.error('OpenAnimator: a message listener failed', error)
       }
