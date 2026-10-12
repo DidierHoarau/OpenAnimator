@@ -27,6 +27,9 @@ const click = (overlay: HTMLElement, label: string): void => {
   button.click()
 }
 
+/** The run handler is async (it awaits the executor): let it settle. */
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
 describe('showScriptConsole', () => {
   beforeEach(() => {
     executeScriptCommands.mockReset()
@@ -43,49 +46,70 @@ describe('showScriptConsole', () => {
     expect(payloadInput(overlay).value).toContain('"addNode"')
   })
 
-  it('reports invalid JSON without running anything', () => {
+  it('reports invalid JSON without running anything', async () => {
     showScriptConsole(editor())
     const overlay = document.querySelector('.modal-overlay')!
     payloadInput(overlay).value = '{ not json'
     click(overlay, 'Run script')
+    await flush()
     const output = overlay.querySelector<HTMLElement>('.script-output')!
     expect(output.classList.contains('hidden')).toBe(false)
     expect(output.textContent).toContain('not valid JSON')
     expect(executeScriptCommands).not.toHaveBeenCalled()
   })
 
-  it('refuses to run a payload that fails schema validation', () => {
+  it('refuses to run a payload that fails schema validation', async () => {
     showScriptConsole(editor())
     const overlay = document.querySelector('.modal-overlay')!
     payloadInput(overlay).value = JSON.stringify({ commands: [{ op: 'bogusOp' }] })
     click(overlay, 'Run script')
+    await flush()
     expect(overlay.querySelector<HTMLElement>('.script-output')!.textContent).toContain(
       'Schema errors'
     )
     expect(executeScriptCommands).not.toHaveBeenCalled()
   })
 
-  it('runs a valid payload and shows the applied count', () => {
-    executeScriptCommands.mockReturnValue({ applied: 3, issues: [] as ScriptIssue[] })
+  it('runs a valid payload through the executor and shows the applied count', async () => {
+    executeScriptCommands.mockResolvedValue({ applied: 3, issues: [] as ScriptIssue[] })
     showScriptConsole(editor())
     const overlay = document.querySelector('.modal-overlay')!
     const commands: ScriptCommand[] = [{ op: 'seek', frame: 0 }]
     payloadInput(overlay).value = JSON.stringify({ commands })
     click(overlay, 'Run script')
+    await flush()
     expect(executeScriptCommands).toHaveBeenCalledTimes(1)
-    const [editorArg, runCommands] = executeScriptCommands.mock.calls[0] as [
+    const [editorArg, runCommands, options] = executeScriptCommands.mock.calls[0] as [
       Editor,
-      ScriptCommand[]
+      ScriptCommand[],
+      { library?: unknown }
     ]
     expect(editorArg).toBeInstanceOf(Editor)
     expect(runCommands).toEqual(commands)
+    expect(options).toMatchObject({ library: undefined })
     expect(overlay.querySelector<HTMLElement>('.script-output')!.textContent).toContain(
       'Applied 3 of 1'
     )
   })
 
-  it('lists per-command issues after a partial run', () => {
-    executeScriptCommands.mockReturnValue({
+  it('passes the library bridge through to the executor', async () => {
+    executeScriptCommands.mockResolvedValue({ applied: 1, issues: [] as ScriptIssue[] })
+    const library = { listLibrary: vi.fn(), addLibraryAsset: vi.fn(), addResource: vi.fn() }
+    showScriptConsole(editor(), { library })
+    const overlay = document.querySelector('.modal-overlay')!
+    payloadInput(overlay).value = JSON.stringify({ commands: [{ op: 'seek', frame: 0 }] })
+    click(overlay, 'Run script')
+    await flush()
+    const [, , options] = executeScriptCommands.mock.calls[0] as [
+      Editor,
+      ScriptCommand[],
+      { library?: unknown }
+    ]
+    expect(options.library).toBe(library)
+  })
+
+  it('lists per-command issues after a partial run', async () => {
+    executeScriptCommands.mockResolvedValue({
       applied: 1,
       issues: [{ index: 1, message: 'updateNode: node ghost not found', severity: 'error' }]
     })
@@ -93,6 +117,7 @@ describe('showScriptConsole', () => {
     const overlay = document.querySelector('.modal-overlay')!
     payloadInput(overlay).value = JSON.stringify({ commands: [{ op: 'seek', frame: 0 }] })
     click(overlay, 'Run script')
+    await flush()
     const output = overlay.querySelector<HTMLElement>('.script-output')!.textContent!
     expect(output).toContain('Applied 1 of 1')
     expect(output).toContain('#1 [error] updateNode: node ghost not found')

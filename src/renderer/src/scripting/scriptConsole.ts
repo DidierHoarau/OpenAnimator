@@ -3,7 +3,13 @@ import type { Editor } from '../editor'
 import { validateScriptPayload } from '@shared/scripting/commands'
 import type { ScriptIssue } from '@shared/scripting/commands'
 import { SCRIPT_EXAMPLES } from '@shared/scripting/examples'
-import { executeScriptCommands } from './execute'
+import { executeScriptCommands, type ScriptLibraryBridge } from './execute'
+
+/** Options of the console; `library` enables the My Library commands
+ * (the renderer passes `window.api`). */
+export interface ScriptConsoleOptions {
+  library?: ScriptLibraryBridge
+}
 
 /**
  * Script console: paste (or generate) a JSON command payload, validate it
@@ -11,7 +17,7 @@ import { executeScriptCommands } from './execute'
  * UI gestures. Validation errors and per-command issues are shown inline so
  * the payload can be repaired and retried (validate-and-retry flow).
  */
-export function showScriptConsole(editor: Editor): void {
+export function showScriptConsole(editor: Editor, options: ScriptConsoleOptions = {}): void {
   const overlay = el('div', 'modal-overlay')
   const modal = el('div', 'modal script-modal')
 
@@ -78,29 +84,31 @@ export function showScriptConsole(editor: Editor): void {
   })
 
   runButton.addEventListener('click', () => {
-    let payload: unknown
-    try {
-      payload = JSON.parse(payloadInput.value)
-    } catch (error) {
-      showIssues('The payload is not valid JSON:', [
-        { index: 0, message: error instanceof Error ? error.message : String(error), severity: 'error' }
-      ])
-      return
-    }
-    const { commands, errors } = validateScriptPayload(payload)
-    if (errors.length > 0) {
-      showIssues(`Schema errors (${errors.length}) — nothing ran:`, issuesFromMessages(errors))
-      return
-    }
-    const result = executeScriptCommands(editor, commands)
-    if (result.issues.length === 0) {
-      showIssues(`Applied ${result.applied} of ${commands.length} command(s) with no issues.`, [])
-    } else {
-      showIssues(
-        `Applied ${result.applied} of ${commands.length} command(s), ${result.issues.length} issue(s):`,
-        result.issues
-      )
-    }
+    void (async () => {
+      let payload: unknown
+      try {
+        payload = JSON.parse(payloadInput.value)
+      } catch (error) {
+        showIssues('The payload is not valid JSON:', [
+          { index: 0, message: error instanceof Error ? error.message : String(error), severity: 'error' }
+        ])
+        return
+      }
+      const { commands, errors } = validateScriptPayload(payload)
+      if (errors.length > 0) {
+        showIssues(`Schema errors (${errors.length}) — nothing ran:`, issuesFromMessages(errors))
+        return
+      }
+      const result = await executeScriptCommands(editor, commands, { library: options.library })
+      if (result.issues.length === 0) {
+        showIssues(`Applied ${result.applied} of ${commands.length} command(s) with no issues.`, [])
+      } else {
+        showIssues(
+          `Applied ${result.applied} of ${commands.length} command(s), ${result.issues.length} issue(s):`,
+          result.issues
+        )
+      }
+    })()
   })
 
   modal.append(header, exampleSelect, payloadInput, output, actions)

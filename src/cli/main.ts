@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import process from 'node:process'
 
 import { documentDuration } from '../shared/document'
@@ -16,6 +16,8 @@ import {
   renderToFile,
   withEmbeddedFontFiles
 } from './render'
+import { renderSchemaJson, schemaFileName } from './schema'
+import type { SchemaKind } from './schema'
 
 /**
  * OpenAnimator headless CLI. Run via `npm run cli -- <command>` (or the
@@ -24,6 +26,7 @@ import {
  *   render <project.oanim|document.json> --out <file> [--format f] [--scale s]
  *          [--fps n] [--from N] [--to N] [--transparent]
  *   validate <payload.json> [--kind commands|document]
+ *   schema [--kind commands|document] [--out file]
  *
  * Exit code 0 on success, 1 with a message on failure — the machine surface
  * for the validate-and-retry flow.
@@ -47,6 +50,9 @@ Commands:
                                             (VP9 alpha); MP4 is always opaque
   validate <payload.json> [--kind commands|document]
                                             prints schema errors, exit 1 on invalid
+  schema [--kind commands|document] [--out file]
+                                            prints the JSON Schema (draft-07) to
+                                            stdout, or writes it to --out
   help                                      this message
 
 Lottie, dotLottie and animated-SVG exports are built natively (no ffmpeg);
@@ -137,11 +143,27 @@ async function runValidate(args: CliArgs): Promise<string> {
   if (args.flags.get('kind') === 'document') {
     const { valid, errors } = validateDocumentPayload(raw)
     if (!valid) throw new Error(`Schema errors (${errors.length}):\n${errors.join('\n')}`)
-    return 'Document payload is valid against the v6 schema.'
+    return 'Document payload is valid against the v7 schema.'
   }
   const { commands, errors } = validateScriptPayload(raw)
   if (errors.length > 0) throw new Error(`Schema errors (${errors.length}):\n${errors.join('\n')}`)
   return `Command payload is valid — ${commands.length} command(s).`
+}
+
+async function runSchema(args: CliArgs): Promise<string> {
+  const kindFlag = args.flags.get('kind')
+  if (kindFlag !== undefined && kindFlag !== 'commands' && kindFlag !== 'document') {
+    throw new Error(`--kind must be "commands" or "document".\n${USAGE}`)
+  }
+  const kind: SchemaKind = kindFlag === 'document' ? 'document' : 'commands'
+  const json = renderSchemaJson(kind)
+  const outPath = args.flags.get('out')
+  if (typeof outPath === 'string') {
+    await writeFile(outPath, json, 'utf8')
+    return `Wrote ${outPath} (${json.length} bytes, ${schemaFileName(kind)}).`
+  }
+  process.stdout.write(json)
+  return ''
 }
 
 async function main(): Promise<void> {
@@ -156,6 +178,9 @@ async function main(): Promise<void> {
       process.stdout.write(`${await runRender(args)}\n`)
     } else if (command === 'validate') {
       process.stdout.write(`${await runValidate(args)}\n`)
+    } else if (command === 'schema') {
+      const summary = await runSchema(args)
+      if (summary !== '') process.stdout.write(`${summary}\n`)
     } else {
       throw new Error(`Unknown command "${command}"\n${USAGE}`)
     }

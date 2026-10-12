@@ -1,0 +1,80 @@
+name: Bug report
+description: Something in the app, the CLI or the exports is broken.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! A `.oanim` project file, a screenshot or a GIF
+        of the problem shortens the path to a fix dramatically — attach them
+        by dragging them into this issue.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of OpenAnimator misbehaved?
+      options:
+        - Editor UI (stage, timeline, panels, tools)
+        - Drawing / painting
+        - Tweening / keyframes / camera
+        - Text / fonts
+        - Images / SVG import / symbols / library
+        - Audio
+        - Export (GIF, video, Lottie, SVG, PNG sequence, spritesheet)
+        - Project files / recovery
+        - Scripting API or CLI
+        - Packaging / installers / updates
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Draw a rectangle…
+        2. Add a keyframe at frame 12…
+        3. Expected …, got …
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Steps, a script payload, or a minimal `.oanim` file (attached).
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: OpenAnimator version
+      description: Shown in releases; also `package.json` when running from source.
+      placeholder: "0.20.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running it?
+      options:
+        - Released installer (AppImage / deb / rpm / Flatpak / NSIS / dmg / portable)
+        - From source (`npm run dev`)
+        - Headless CLI
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04 / Windows 11 / macOS 15"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output or error log
+      description: Paste any error shown in the status bar or the terminal (rendered as code).
+      render: text
+    validations:
+      required: false

@@ -6,6 +6,17 @@ OpenAnimator is an open-source, vector-based animation tool built as an Electron
 
 The application now provides a working authoring core: layers with keyframes, frame-by-frame drawing layers painted with brush and eraser tools, a frame timeline with cell filmstrips, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, a reusable asset library with document and persistent global collections, symbol instances with isolated editing, raster image import, SVG import as editable vectors, basic vector drawing and selection tools, a vector brush, linear/radial gradient paints, a document and global color palette, a text and font system (system-font picker, typography controls and license-gated glyph-subset embedding), a keyframable camera layer, audio layers (waveform timeline, synced playback and mixed audio in video exports), onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
 
+## Documentation
+
+The user guide lives at **<https://didierhoarau.github.io/OpenAnimator/>**:
+
+- [Getting started](https://didierhoarau.github.io/OpenAnimator/getting-started.html) — install, a first animation, essential shortcuts.
+- [Features](https://didierhoarau.github.io/OpenAnimator/features.html) — the condensed feature map with links to the deep dives.
+- [Scripting](https://didierhoarau.github.io/OpenAnimator/scripting.html) and the [command reference](https://didierhoarau.github.io/OpenAnimator/reference.html) — the JSON command API; the reference is generated from `COMMANDS_SCHEMA`, so it cannot drift from the implementation.
+- [Gallery](https://didierhoarau.github.io/OpenAnimator/gallery.html) — sample `.oanim` projects you can open, script and remix.
+
+The site is rebuilt from `docs/` by the **Docs** workflow on every push to `main` that touches the docs; run `npm run docs:build` locally to regenerate the reference and preview the site from `site/`.
+
 ## Tech stack
 
 - [Electron](https://www.electronjs.org/) with [electron-vite](https://electron-vite.org/) (main / preload / renderer)
@@ -151,6 +162,10 @@ npm run dev        # start the app with hot reload
 | `npm run lint`          | Lint the source with ESLint                              |
 | `npm test`              | Run unit tests with Vitest                               |
 | `npm run test:coverage` | Run unit tests with v8 coverage thresholds               |
+| `npm run test:e2e`      | Playwright-Electron golden paths against `out/` (build first; prefix `xvfb-run -a` on headless Linux) |
+| `npm run cli -- …`      | Headless CLI: `render`, `validate`, `schema` (see `npm run cli -- help`) |
+| `npm run samples:build` | Regenerate the committed gallery samples (`docs/samples/*.oanim` + GIF previews) |
+| `npm run docs:build`    | Regenerate `docs/scripting-reference.md` and build the docs site into `site/` |
 | `npm run dist:linux`    | Package Linux installers (AppImage, deb, rpm, Flatpak, tar.gz) |
 | `npm run dist:win`      | Package Windows installers (NSIS + portable exe)         |
 | `npm run dist:mac`      | Package macOS disk images (dmg, x64 + arm64)             |
@@ -192,8 +207,13 @@ npm run dev        # start the app with hot reload
 
 The application follows [semantic versioning](https://semver.org/) with the version tracked in `package.json`.
 
-- **Pull requests** (`pr-check.yml`): install, verify that `package.json` version is strictly greater than the version on the base branch, typecheck, lint, build and test with coverage thresholds. Every PR must bump the version.
+- **Pull requests** (`pr-check.yml`): install, verify that `package.json` version is strictly greater than the version on the base branch, typecheck, lint, build and test with coverage thresholds. A second job runs the Playwright **E2E golden paths** on the built app under `xvfb`, and the docs-site build is exercised so a broken generator cannot land. Every PR must bump the version.
 - **Merges to main** (`main-build.yml`): a **validate** job runs typecheck, lint, tests with coverage and the build; three packaging jobs then run on native runners — Linux (AppImage, deb, rpm, Flatpak, tar.gz), Windows (NSIS installer + portable exe) and macOS (dmg for x64 and arm64) — and a single GitHub release tagged `v<version>` is published with every artifact plus the `latest*.yml` update metadata files consumed by the in-app updater. If the tag already exists, the packaging and release steps are skipped.
+- **Documentation** (`docs.yml`): pushes to `main` that touch `docs/`, `README.md`, `CONTRIBUTING.md`, `scripts/` or the scripting/CLI sources rebuild and deploy the documentation site to GitHub Pages.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, every npm script, the architecture rules (in particular: `src/shared/` stays pure TypeScript) and the pull-request gates CI enforces. Issues labeled `good first issue` are scoped for a first contribution.
 
 ## Platform notes
 

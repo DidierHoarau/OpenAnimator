@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest a capability, an export format or a workflow improvement.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, a quick skim of the [documentation](https://didierhoarau.github.io/OpenAnimator/)
+        and the [roadmap](https://didierhoarau.github.io/OpenAnimator/roadmap.html)
+        may already answer it — some features exist under different names
+        (e.g. on-twos playback is the timeline **Hold** step).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the workflow or use case, not only the proposed feature.
+      placeholder: "I animate …, and every time I have to … manually, which costs …"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How do you imagine it working in the app (or the scripting API)?
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, other tools' approaches, anything relevant.
+    validations:
+      required: false
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: I can help implement this (a PR is welcome)
+          required: false
+        - label: This affects the scripting API / automation (LLM-driven workflows)
+          required: false
