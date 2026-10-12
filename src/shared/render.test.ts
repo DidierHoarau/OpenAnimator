@@ -43,7 +43,7 @@ function layer(id: string, overrides: Partial<ObjectLayer> = {}): ObjectLayer {
 describe('evaluateDocumentAtFrame', () => {
   it('returns layers in paint order (bottom of the stack first)', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -73,7 +73,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('skips hidden layers but keeps empty visible ones', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -96,7 +96,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('hides a node after its last keyframe (per-object span)', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -123,7 +123,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('interpolates a tweened node toward the next keyframe containing it', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -152,7 +152,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('returns an empty tree for a document without layers', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -195,7 +195,7 @@ describe('evaluateDocumentAtFrame', () => {
       opacity: 0.75
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -229,7 +229,7 @@ describe('evaluateDocumentAtFrame', () => {
       opacity: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -277,7 +277,7 @@ describe('evaluateDocumentAtFrame', () => {
       createdAt: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -321,7 +321,7 @@ describe('evaluateDocumentAtFrame', () => {
       createdAt: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -351,7 +351,7 @@ describe('evaluateDocumentAtFrame', () => {
 describe('evaluateDocumentAtFrame — drawing layers', () => {
   const docWithDrawing = (): { doc: AnimatorDocument; drawingId: string } => {
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,
@@ -426,7 +426,7 @@ describe('evaluateDocumentAtFrame — camera', () => {
   })
 
   const docWith = (layers: Layer[]): AnimatorDocument => ({
-    schemaVersion: 8,
+    schemaVersion: 9,
     name: 't',
     palette: [],
     width: 100,
@@ -532,7 +532,7 @@ describe('evaluateDocumentAtFrame — camera', () => {
 
 describe('evaluateDocumentAtFrame — hold step', () => {
   const movingDoc = (holdStep?: number): AnimatorDocument => ({
-    schemaVersion: 8,
+    schemaVersion: 9,
     name: 't',
     width: 100,
     height: 100,
@@ -588,7 +588,7 @@ describe('evaluateDocumentAtFrame — hold step', () => {
 
   it('steps drawing cells through the same evaluation', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 't',
       palette: [],
       width: 100,

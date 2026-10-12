@@ -11,9 +11,11 @@ import {
   normalizePaletteColors
 } from '@shared/document'
 import { parseGpl, serializeGpl } from '@shared/gpl'
+import { EASING_PRESETS } from '@shared/easing'
+import type { Easing, EasingPreset } from '@shared/easing'
 import type { CellRange } from '@shared/document'
 import { MAX_STROKE_DASH_VALUES, isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
-import type { ImageNode, SceneNode, StrokeLinecap, StrokeLinejoin, StrokeStyle } from '@shared/model'
+import type { ImageNode, SceneNode, StrokeLinecap, StrokeLinejoin, StrokeStyle, TweenChannel } from '@shared/model'
 import { isGradientPaint, paintPrimaryColor } from '@shared/paint'
 import type { Paint } from '@shared/paint'
 import { applyAnchorEdit, parseSubpaths, setSubpathClosed } from '@shared/pathEdit'
@@ -48,6 +50,29 @@ function normalizeHex(value: string, fallback: string): string {
 
 function round(value: number): number {
   return Math.round(value * 100) / 100
+}
+
+/** Easing stored when a channel preset is picked: named presets store the
+ * name, curve presets store a bezier object (the easing editor convention). */
+function presetEasing(preset: EasingPreset): Easing {
+  return preset.named ?? { ...preset.bezier }
+}
+
+/** Channel select option value for an override: preset id, `'custom'` for a
+ * scripted bezier outside the library, `''` when the channel has none. */
+function channelOptionValue(easing: Easing | undefined): string {
+  if (easing === undefined) return ''
+  if (typeof easing === 'string') {
+    return EASING_PRESETS.find((preset) => preset.named === easing)?.id ?? 'custom'
+  }
+  const match = EASING_PRESETS.find(
+    (preset) =>
+      Math.abs(preset.bezier.x1 - easing.x1) < 1e-6 &&
+      Math.abs(preset.bezier.y1 - easing.y1) < 1e-6 &&
+      Math.abs(preset.bezier.x2 - easing.x2) < 1e-6 &&
+      Math.abs(preset.bezier.y2 - easing.y2) < 1e-6
+  )
+  return match?.id ?? 'custom'
 }
 
 /** Collapsible panel section; collapse/expand state is controlled by the owner. */
@@ -249,6 +274,7 @@ export class PropertiesView {
   private readonly tweenButton: HTMLButtonElement
   private readonly easingEditor: EasingEditor
   private readonly tweenPathSelect: HTMLSelectElement
+  private readonly tweenChannelSelects = new Map<TweenChannel, HTMLSelectElement>()
   private readonly moveNodeInput: HTMLInputElement
 
   /** Camera section: keyframed framing of the document camera. */
@@ -408,6 +434,41 @@ export class PropertiesView {
     layer.content.append(layerButtons, tweenRow, this.easingEditor.root)
     const pathRow = this.row(layer.content, 'Motion path')
     pathRow.appendChild(this.tweenPathSelect)
+    // Per-channel easing overrides of the tween at the playhead: each select
+    // either follows the base easing ('Default') or overrides one channel.
+    const channelRows = el('div', 'panel-rows')
+    const channelLabels: Record<TweenChannel, string> = {
+      transform: 'Transform',
+      opacity: 'Opacity',
+      fill: 'Fill'
+    }
+    for (const channel of ['transform', 'opacity', 'fill'] as const) {
+      const select = el('select', 'tl-select') as HTMLSelectElement
+      const follow = el('option', undefined, 'Default')
+      follow.value = ''
+      select.appendChild(follow)
+      for (const preset of EASING_PRESETS) {
+        const option = el('option', undefined, preset.label)
+        option.value = preset.id
+        select.appendChild(option)
+      }
+      const custom = el('option', undefined, 'Custom')
+      custom.value = 'custom'
+      select.appendChild(custom)
+      select.title = `Easing override of the ${channel} channel (Default follows the base easing; custom curves are script-only)`
+      select.addEventListener('change', () => {
+        if (select.value === 'custom') {
+          // 'Custom' is a display state, not a value: restore the current pick.
+          this.render()
+          return
+        }
+        const preset = EASING_PRESETS.find((entry) => entry.id === select.value)
+        editor.setTweenChannelEasingHere(channel, preset ? presetEasing(preset) : null)
+      })
+      this.tweenChannelSelects.set(channel, select)
+      this.row(channelRows, channelLabels[channel]).appendChild(select)
+    }
+    layer.content.append(channelRows)
     // Moves the whole selection so its first keyframe lands on this frame
     // (1-based), keeping each object's relative timing.
     this.moveNodeInput = this.numberInput(layer.content, 'Move to', 'f', () => {
@@ -1679,6 +1740,10 @@ export class PropertiesView {
     if (tween) {
       this.easingEditor.setValue(tween.easing)
       this.tweenPathSelect.value = tween.path ?? 'linear'
+    }
+    for (const [channel, select] of this.tweenChannelSelects) {
+      select.disabled = tween === undefined
+      if (tween) select.value = channelOptionValue(tween.easings?.[channel])
     }
 
     // "Move to" shows the primary object's first keyframe; a whole selection

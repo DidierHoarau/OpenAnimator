@@ -2,6 +2,8 @@ import Ajv, { type ValidateFunction } from 'ajv'
 
 import { ALIGN_MODES, DISTRIBUTE_AXES, type AlignMode, type DistributeAxis } from '../align'
 import { parseHexColor } from '../color'
+import type { Easing } from '../easing'
+import type { TweenChannel } from '../model'
 import { MAX_GRADIENT_STOPS, MIN_GRADIENT_STOPS } from '../paint'
 import { DEFAULT_PREFERENCES, type AppPreferences } from '../preferences'
 import {
@@ -13,7 +15,8 @@ import {
   MAX_PALETTE_COLORS,
   MAX_STROKE_DASH_VALUES,
   paintSchema,
-  sceneNodeSchema
+  sceneNodeSchema,
+  TWEEN_CHANNELS
 } from './documentSchema'
 
 /**
@@ -55,6 +58,9 @@ export type ScriptCommand =
       layerId?: string
       frame?: number
       easing?: string | null | { x1: number; y1: number; x2: number; y2: number }
+      /** Per-channel easing overrides (object keyframes); `null` clears the
+       * override of one channel, an absent channel keeps its own value. */
+      easings?: Partial<Record<TweenChannel, Easing | null>>
       path?: 'linear' | 'smooth'
     }
   | { op: 'moveKeyframe'; nodeId: string; layerId?: string; fromFrame: number; toFrame: number }
@@ -200,6 +206,15 @@ export const COMMANDS_SCHEMA = {
     easing: easingSchema(),
     /** setTween's easing also accepts null, which turns the tween off. */
     tweenEasing: { anyOf: [{ $ref: '#/definitions/easing' }, { type: 'null' }] },
+    /** setTween's per-channel overrides: only the channel keys, each a named
+     * easing, a closed bezier, or null (clears the override). */
+    tweenChannelEasings: {
+      type: 'object',
+      additionalProperties: false,
+      properties: Object.fromEntries(
+        TWEEN_CHANNELS.map((channel) => [channel, { $ref: '#/definitions/tweenEasing' }])
+      )
+    },
     /** Paint value of fill/stroke fields: a flat color or a strict gradient. */
     paint: paintSchema(),
     gradientPaint: gradientPaintSchema(),
@@ -388,6 +403,7 @@ export const COMMANDS_SCHEMA = {
               layerId: {},
               frame: {},
               easing: { $ref: '#/definitions/tweenEasing' },
+              easings: { $ref: '#/definitions/tweenChannelEasings' },
               path: { enum: ['linear', 'smooth'] }
             }
           }
@@ -632,6 +648,9 @@ export interface FieldSpec {
   bezier?: boolean
   /** Field that may also be a strict gradient object (paint). */
   paint?: boolean
+  /** Object whose values are easings (named string, bezier or null), keyed by
+   * the tween channel names (setTween.easings). */
+  tweenEasings?: boolean
   /** Array items must be `#rgb`/`#rrggbb` strings. */
   hexColors?: boolean
   /** Array items must be strings (the item shape of loose string lists). */
@@ -731,6 +750,7 @@ export const OP_FIELDS: Record<Op, Record<string, FieldSpec>> = {
     layerId: { type: 'string' },
     frame: { type: 'integer', min: 0 },
     easing: { type: 'string', enum: EASING_VALUES, nullable: true, bezier: true },
+    easings: { type: 'object', tweenEasings: true },
     path: { type: 'string', enum: ['linear', 'smooth'] }
   },
   moveKeyframe: {
@@ -1035,7 +1055,8 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
       collector.at(path, `must be object (got ${kind})`)
       return
     }
-    if (path.endsWith('/center') || path.endsWith('/at')) checkVec2(collector, path, value)
+    if (spec.tweenEasings) checkTweenChannelEasings(collector, path, value)
+    else if (path.endsWith('/center') || path.endsWith('/at')) checkVec2(collector, path, value)
     else if (path.endsWith('/node')) validateSceneNode(collector, path, value)
     else if (path.endsWith('/patch')) validateNodePatch(collector, path, value)
     else if (path.endsWith('/preferences')) checkPreferencesPatch(collector, path, value)
@@ -1096,6 +1117,24 @@ function checkBezierEasing(collector: Collector, path: string, value: unknown): 
     if (key !== 'x1' && key !== 'y1' && key !== 'x2' && key !== 'y2') {
       collector.at(`${path}/${key}`, 'must not have additional properties')
     }
+  }
+}
+
+/** setTween's per-channel easings: only the channel keys, each a named
+ * easing, a closed bezier, or null (clears the override). */
+function checkTweenChannelEasings(collector: Collector, path: string, value: unknown): void {
+  const easings = value as Record<string, unknown>
+  for (const key of Object.keys(easings)) {
+    if (!(TWEEN_CHANNELS as readonly string[]).includes(key)) {
+      collector.at(`${path}/${key}`, 'must not have additional properties')
+      continue
+    }
+    checkField(
+      collector,
+      `${path}/${key}`,
+      { type: 'string', enum: EASING_VALUES, nullable: true, bezier: true },
+      easings[key]
+    )
   }
 }
 

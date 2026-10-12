@@ -1,5 +1,5 @@
 import { evaluateEasing, isEasing } from './easing'
-import type { AnimatorDocument, Asset, AudioLayer, CameraKeyframe, CameraLayer, CameraPose, DrawingCell, DrawingLayer, EmbeddedFont, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode } from './model'
+import type { AnimatorDocument, Asset, AudioLayer, CameraKeyframe, CameraLayer, CameraPose, DrawingCell, DrawingLayer, EmbeddedFont, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode, TweenChannel } from './model'
 import { MAX_STROKE_DASH_VALUES, cloneNode, isAudioLayer, isCameraLayer, isObjectLayer } from './model'
 import { cubicBezierPoint, segmentControls } from './motionPath'
 import { isPaintValue } from './paint'
@@ -81,7 +81,7 @@ export function createDocument(name: string, width: number, height: number, fps:
   const layer = createLayer('Layer 1')
   layer.keyframes.push({ frame: 0, nodes: [] })
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     name,
     width,
     height,
@@ -274,11 +274,19 @@ export function evaluateLayerAtFrame(layer: ObjectLayer, frame: number): SceneNo
         if (target) {
           const progress = (frame - source.frame) / (next.frame - source.frame)
           const eased = evaluateEasing(source.tween.easing, progress)
+          const easings = source.tween.easings
+          const channels =
+            easings === undefined
+              ? undefined
+              : {
+                  opacity: evaluateEasing(easings.opacity ?? source.tween.easing, progress),
+                  fill: evaluateEasing(easings.fill ?? source.tween.easing, progress)
+                }
           const centerPath =
             source.tween.path === 'smooth'
               ? smoothControlsFor(layer, id, entry.index)
               : undefined
-          result.push(tweenNode(entry.node, target, eased, centerPath))
+          result.push(tweenNode(entry.node, target, eased, centerPath, channels))
           continue
         }
       }
@@ -1121,10 +1129,24 @@ function isStrokeStyleFields(node: Record<string, unknown>): boolean {
   return true
 }
 
+const TWEEN_CHANNELS: readonly TweenChannel[] = ['transform', 'opacity', 'fill']
+
+/** Per-channel easing overrides of a tween: a plain object whose only keys
+ * are the three channels, each a valid easing. */
+function isTweenChannelEasings(value: unknown): value is KeyframeTween['easings'] {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  for (const key of Object.keys(value)) {
+    if (!(TWEEN_CHANNELS as readonly string[]).includes(key)) return false
+    if (!isEasing((value as Record<string, unknown>)[key])) return false
+  }
+  return true
+}
+
 function isTween(value: unknown): value is KeyframeTween {
   if (typeof value !== 'object' || value === null) return false
-  const tween = value as { easing?: unknown; path?: unknown }
+  const tween = value as { easing?: unknown; path?: unknown; easings?: unknown }
   if (tween.path !== undefined && tween.path !== 'linear' && tween.path !== 'smooth') return false
+  if (tween.easings !== undefined && !isTweenChannelEasings(tween.easings)) return false
   return isEasing(tween.easing)
 }
 
@@ -1287,7 +1309,7 @@ export function normalizePaletteColors(colors: readonly string[]): string[] {
 }
 
 /** Deep structural validation for documents restored from persistence.
- * Requires `schemaVersion: 8` and fully typed content; older documents go
+ * Requires `schemaVersion: 9` and fully typed content; older documents go
  * through `migrateDocument` first. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
@@ -1302,7 +1324,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
       candidate.holdStep >= 1 &&
       candidate.holdStep <= 16)
   return (
-    candidate.schemaVersion === 8 &&
+    candidate.schemaVersion === 9 &&
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
     typeof candidate.height === 'number' &&

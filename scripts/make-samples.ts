@@ -46,7 +46,7 @@ function bouncingBallDocument(): AnimatorDocument {
     fill: '#ff5252'
   })
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     name: 'Bouncing Ball',
     width: WIDTH,
     height: HEIGHT,
@@ -114,7 +114,7 @@ function limb(id: string, name: string, length: number, strokeWidth: number, x: 
 /** The walk-cycle sample: five flip-book poses (no tween), 24 frames. */
 function walkCycleDocument(): AnimatorDocument {
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     name: 'Walk Cycle',
     width: WIDTH,
     height: HEIGHT,

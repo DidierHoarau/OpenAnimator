@@ -30,7 +30,7 @@ function primitive(id: string, overrides: Partial<PrimitiveNode> & { primitive: 
 /** Hand-written current-schema equivalent of `fixtures/v1/tweened-strokes.json`. */
 function expectedTweenedStrokesDocument(): AnimatorDocument {
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     name: 'Tween demo',
     width: 960,
     height: 540,
@@ -113,7 +113,7 @@ describe('migrateDocument — v1 fixtures', () => {
   it('migrates the multi-layer fixture including hidden/locked flags', () => {
     const raw = loadFixture('multi-layer')
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(8)
+    expect(migrated.schemaVersion).toBe(9)
     expect(migrated.layers).toHaveLength(2)
     expect(migrated.layers[0]).toMatchObject({
       id: 'layer-fx',
@@ -144,7 +144,7 @@ describe('migrateDocument — v1 fixtures', () => {
     const raw = loadFixture('minimal')
     const migrated = migrateDocument(raw)
     expect(migrated).toEqual({
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 'Untitled',
       width: 960,
       height: 540,
@@ -433,7 +433,7 @@ describe('migrateDocument — v4 documents', () => {
       ]
     }
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(8)
+    expect(migrated.schemaVersion).toBe(9)
     expect(migrated.palette).toEqual([])
     expect(migrated.holdStep).toBe(3)
     expect((migrated.layers[0] as ObjectLayer).keyframes[0].tween).toEqual({
@@ -476,10 +476,10 @@ describe('migrateDocument — v4 documents', () => {
     expect(() => migrateDocument(badBezier)).toThrow(MigrationError)
   })
 
-  it('restamps a v3 document to v8', () => {
+  it('restamps a v3 document to v9', () => {
     const raw = { ...v4Base(), schemaVersion: 3 }
     const migrated = migrateDocument(JSON.parse(JSON.stringify(raw)))
-    expect(migrated.schemaVersion).toBe(8)
+    expect(migrated.schemaVersion).toBe(9)
     expect(migrated.palette).toEqual([])
     expect(isAnimatorDocument(migrated)).toBe(true)
   })
@@ -582,7 +582,7 @@ describe('migrateDocument — v4 documents', () => {
 
   it('injects fonts: [] into pre-v6 documents and keeps valid font lists through migration', () => {
     const injected = migrateDocument({ ...v4Base(), schemaVersion: 5 })
-    expect(injected.schemaVersion).toBe(8)
+    expect(injected.schemaVersion).toBe(9)
     expect(injected.fonts).toEqual([])
     expect(isAnimatorDocument(injected)).toBe(true)
 
@@ -712,10 +712,10 @@ describe('migrateDocument — camera and audio layers', () => {
     volume: 0.5
   })
 
-  it('restamps a v6 document to v8 and keeps camera and audio layers verbatim', () => {
+  it('restamps a v6 document to v9 and keeps camera and audio layers verbatim', () => {
     const raw = { ...v6Base(), layers: [...v6Base().layers, cameraLayer(), audioLayer()] }
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(8)
+    expect(migrated.schemaVersion).toBe(9)
     expect(migrated.layers[1]).toEqual(cameraLayer())
     expect(migrated.layers[2]).toEqual(audioLayer())
     expect(isAnimatorDocument(migrated)).toBe(true)
@@ -758,7 +758,7 @@ describe('migrateDocument — camera and audio layers', () => {
   })
 })
 
-describe('migrateDocument — v8 documents', () => {
+describe('migrateDocument — v9 documents', () => {
   /** A v7 document whose nodes exercise tweening, gradients and strokes. */
   const v7StyledDocument = () => ({
     schemaVersion: 7,
@@ -856,7 +856,7 @@ describe('migrateDocument — v8 documents', () => {
   it('renders a v7 document byte-identically before and after migration', () => {
     const raw = v7StyledDocument()
     const migrated = migrateDocument(JSON.parse(JSON.stringify(raw)))
-    expect(migrated.schemaVersion).toBe(8)
+    expect(migrated.schemaVersion).toBe(9)
     for (let frame = 0; frame < 13; frame++) {
       const before = renderFrameToSvgMarkup(
         evaluateDocumentAtFrame(raw as unknown as AnimatorDocument, frame).layers
@@ -879,7 +879,7 @@ describe('migrateDocument — v8 documents', () => {
     })
     const migrated = migrateDocument(v8)
     expect(isAnimatorDocument(migrated)).toBe(true)
-    expect(migrated).toEqual(v8)
+    expect(migrated).toEqual({ ...v8, schemaVersion: 9 })
     const node = (migrated.layers[0] as ObjectLayer).keyframes[0].nodes[0]
     expect(node).toMatchObject({
       strokeLinecap: 'round',
@@ -912,8 +912,96 @@ describe('migrateDocument — v8 documents', () => {
     expect(() => migrateDocument(zeroDash)).toThrow(MigrationError)
   })
 
+  it('keeps v9 tween easings, text style options and italic fonts through migration', () => {
+    const textNode = (x: number) => ({
+      id: 't',
+      type: 'text',
+      text: 'Hi',
+      center: { x, y: 50 },
+      width: 40,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      fill: '#ffffff',
+      fontFamily: 'Noto Sans',
+      fontSize: 18,
+      fontWeight: 400,
+      align: 'center',
+      fontStyle: 'italic',
+      ligatures: false
+    })
+    const v9 = {
+      schemaVersion: 9,
+      name: 'Depth',
+      width: 100,
+      height: 100,
+      fps: 24,
+      background: '#000000',
+      assets: [],
+      palette: [],
+      fonts: [
+        {
+          id: 'oa-embed-400-ab12cd34',
+          family: 'Noto Sans',
+          weight: 400,
+          italic: true,
+          resourceId: 'a'.repeat(64),
+          glyphs: ['H', 'i'],
+          license: 'OFL-1.1'
+        }
+      ],
+      layers: [
+        {
+          kind: 'object',
+          id: 'l',
+          name: 'L',
+          visible: true,
+          locked: false,
+          keyframes: [
+            {
+              frame: 0,
+              nodes: [textNode(30)],
+              tween: {
+                easing: 'ease-in-out',
+                easings: { opacity: 'linear', transform: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 } }
+              }
+            },
+            { frame: 4, nodes: [textNode(70)] }
+          ]
+        }
+      ]
+    }
+    const migrated = migrateDocument(JSON.parse(JSON.stringify(v9)))
+    expect(isAnimatorDocument(migrated)).toBe(true)
+    expect(migrated).toEqual(v9)
+    expect(migrated.fonts[0].italic).toBe(true)
+    expect((migrated.layers[0] as ObjectLayer).keyframes[0].tween?.easings).toEqual({
+      opacity: 'linear',
+      transform: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 }
+    })
+  })
+
+  it('rejects malformed tween channel easings on a v9 document', () => {
+    const withTween = (tween: unknown): unknown => {
+      const raw = JSON.parse(JSON.stringify(v7StyledDocument())) as Record<string, unknown> & {
+        layers: { keyframes: { tween?: unknown }[] }[]
+      }
+      raw.schemaVersion = 9
+      raw.layers[0].keyframes[0].tween = tween
+      return raw
+    }
+    const unknownChannel = withTween({ easing: 'linear', easings: { wobble: 'linear' } })
+    expect(() => migrateDocument(unknownChannel)).toThrow(MigrationError)
+
+    const badEasing = withTween({ easing: 'linear', easings: { opacity: 'spring' } })
+    expect(() => migrateDocument(badEasing)).toThrow(MigrationError)
+
+    const notAnObject = withTween({ easing: 'linear', easings: ['opacity'] })
+    expect(() => migrateDocument(notAnObject)).toThrow(MigrationError)
+  })
+
   it('rejects documents from a future schema version', () => {
-    const future = { ...v7StyledDocument(), schemaVersion: 9 }
+    const future = { ...v7StyledDocument(), schemaVersion: 10 }
     expect(() => migrateDocument(JSON.parse(JSON.stringify(future)))).toThrow(MigrationError)
   })
 })

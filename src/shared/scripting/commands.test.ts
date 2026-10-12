@@ -76,6 +76,33 @@ describe('validateScriptPayload', () => {
     expect(badBezier.errors.join('\n')).toContain('/x1')
   })
 
+  it('restricts setTween channel easings to the channel keys and easing values', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        {
+          op: 'setTween',
+          easings: { transform: 'ease-in', opacity: null, fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } }
+        }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+
+    const unknownChannel = validateScriptPayload({
+      commands: [{ op: 'setTween', easings: { rotation: 'ease-in' } }]
+    })
+    expect(unknownChannel.errors.join('\n')).toContain('/commands/0/easings/rotation')
+
+    const badEasing = validateScriptPayload({
+      commands: [{ op: 'setTween', easings: { opacity: 'wobbly' } }]
+    })
+    expect(badEasing.errors.join('\n')).toContain('/commands/0/easings/opacity')
+
+    const badShape = validateScriptPayload({
+      commands: [{ op: 'setTween', easings: 'ease-in' }]
+    })
+    expect(badShape.errors.join('\n')).toContain('/commands/0/easings')
+  })
+
   it('accepts the new keyframe-move and hold-step ops and rejects their bad shapes', () => {
     const ok = validateScriptPayload({
       commands: [
@@ -440,6 +467,22 @@ describe('hand-rolled validator vs JSON Schema', () => {
     { commands: [{ op: 'setTween', easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1, extra: 0 } }] },
     { commands: [{ op: 'setTween', easing: { x1: 'a', y1: 0, x2: 0.58, y2: 1 } }] },
     { commands: [{ op: 'setTween', easing: ['ease'] }] },
+    {
+      commands: [
+        {
+          op: 'setTween',
+          easings: { transform: 'ease-in', opacity: null, fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } }
+        }
+      ]
+    },
+    { commands: [{ op: 'setTween', easings: {} }] },
+    { commands: [{ op: 'setTween', easings: { rotation: 'ease-in' } }] },
+    { commands: [{ op: 'setTween', easings: { transform: 'wobbly' } }] },
+    { commands: [{ op: 'setTween', easings: { transform: { x1: 2, y1: 0, x2: 0.5, y2: 1 } } }] },
+    { commands: [{ op: 'setTween', easings: { transform: { x1: 0.1, y1: 0, x2: 0.9 } } }] },
+    { commands: [{ op: 'setTween', easings: 'ease-in' }] },
+    { commands: [{ op: 'setTween', easings: { transform: ['ease'] } }] },
+    { commands: [{ op: 'setTween', easings: { transform: null, extra: null } }] },
     { commands: [{ op: 'setTween', path: 'smooth' }] },
     { commands: [{ op: 'setTween', path: 'wavy' }] },
     { commands: [{ op: 'moveKeyframe', nodeId: 'x', fromFrame: 0, toFrame: 10 }] },

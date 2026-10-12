@@ -22,7 +22,9 @@ import { buildPathData, normalizePathData, pathDataToSubpathAnchors } from './pa
  * `from`. Nodes whose type differs (or primitives of a different `primitive`
  * kind) snap from `from` to `to` at the ends. When `centerPath` is given the
  * center follows that cubic bezier (smooth motion path) instead of the
- * straight lerp.
+ * straight lerp. `channels` overrides the progress of the per-property
+ * easing channels: the transform channel keeps `t`, `opacity` and `fill`
+ * use their own progress when given (see `TweenChannels`).
  */
 /** Carried stroke-style fields of a tweened node: linecap, linejoin and the
  * dash pattern hold `from` (the geometry snap convention); the dash offset
@@ -87,12 +89,25 @@ export function morphPathData(fromD: string, toD: string, t: number): string | n
   return subpaths.join('')
 }
 
+/** Per-property progress overrides of one tween segment: the `transform`
+ * channel (position, size, rotation, scale and path geometry) always uses
+ * the base `t`; `opacity` and `fill` use their own eased progress when
+ * given. Stroke paint and the stroke-style fields keep the base progress —
+ * documented boundary: only these three channels exist. */
+export interface TweenChannels {
+  opacity?: number
+  fill?: number
+}
+
 export function tweenNode(
   from: SceneNode,
   to: SceneNode,
   t: number,
-  centerPath?: { c1: Vec2; c2: Vec2 }
+  centerPath?: { c1: Vec2; c2: Vec2 },
+  channels?: TweenChannels
 ): SceneNode {
+  const opacityT = channels?.opacity ?? t
+  const fillT = channels?.fill ?? t
   if (from.type !== to.type) {
     return t < 1 ? cloneNode(from) : cloneNode(to)
   }
@@ -108,7 +123,7 @@ export function tweenNode(
     width: lerp(from.width, to.width, t),
     height: lerp(from.height, to.height, t),
     rotation: lerp(from.rotation, to.rotation, t),
-    opacity: lerp(from.opacity, to.opacity, t)
+    opacity: lerp(from.opacity, to.opacity, opacityT)
   }
   if (from.type === 'image') {
     return {
@@ -146,7 +161,7 @@ export function tweenNode(
       d: morphed ?? from.d,
       fill:
         from.fill !== undefined && target?.fill !== undefined
-          ? lerpPaint(from.fill, target.fill, t)
+          ? lerpPaint(from.fill, target.fill, fillT)
           : (from.fill ?? target?.fill),
       stroke:
         from.stroke !== undefined && target?.stroke !== undefined
@@ -183,7 +198,7 @@ export function tweenNode(
     ...strokeStyleTween(from, to, t),
     type: 'primitive',
     primitive: from.primitive,
-    fill: lerpPaint(from.fill, to.fill, t),
+    fill: lerpPaint(from.fill, to.fill, fillT),
     stroke:
       from.stroke !== undefined && to.stroke !== undefined
         ? lerpPaint(from.stroke, to.stroke, t)

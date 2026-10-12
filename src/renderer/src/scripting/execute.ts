@@ -1,7 +1,7 @@
 import type { ScriptCommand, ScriptIssue } from '@shared/scripting/commands'
 import type { LibraryListResult, ResourceAddResult } from '@shared/api'
 import type { Vec2 } from '@shared/geometry'
-import type { Asset, Layer, SceneNode, NodeBase } from '@shared/model'
+import type { Asset, Layer, SceneNode, NodeBase, TweenChannel } from '@shared/model'
 import { MAX_PALETTE_COLORS, createId, extractKeyframeChunk } from '@shared/document'
 import { collectAssetResourceIds } from '@shared/assets'
 import { isAudioLayer, isCameraLayer, isObjectLayer } from '@shared/model'
@@ -202,6 +202,14 @@ async function applyCommand(
           issue(issues, index, `setTween: no camera keyframe at frame ${editor.currentFrame} on layer ${layerId}`)
           return false
         }
+        if (command.easings) {
+          issue(
+            issues,
+            index,
+            'setTween: per-channel easings apply to object keyframes only; "easings" is ignored on camera layers',
+            'warning'
+          )
+        }
         if (command.easing === null) {
           editor.setCameraTweenHere(null)
           return true
@@ -223,6 +231,11 @@ async function applyCommand(
       if (!keyframe.tween) editor.toggleTweenHere()
       editor.setTweenEasingHere((command.easing ?? 'ease-in-out') as Easing)
       if (command.path) editor.setTweenPathHere(command.path)
+      if (command.easings) {
+        for (const [channel, easing] of Object.entries(command.easings)) {
+          editor.setTweenChannelEasingHere(channel as TweenChannel, easing)
+        }
+      }
       return true
     }
     case 'moveKeyframe': {

@@ -822,6 +822,49 @@ describe('PropertiesView — tween easing editor and motion path', () => {
     expect(tweenAt(0)).toEqual({ easing: 'ease-out' })
     expect(pathSelect().value).toBe('linear')
   })
+
+  const channelSelect = (label: string): HTMLSelectElement => {
+    const section = sectionByTitle(container, 'Layer')
+    const row = [...section.querySelectorAll('.panel-row')].find(
+      (candidate) => candidate.querySelector('label')?.textContent === label
+    )!
+    return row.querySelector('select')!
+  }
+
+  it('writes per-channel easing overrides through the three selects', () => {
+    editor.addNode(rect('a', 0, 0))
+    expect(channelSelect('Transform').disabled).toBe(true)
+
+    editor.toggleTweenHere()
+    const transform = channelSelect('Transform')
+    const opacity = channelSelect('Opacity')
+    const fill = channelSelect('Fill')
+    expect(transform.disabled).toBe(false)
+    expect(transform.value).toBe('')
+    expect(opacity.value).toBe('')
+    expect(fill.value).toBe('')
+
+    // Named presets store the name and the pick is undoable.
+    opacity.value = 'ease-in'
+    opacity.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(tweenAt(0)).toEqual({ easing: 'ease-in-out', easings: { opacity: 'ease-in' } })
+    editor.undo()
+    expect(tweenAt(0)).toEqual({ easing: 'ease-in-out' })
+    expect(transform.value).toBe('')
+
+    // A scripted custom curve shows as Custom; curve presets store beziers.
+    editor.setTweenChannelEasingHere('fill', { x1: 0.26, y1: 0.1, x2: 0.4, y2: 2 })
+    expect(fill.value).toBe('custom')
+    fill.value = 'ease-out-quad'
+    fill.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(tweenAt(0)?.easings).toEqual({ fill: { x1: 0.5, y1: 1, x2: 0.89, y2: 1 } })
+
+    // Default clears the override again.
+    fill.value = ''
+    fill.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(tweenAt(0)).toEqual({ easing: 'ease-in-out' })
+    expect(fill.value).toBe('')
+  })
 })
 
 describe('PropertiesView — stroke style controls', () => {

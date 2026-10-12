@@ -140,9 +140,21 @@ export interface Asset {
   createdAt: number
 }
 
+/** Tween channels of a whole-pose keyframe tween: the transform track
+ * (position/size/rotation/scale/path geometry), `opacity` and `fill` paint.
+ * Stroke paint and stroke fields always follow the base easing. */
+export type TweenChannel = 'transform' | 'opacity' | 'fill'
+
 /** Classic tween attached to a keyframe: interpolates toward the next keyframe. */
 export interface KeyframeTween {
   easing: Easing
+  /**
+   * Per-channel easing overrides, applied on top of the whole-pose model:
+   * an absent channel follows the base `easing`, so documents without
+   * overrides (and pre-v9 documents) render identically. The channel
+   * progress is the base easing evaluated first, then the override.
+   */
+  easings?: Partial<Record<TweenChannel, Easing>>
   /**
    * Spatial behavior of the tweened center. Absent ≡ `'linear'` (the center
    * lerps straight toward the target); `'smooth'` follows a Catmull-Rom
@@ -263,7 +275,7 @@ export interface EmbeddedFont {
 
 /** The authoring document. `layers[0]` is the topmost layer. */
 export interface AnimatorDocument {
-  schemaVersion: 8
+  schemaVersion: 9
   name: string
   width: number
   height: number

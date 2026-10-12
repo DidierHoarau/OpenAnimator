@@ -102,6 +102,34 @@ describe('tweenNode', () => {
     expect(result.opacity).toBe(0.5)
   })
 
+  it('applies channel progress overrides per property', () => {
+    const from = shape('a', { center: { x: 0, y: 0 }, opacity: 1, fill: '#000000' })
+    const to = shape('a', { center: { x: 100, y: 0 }, opacity: 0, fill: '#ffffff' })
+    const result = tweenNode(from, to, 0.5, undefined, { opacity: 0.25 }) as PrimitiveNode
+    // The transform channel keeps the base progress; opacity uses its own.
+    expect(result.center.x).toBe(50)
+    expect(result.opacity).toBe(0.75)
+    // Absent channels default to the base progress.
+    expect(result.fill).toBe('#808080')
+  })
+
+  it('applies the fill override to the fill and leaves the stroke on the base progress', () => {
+    const from = shape('a', { fill: '#000000', stroke: '#000000', strokeWidth: 1 })
+    const to = shape('a', { fill: '#ffffff', stroke: '#ffffff', strokeWidth: 3 })
+    const result = tweenNode(from, to, 0.5, undefined, { fill: 0.25 }) as PrimitiveNode
+    expect(result.fill).toBe('#404040')
+    expect(result.stroke).toBe('#808080')
+    expect(result.strokeWidth).toBe(2)
+  })
+
+  it('defaults every channel to the base progress when no overrides are given', () => {
+    const from = shape('a', { opacity: 1, fill: '#000000' })
+    const to = shape('a', { opacity: 0, fill: '#ffffff' })
+    const result = tweenNode(from, to, 0.5, undefined, {}) as PrimitiveNode
+    expect(result.opacity).toBe(0.5)
+    expect(result.fill).toBe('#808080')
+  })
+
   it('follows a center bezier path when given one', () => {
     const from = shape('a', { center: { x: 0, y: 0 } })
     const to = shape('a', { center: { x: 100, y: 0 } })
@@ -678,6 +706,26 @@ describe('evaluateLayerAtFrame', () => {
     expect(evaluateLayerAtFrame(layer, 5)[0].center.x).toBe(50)
   })
 
+  it('applies per-channel easing overrides through the evaluator', () => {
+    const channelLayer: ObjectLayer = {
+      ...layer,
+      keyframes: [
+        {
+          frame: 0,
+          nodes: [shape('a', { center: { x: 0, y: 0 }, opacity: 1, fill: '#000000' })],
+          tween: { easing: 'linear', easings: { opacity: 'ease-in', fill: 'ease-out' } }
+        },
+        { frame: 10, nodes: [shape('a', { center: { x: 100, y: 0 }, opacity: 0, fill: '#ffffff' })] }
+      ]
+    }
+    const result = evaluateLayerAtFrame(channelLayer, 5)[0] as PrimitiveNode
+    // The transform channel keeps the linear base; ease-in at 0.5 is 0.125
+    // and ease-out 0.875.
+    expect(result.center.x).toBe(50)
+    expect(result.opacity).toBe(0.875)
+    expect(result.fill).toBe('#dfdfdf')
+  })
+
   it('evaluates gradient fill interpolation through the tween pipeline', () => {
     const gradientLayer: ObjectLayer = {
       ...layer,
@@ -895,7 +943,7 @@ describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 'test',
       width: 100,
       height: 100,

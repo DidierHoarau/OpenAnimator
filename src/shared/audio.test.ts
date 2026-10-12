@@ -19,7 +19,7 @@ function audioLayer(id: string, overrides: Partial<AudioLayer> = {}): AudioLayer
 
 function doc(layers: AnimatorDocument['layers'], fps = 24): AnimatorDocument {
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     name: 't',
     width: 100,
     height: 100,
