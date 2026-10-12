@@ -545,6 +545,22 @@ describe('renderSvg — gradients', () => {
     expect(markup).toContain('<stop offset="0.3333" stop-color="#ffffff"/>')
   })
 
+  it('emits stop-opacity only for stops whose alpha is set and not 1', () => {
+    const paint: GradientPaint = {
+      ...linear,
+      stops: [
+        { offset: 0, color: '#ff0000', alpha: 0.4 },
+        { offset: 0.5, color: '#00ff00', alpha: 1 },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    const markup = nodeToSvgMarkup(shape({ fill: paint }))
+    expect(markup).toContain('<stop offset="0" stop-color="#ff0000" stop-opacity="0.4"/>')
+    expect(markup).toContain('<stop offset="0.5" stop-color="#00ff00"/>')
+    expect(markup).toContain('<stop offset="1" stop-color="#0000ff"/>')
+    expect(markup).toContain(`fill="url(#${paintGradientId(paint)})"`)
+  })
+
   it('shares one defs entry per unique paint across the whole fragment', () => {
     const layers: RenderLayer[] = [
       {

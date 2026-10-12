@@ -34,8 +34,8 @@ reference where one exists; the [README](README.md) has the exhaustive list.
   and paste poses with their relative timing, `Move to` frame.
 - **Classic tweening** — a tween on a keyframe interpolates matching nodes
   (position, size, rotation, opacity, plus fill/stroke paints for
-  primitives) toward the next keyframe, with named easings, a cubic-bezier
-  curve editor and an optional **smooth motion path**.
+  primitives and paths) toward the next keyframe, with named easings, a
+  cubic-bezier curve editor and an optional **smooth motion path**.
 - **Frame-by-frame drawing layers** — brush and eraser cells with
   pressure-aware width, onion skinning, per-layer buffer resolution, and
   cell retiming (`frames 3–7`, move, duplicate, clear).

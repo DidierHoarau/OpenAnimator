@@ -20,11 +20,12 @@ function round(value: number): number {
 /**
  * Reusable paint editor widget: a Solid/Linear/Radial kind select plus — for
  * gradients — the geometry inputs (angle for linear, center/radius for
- * radial) and the stop list (color, offset, add/remove). Every edit applies
- * immediately through `onApply`; stop-color picker drags are coalesced into
- * one undo entry through `onDragStart`/`onDragEnd`. Stop rows are rebuilt
- * only when the kind or the stop count changes, so the color input being
- * dragged survives the re-renders its own edits trigger.
+ * radial) and the stop list (color, offset, opacity, add/remove). Every edit
+ * applies immediately through `onApply`; stop-color picker drags are
+ * coalesced into one undo entry through `onDragStart`/`onDragEnd`. Stop rows
+ * are rebuilt only when the kind, the stop count or a stop opacity changes,
+ * so the color input being dragged survives the re-renders its own edits
+ * trigger.
  */
 export class GradientEditor {
   readonly root: HTMLDivElement
@@ -167,7 +168,10 @@ export class GradientEditor {
         this.radius = paint.r
       }
     }
-    const key = this.kind === 'solid' ? 'solid' : `${this.kind}|${this.stops.length}`
+    const key =
+      this.kind === 'solid'
+        ? 'solid'
+        : `${this.kind}|${this.stops.length}|${this.stops.map((stop) => stop.alpha ?? 1).join(',')}`
     if (key !== this.structureKey) {
       this.structureKey = key
       this.rebuildStructure()
@@ -231,13 +235,41 @@ export class GradientEditor {
         this.applyGradient()
       })
 
+      const alpha = el('input', 'gradient-stop-alpha') as HTMLInputElement
+      alpha.type = 'number'
+      alpha.min = '0'
+      alpha.max = '1'
+      alpha.step = '0.05'
+      alpha.placeholder = '1'
+      alpha.title = 'Stop opacity (0..1; blank or 1 = fully opaque)'
+      alpha.addEventListener('change', () => {
+        if (alpha.value.trim() === '') {
+          this.updateStop(index, (current) => {
+            delete current.alpha
+          })
+          this.applyGradient()
+          return
+        }
+        const value = Number(alpha.value)
+        if (!Number.isFinite(value)) {
+          this.syncValues()
+          return
+        }
+        const clamped = Math.min(1, Math.max(0, value))
+        this.updateStop(index, (current) => {
+          if (clamped === 1) delete current.alpha
+          else current.alpha = clamped
+        })
+        this.applyGradient()
+      })
+
       const remove = el('button', 'gradient-stop-remove', '✕') as HTMLButtonElement
       remove.type = 'button'
       remove.title = `Remove this stop (at least ${MIN_GRADIENT_STOPS} are required)`
       remove.disabled = this.disabled || this.stops.length <= MIN_GRADIENT_STOPS
       remove.addEventListener('click', () => this.removeStop(index))
 
-      row.append(color, offset, remove)
+      row.append(color, offset, alpha, remove)
       this.stopsHost.appendChild(row)
     })
   }
@@ -261,9 +293,13 @@ export class GradientEditor {
       if (!stop) return
       const color = row.querySelector<HTMLInputElement>('input[type="color"]')
       const offset = row.querySelector<HTMLInputElement>('input[type="number"]')
+      const alpha = row.querySelector<HTMLInputElement>('.gradient-stop-alpha')
       const remove = row.querySelector<HTMLButtonElement>('button')
       if (color && focused !== color) color.value = stop.color
       if (offset && focused !== offset) offset.value = String(round(stop.offset))
+      if (alpha && focused !== alpha) {
+        alpha.value = stop.alpha !== undefined ? String(round(stop.alpha)) : ''
+      }
       if (remove) remove.disabled = this.disabled || this.stops.length <= MIN_GRADIENT_STOPS
     })
   }
@@ -298,7 +334,9 @@ export class GradientEditor {
     const last = this.stops[this.stops.length - 1]
     const beforeLast = this.stops[this.stops.length - 2]
     const offset = round((beforeLast.offset + last.offset) / 2)
-    this.stops = [...this.stops.slice(0, -1), { offset, color: last.color }, last]
+    const inserted: GradientStop = { offset, color: last.color }
+    if (last.alpha !== undefined) inserted.alpha = last.alpha
+    this.stops = [...this.stops.slice(0, -1), inserted, last]
     this.applyGradient()
   }
 

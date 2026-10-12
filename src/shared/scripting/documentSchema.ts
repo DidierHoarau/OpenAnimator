@@ -53,7 +53,8 @@ export function easingSchema(): Record<string, unknown> {
 }
 
 /** Shared gradient paint definition: one strict linear or radial shape, 2–8
- * stops with 0..1 offsets and hex colors; unknown fields are rejected. */
+ * stops with 0..1 offsets, hex colors and an optional 0..1 opacity; unknown
+ * fields are rejected. */
 export function gradientPaintSchema(): Record<string, unknown> {
   const stop = {
     type: 'object',
@@ -61,7 +62,8 @@ export function gradientPaintSchema(): Record<string, unknown> {
     required: ['offset', 'color'],
     properties: {
       offset: { type: 'number', minimum: 0, maximum: 1 },
-      color: { type: 'string', pattern: HEX_COLOR_PATTERN }
+      color: { type: 'string', pattern: HEX_COLOR_PATTERN },
+      alpha: { type: 'number', minimum: 0, maximum: 1 }
     }
   }
   return {

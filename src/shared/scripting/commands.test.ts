@@ -504,6 +504,64 @@ describe('hand-rolled validator vs JSON Schema', () => {
         }
       ]
     },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 0,
+              stops: [
+                { offset: 0, color: '#f59e0b', alpha: 0.5 },
+                { offset: 0.5, color: '#fff', alpha: 1 },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 0,
+              stops: [
+                { offset: 0, color: '#fff', alpha: 1.5 },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 0,
+              stops: [
+                { offset: 0, color: '#fff', alpha: 'x' },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { stroke: 'none' } }] },
     { commands: [{ op: 'addNode', node: { type: 'primitive', primitive: 'rect', fill: '' } }] },
     {

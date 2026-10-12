@@ -258,7 +258,7 @@ describe('tweenNode', () => {
     expect((tweenNode(groupNode, shapeNode, 1) as PrimitiveNode).type).toBe('primitive')
   })
 
-  it('tweens a path: transform and stroke width lerp, geometry snaps from `from`', () => {
+  it('tweens a path: transform, stroke width and paints lerp, geometry snaps from `from`', () => {
     const from: PathNode = {
       type: 'path',
       id: 'p',
@@ -290,7 +290,7 @@ describe('tweenNode', () => {
     expect(result.rotation).toBe(45)
     expect(result.strokeWidth).toBe(6)
     expect(result.d).toBe('M0 0L10 10')
-    expect(result.stroke).toBe('#111111')
+    expect(result.stroke).toBe('#1a1a1a')
     expect(result.fill).toBeUndefined()
   })
 
@@ -308,6 +308,89 @@ describe('tweenNode', () => {
     }
     const to: PathNode = { ...from, strokeWidth: undefined }
     expect((tweenNode(from, to, 0.5) as PathNode).strokeWidth).toBe(4)
+  })
+
+  it('lerps path fills and strokes through `lerpPaint`', () => {
+    const from: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0L1 1',
+      fill: '#000000',
+      stroke: '#ff0000'
+    }
+    const to: PathNode = { ...from, fill: '#ffffff', stroke: '#00ff00' }
+    const result = tweenNode(from, to, 0.5) as PathNode
+    expect(result.fill).toBe('#808080')
+    expect(result.stroke).toBe('#808000')
+  })
+
+  it('lerps path gradients stop by stop, including alpha', () => {
+    const from: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0L1 1',
+      fill: {
+        type: 'linear',
+        angle: 0,
+        stops: [
+          { offset: 0, color: '#ff0000', alpha: 1 },
+          { offset: 1, color: '#0000ff' }
+        ]
+      }
+    }
+    const to: PathNode = {
+      ...from,
+      fill: {
+        type: 'linear',
+        angle: 180,
+        stops: [
+          { offset: 0, color: '#ff0000', alpha: 0 },
+          { offset: 1, color: '#0000ff', alpha: 1 }
+        ]
+      }
+    }
+    const result = tweenNode(from, to, 0.5) as PathNode
+    expect(result.fill).toEqual({
+      type: 'linear',
+      angle: 90,
+      stops: [
+        { offset: 0, color: '#ff0000', alpha: 0.5 },
+        { offset: 1, color: '#0000ff' }
+      ]
+    })
+  })
+
+  it('snaps path paint mismatches and lets the defined end win', () => {
+    const base: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0L1 1'
+    }
+    const gradient = { type: 'linear', angle: 0, stops: [{ offset: 0, color: '#fff' }, { offset: 1, color: '#000' }] } as const
+    // Solid ↔ gradient snaps: `from` until the last frame, `to` at t = 1.
+    const solidFrom: PathNode = { ...base, fill: '#ff0000' }
+    const gradientTo: PathNode = { ...base, fill: { ...gradient, stops: [...gradient.stops] } }
+    expect((tweenNode(solidFrom, gradientTo, 0.5) as PathNode).fill).toBe('#ff0000')
+    expect((tweenNode(solidFrom, gradientTo, 1) as PathNode).fill).toEqual(gradientTo.fill)
+    // One side undefined: the defined end wins at every t.
+    expect((tweenNode(base, solidFrom, 0.5) as PathNode).fill).toBe('#ff0000')
+    expect((tweenNode(solidFrom, base, 0.5) as PathNode).fill).toBe('#ff0000')
+    expect((tweenNode(base, base, 0.5) as PathNode).fill).toBeUndefined()
   })
 
   it('carries path stroke styles through the tween: styles hold, dash offset lerps', () => {

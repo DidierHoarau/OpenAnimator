@@ -7,9 +7,10 @@ import { lerpPaint } from './paint'
 
 /**
  * Interpolates a node between two keyframe contents matched by id. Every node
- * type lerps transform + opacity; primitives additionally lerp fill, stroke
- * and stroke width (paints through `lerpPaint`: solid↔solid lerps the color,
- * matching gradients lerp geometry and stops, any mismatch snaps). Authored
+ * type lerps transform + opacity; primitives and paths additionally lerp
+ * fill, stroke and stroke width (paints through `lerpPaint`: solid↔solid
+ * lerps the color, matching gradients lerp geometry and stops, any mismatch
+ * snaps). Authored
  * stroke-style fields are carried through so they never vanish mid-tween:
  * linecap, linejoin and the dash pattern hold `from`, the dash offset
  * interpolates when both ends define it. Identity fields (id, name, type,
@@ -77,18 +78,27 @@ export function tweenNode(
     return { ...base, type: 'symbol', assetId: from.assetId }
   }
   if (from.type === 'path') {
-    // Path geometry and paints snap from `from`; the transform, stroke width
-    // and stroke-style fields carry (dash offset interpolates, the rest hold).
+    // Path geometry snaps from `from`; the transform carries, fills and
+    // strokes interpolate through `lerpPaint` like primitives (both ends
+    // defined → lerp, else the defined end wins), and the stroke-style
+    // fields hold (dash offset interpolates).
+    const target = to.type === 'path' ? to : undefined
     return {
       ...base,
-      ...strokeStyleTween(from, to.type === 'path' ? to : {}, t),
+      ...strokeStyleTween(from, target ?? {}, t),
       type: 'path',
       d: from.d,
-      fill: from.fill,
-      stroke: from.stroke,
+      fill:
+        from.fill !== undefined && target?.fill !== undefined
+          ? lerpPaint(from.fill, target.fill, t)
+          : (from.fill ?? target?.fill),
+      stroke:
+        from.stroke !== undefined && target?.stroke !== undefined
+          ? lerpPaint(from.stroke, target.stroke, t)
+          : (from.stroke ?? target?.stroke),
       strokeWidth:
-        from.strokeWidth !== undefined && to.type === 'path' && to.strokeWidth !== undefined
-          ? lerp(from.strokeWidth, to.strokeWidth, t)
+        from.strokeWidth !== undefined && target?.strokeWidth !== undefined
+          ? lerp(from.strokeWidth, target.strokeWidth, t)
           : from.strokeWidth
     }
   }

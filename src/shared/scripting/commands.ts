@@ -1125,8 +1125,16 @@ function checkGradientStop(collector: Collector, path: string, value: unknown): 
   else if (typeof color !== 'string' || parseHexColor(color) === null) {
     collector.at(`${path}/color`, 'must be a hex color (#rgb or #rrggbb)')
   }
+  const alpha = stop.alpha
+  if (alpha !== undefined) {
+    if (typeof alpha !== 'number' || !Number.isFinite(alpha)) {
+      collector.at(`${path}/alpha`, 'must be number')
+    } else if (alpha < 0 || alpha > 1) {
+      collector.at(`${path}/alpha`, 'must be >= 0 and <= 1')
+    }
+  }
   for (const key of Object.keys(stop)) {
-    if (key !== 'offset' && key !== 'color') {
+    if (key !== 'offset' && key !== 'color' && key !== 'alpha') {
       collector.at(`${path}/${key}`, 'must not have additional properties')
     }
   }

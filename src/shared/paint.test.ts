@@ -91,6 +91,17 @@ describe('isPaintValue', () => {
     expect(isGradientPaint('#ff0000')).toBe(false)
     expect(isGradientPaint('none')).toBe(false)
   })
+
+  it('accepts an optional 0..1 stop alpha and rejects bad values', () => {
+    const stop = (alpha: unknown): object => ({ offset: 0, color: '#ff0000', alpha })
+    expect(isPaintValue({ ...linear, stops: [stop(0), linear.stops[1]] })).toBe(true)
+    expect(isPaintValue({ ...linear, stops: [stop(1), linear.stops[1]] })).toBe(true)
+    expect(isPaintValue({ ...linear, stops: [stop(0.25), linear.stops[1]] })).toBe(true)
+    expect(isPaintValue({ ...linear, stops: [stop(-0.1), linear.stops[1]] })).toBe(false)
+    expect(isPaintValue({ ...linear, stops: [stop(1.1), linear.stops[1]] })).toBe(false)
+    expect(isPaintValue({ ...linear, stops: [stop('0.5'), linear.stops[1]] })).toBe(false)
+    expect(isPaintValue({ ...linear, stops: [stop(Number.NaN), linear.stops[1]] })).toBe(false)
+  })
 })
 
 describe('paintPrimaryColor', () => {
@@ -163,6 +174,27 @@ describe('lerpPaint', () => {
     expect(lerpPaint(linear, badColor, 0.5)).toBe(linear)
     expect(lerpPaint(linear, badColor, 1)).toBe(badColor)
   })
+
+  it('interpolates stop alpha pairwise, treating absent as opaque', () => {
+    const faded: LinearGradientPaint = {
+      type: 'linear',
+      angle: 90,
+      stops: [
+        { offset: 0, color: '#ff0000', alpha: 0 },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    const mixed = lerpPaint(linear, faded, 0.5) as LinearGradientPaint
+    expect(mixed.stops[0].alpha).toBe(0.5)
+    // Absent ≡ 1: the lerp stays at 1 and the field stays absent.
+    expect(mixed.stops[1]).toEqual({ offset: 1, color: '#0000ff' })
+    const end = lerpPaint(linear, faded, 1) as LinearGradientPaint
+    expect(end.stops[0]).toEqual({ offset: 0, color: '#ff0000', alpha: 0 })
+    expect(end.stops[1]).toEqual({ offset: 1, color: '#0000ff' })
+    // Both ends opaque: alpha never appears.
+    const opaque = lerpPaint(linear, linear, 0.5) as LinearGradientPaint
+    expect(opaque.stops.every((stop) => stop.alpha === undefined)).toBe(true)
+  })
 })
 
 describe('paintKey / paintGradientId', () => {
@@ -191,6 +223,27 @@ describe('paintKey / paintGradientId', () => {
         ]
       })
     )
+  })
+
+  it('folds only non-opaque stop alpha into the key', () => {
+    const opaque: LinearGradientPaint = {
+      ...linear,
+      stops: [
+        { offset: 0, color: '#ff0000', alpha: 1 },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    // alpha 1 and absent are equivalent, so pre-alpha ids stay stable.
+    expect(paintKey(opaque)).toBe(paintKey(linear))
+    expect(paintKey(opaque)).toBe(paintGradientId(linear).slice('oa-grad-'.length))
+    const faded: LinearGradientPaint = {
+      ...linear,
+      stops: [
+        { offset: 0, color: '#ff0000', alpha: 0.5 },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    expect(paintKey(faded)).not.toBe(paintKey(linear))
   })
 })
 

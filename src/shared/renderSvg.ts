@@ -75,7 +75,11 @@ function roundUnit(value: number): number {
  * Stops are XML-escaped like every other attribute value. */
 function gradientDefMarkup(paint: GradientPaint, id: string): string {
   const stops = paint.stops
-    .map((stop) => `<stop${attr('offset', roundUnit(stop.offset))}${attr('stop-color', stop.color)}/>`)
+    .map(
+      (stop) =>
+        `<stop${attr('offset', roundUnit(stop.offset))}${attr('stop-color', stop.color)}` +
+        `${stop.alpha !== undefined && stop.alpha !== 1 ? attr('stop-opacity', roundUnit(stop.alpha)) : ''}/>`
+    )
     .join('')
   if (paint.type === 'linear') {
     const angle = (paint.angle * Math.PI) / 180
