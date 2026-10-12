@@ -222,6 +222,64 @@ export function pathDataToAnchors(d: string): { anchors: PathAnchor[]; closed: b
   return { anchors, closed }
 }
 
+/**
+ * Multi-subpath view of `d` for exporters: the `pathDataToAnchors` anchor
+ * conversion applied to every subpath (split on `M`), so glyph outlines and
+ * other multi-contour paths can be re-encoded (e.g. as Lottie shapes). Null
+ * for unparseable data, an empty path or a `Z`-closed subpath that continues
+ * drawing without a new `M`. Do not conflate with the single-subpath editing
+ * helper: this variant never merges subpaths.
+ */
+export function pathDataToSubpathAnchors(
+  d: string
+): Array<{ anchors: PathAnchor[]; closed: boolean }> | null {
+  const commands = parsePathCommands(d)
+  if (!commands || commands.length === 0) return null
+  const subpaths: Array<{ anchors: PathAnchor[]; closed: boolean }> = []
+  let current: { anchors: PathAnchor[]; closed: boolean } | null = null
+  const push = (): void => {
+    if (current && current.anchors.length > 0) subpaths.push(current)
+    current = null
+  }
+  for (const command of commands) {
+    if (command.type === 'M') {
+      push()
+      current = { anchors: [{ x: command.x, y: command.y }], closed: false }
+      continue
+    }
+    if (!current) return null
+    if (command.type === 'Z') {
+      current.closed = true
+      push()
+      continue
+    }
+    if (current.closed) return null
+    const previous = current.anchors[current.anchors.length - 1]
+    if (command.type === 'C') {
+      previous.out = { x: command.x1 - previous.x, y: command.y1 - previous.y }
+      current.anchors.push({
+        x: command.x,
+        y: command.y,
+        in: { x: command.x2 - command.x, y: command.y2 - command.y }
+      })
+      continue
+    }
+    if (command.type === 'Q') {
+      // Quadratic → equivalent cubic handles: c = p ± ⅔(q − p).
+      previous.out = { x: (2 / 3) * (command.x1 - previous.x), y: (2 / 3) * (command.y1 - previous.y) }
+      current.anchors.push({
+        x: command.x,
+        y: command.y,
+        in: { x: (2 / 3) * (command.x1 - command.x), y: (2 / 3) * (command.y1 - command.y) }
+      })
+      continue
+    }
+    current.anchors.push({ x: command.x, y: command.y })
+  }
+  push()
+  return subpaths.length > 0 ? subpaths : null
+}
+
 /** Bounding box of everything `d` draws (on-curve points and controls);
  * null when the path draws nothing. */
 export function pathDataBounds(d: string): { x: number; y: number; width: number; height: number } | null {

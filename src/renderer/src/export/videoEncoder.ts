@@ -6,6 +6,7 @@ import {
   Output,
   QUALITY_HIGH,
   WebMOutputFormat,
+  canEncodeVideo as canEncodeCodec,
   getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec
 } from 'mediabunny'
@@ -54,6 +55,9 @@ export interface EncodeVideoResult {
   bytes: Uint8Array
   /** False when a requested audio mix was dropped (no encodable codec). */
   audioIncluded: boolean
+  /** False when transparent WebM was requested but the environment cannot
+   * encode VP9 with alpha (the video is opaque). Always true otherwise. */
+  alphaIncluded: boolean
 }
 
 /**
@@ -62,7 +66,9 @@ export interface EncodeVideoResult {
  * rasterizes through the shared FrameRasterizer. When `audio` is given its
  * mix buffer is encoded as an audio track — except when the environment has
  * no encodable audio codec, in which case the video is written silent and
- * `audioIncluded` reports false.
+ * `audioIncluded` reports false. Transparent WebM probes the VP9 alpha
+ * encoder; when unavailable the video is encoded opaque and `alphaIncluded`
+ * reports false.
  */
 export async function encodeVideo(
   options: ExportOptions,
@@ -73,7 +79,15 @@ export async function encodeVideo(
 ): Promise<EncodeVideoResult> {
   const { width, height } = pixelSize
   const container = options.format === 'mp4' ? 'mp4' : 'webm'
-  const codec = await codecFor(container, width, height)
+  const wantsAlpha = options.format === 'webm' && options.transparent
+  let codec: string
+  let alphaKept = false
+  if (wantsAlpha && (await canEncodeCodec('vp9', { width, height, alpha: 'keep' }))) {
+    codec = 'vp9'
+    alphaKept = true
+  } else {
+    codec = await codecFor(container, width, height)
+  }
 
   const output = new Output({
     format: container === 'mp4' ? new Mp4OutputFormat() : new WebMOutputFormat(),
@@ -82,7 +96,11 @@ export async function encodeVideo(
   const canvas = globalThis.document.createElement('canvas')
   canvas.width = width
   canvas.height = height
-  const source = new CanvasSource(canvas, { codec: codec as 'vp9', quality: QUALITY_HIGH })
+  const source = new CanvasSource(canvas, {
+    codec: codec as 'vp9',
+    quality: QUALITY_HIGH,
+    ...(alphaKept ? { alpha: 'keep' as const } : {})
+  })
   output.addVideoTrack(source, { frameRate: options.fps })
   let audioSource: AudioBufferSource | null = null
   if (audio) {
@@ -115,7 +133,11 @@ export async function encodeVideo(
   }
   const buffer = output.target.buffer
   if (!buffer) throw new Error('Video encoding produced no data')
-  return { bytes: new Uint8Array(buffer), audioIncluded: audioSource !== null }
+  return {
+    bytes: new Uint8Array(buffer),
+    audioIncluded: audioSource !== null,
+    alphaIncluded: !wantsAlpha || alphaKept
+  }
 }
 
 /** Thrown when the user cancels a running export. */

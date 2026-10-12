@@ -54,13 +54,13 @@ export function showExportDialog(editor: Editor): void {
   const transparentHint = el(
     'p',
     'modal-subtitle',
-    'Video formats always render on the document background; PNG and GIF keep transparency.'
+    'PNG, GIF, WebM (alpha VP9), Lottie, animated SVG and spritesheet exports can keep transparency; MP4 is always opaque. WebM transparency depends on the environment encoder.'
   )
 
   const audioHint = el(
     'p',
     'modal-subtitle',
-    'WebM and MP4 include the mixed audio tracks (audible audio layers); PNG sequence and GIF are silent.'
+    'WebM and MP4 include the mixed audio tracks (audible audio layers); all other formats are silent.'
   )
 
   form.append(formatField, scaleField, fpsField, rangeField, transparentField, transparentHint, audioHint)
@@ -77,12 +77,17 @@ export function showExportDialog(editor: Editor): void {
   closeButton.addEventListener('click', () => overlay.remove())
   actions.append(cancelButton, exportButton)
 
-  const syncTransparentAvailability = (): void => {
-    const video = formatSelect.value === 'webm' || formatSelect.value === 'mp4'
-    transparentInput.disabled = video
-    if (video) transparentInput.checked = false
+  // MP4 is the only format that cannot carry an alpha channel; Lottie and
+  // dotLottie are vector output, so the raster scale does not apply to them.
+  const syncFormatAvailability = (): void => {
+    const format = formatSelect.value
+    const opaqueOnly = format === 'mp4'
+    transparentInput.disabled = opaqueOnly
+    if (opaqueOnly) transparentInput.checked = false
+    scaleInput.disabled = format === 'lottie' || format === 'dotlottie'
   }
-  formatSelect.addEventListener('change', syncTransparentAvailability)
+  formatSelect.addEventListener('change', syncFormatAvailability)
+  syncFormatAvailability()
 
   exportButton.addEventListener('click', () => {
     const raw: Partial<ExportOptions> = {

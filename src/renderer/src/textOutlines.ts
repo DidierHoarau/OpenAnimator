@@ -1,6 +1,6 @@
-import { layoutText } from '@shared/textModel'
-import { normalizePathData, pathDataBounds } from '@shared/pathModel'
-import type { PathNode, TextNode } from '@shared/model'
+import type { TextNode } from '@shared/model'
+import type { TextOutlineProvider } from '@shared/textOutline'
+import { textNodeToOutlinePath } from '@shared/textOutline'
 
 import type { Editor } from './editor'
 import { parse } from 'opentype.js'
@@ -11,12 +11,11 @@ import noto700Url from '@expo-google-fonts/noto-sans/700Bold/NotoSans_700Bold.tt
 /**
  * Converts a selected text node into vector outlines. The node's own family
  * is used when it can be loaded — a system font through the main process, or
- * the bundled Noto Sans for the fallback family — and every line's glyph
- * paths are laid out with the shared text metrics (baselines, anchors and
- * letter spacing) and merged into one multi-subpath `PathNode` that keeps the
- * text node's id, transform and fill. Fonts that cannot be loaded fall back
- * to the bundled Noto Sans so the conversion always yields deterministic
- * outlines.
+ * the bundled Noto Sans for the fallback family — and the glyph outline math
+ * (baselines, anchors, letter spacing, multi-subpath merge) lives in the
+ * shared `textOutline` module so the exporters build identical outlines.
+ * Fonts that cannot be loaded fall back to the bundled Noto Sans so the
+ * conversion always yields deterministic outlines.
  */
 
 const FONT_URLS: Record<number, string> = { 400: noto400Url, 700: noto700Url }
@@ -90,26 +89,12 @@ function loadFontFor(node: TextNode): Promise<LoadedFont | null> {
   return promise
 }
 
-/** Glyph path data for one line; letter spacing widens the advance after
- * every character (including spaces) like the rendered text does. */
-function linePathData(
-  font: Font,
-  line: string,
-  startX: number,
-  baseline: number,
-  fontSize: number,
-  letterSpacing: number
-): string {
-  if (letterSpacing === 0) return font.getPath(line, startX, baseline, fontSize).toPathData(2)
-  let d = ''
-  let x = startX
-  const scale = fontSize / font.unitsPerEm
-  for (const char of line) {
-    const glyph = font.charToGlyph(char)
-    d += glyph.getPath(x, baseline, fontSize).toPathData(2)
-    x += (glyph.advanceWidth ?? 0) * scale + letterSpacing
-  }
-  return d
+/** The renderer's text-outline provider for the exporters: loads the node's
+ * font like Convert-to-Outlines does, then builds the shared outline path. */
+export const textNodeOutline: TextOutlineProvider = async (node) => {
+  const loaded = await loadFontFor(node)
+  if (!loaded) return null
+  return textNodeToOutlinePath(node, loaded.font)
 }
 
 /**
@@ -139,29 +124,10 @@ export async function convertSelectedTextToOutlines(editor: Editor): Promise<boo
     editor.showMessage(`No font could be loaded for "${node.fontFamily}"`)
     return false
   }
-  const layout = layoutText(node)
-  let d = ''
-  for (let i = 0; i < layout.lines.length; i++) {
-    const line = layout.lines[i]
-    if (line.length === 0) continue
-    d += linePathData(loaded.font, line, layout.anchorX, layout.baselines[i], node.fontSize, layout.letterSpacing)
-  }
-  const bounds = pathDataBounds(d)
-  if (!bounds) {
+  const replacement = textNodeToOutlinePath(node, loaded.font)
+  if (!replacement) {
     editor.showMessage('The text has no glyphs to convert')
     return false
-  }
-  const replacement: PathNode = {
-    id: node.id,
-    ...(node.name !== undefined ? { name: node.name } : {}),
-    type: 'path',
-    center: { ...node.center },
-    width: Math.max(2, bounds.width),
-    height: Math.max(2, bounds.height),
-    rotation: node.rotation,
-    opacity: node.opacity,
-    d: normalizePathData(d),
-    fill: node.fill
   }
   const replaced = editor.replaceSelectedNode((current) =>
     current.id === node.id && current.type === 'text' ? replacement : current

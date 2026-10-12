@@ -166,8 +166,8 @@ loadable in the script console:
 
 ```
 render <project.oanim|document.json> --out out.gif
-    [--format png-sequence|gif|webm|mp4] [--scale 0.25..4] [--fps 1..60]
-    [--from N] [--to N] [--transparent]
+    [--format png-sequence|gif|webm|mp4|lottie|dotlottie|svg-animation|spritesheet]
+    [--scale 0.25..4] [--fps 1..60] [--from N] [--to N] [--transparent]
 validate <payload.json> [--kind commands|document]
 ```
 
@@ -178,9 +178,19 @@ validate <payload.json> [--kind commands|document]
   files, so text renders with the embedded typography (see
   [docs/font-embedding.md](font-embedding.md)). `webm`/`mp4` require
   `ffmpeg` on PATH (WebCodecs is browser-only) and mix the document's
-  audible audio layers into the output with the same timing as the app.
-  `png-sequence` writes a ZIP of per-frame PNGs, which — like GIF — are
-  silent.
+  audible audio layers into the output with the same timing as the app;
+  transparent WebM encodes VP9 alpha (`yuva420p`) and MP4 is always
+  opaque. `png-sequence` writes a ZIP of per-frame PNGs, which — like GIF
+  and the spritesheet — is silent.
+- The format defaults from the `--out` extension (`.zip` → PNG sequence,
+  `.gif`, `.webm`, `.mp4`, `.json` → Lottie, `.lottie` → dotLottie,
+  `.svg` → animated SVG); `--format spritesheet` must be given explicitly
+  since `.zip` already maps to the PNG sequence. `lottie`, `dotlottie`
+  and `svg-animation` are built natively — no rasterization, no ffmpeg,
+  text as outlines and never an embedded font — and `spritesheet` packs
+  the rendered frames into an `atlas.png` + `atlas.json` ZIP. See
+  [docs/export-formats.md](export-formats.md) for the full feature matrix
+  and the per-format degradation diagnostics.
 - `validate` prints schema errors and exits 1 on an invalid payload — the
   machine surface for CI checks and LLM tooling.
 

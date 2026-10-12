@@ -3,6 +3,9 @@ import type { ExportOptions } from '@shared/exportOptions'
 import { EXPORT_FORMATS, exportExtension, exportFrameCount, exportPixelSize } from '@shared/exportOptions'
 import { encodeGif, gifDelayMs } from '@shared/gifEncode'
 import { packPngSequence } from '@shared/pngSequence'
+import { buildLottieAnimation, packDotLottie, serializeLottie } from '@shared/lottieExport'
+import { exportAnimatedSvg } from '@shared/exportSvgAnimation'
+import { buildSpritesheetMetadata, computeSpritesheetGrid, packSpritesheet } from '@shared/spritesheet'
 import type { ExportPathRequest, ExportWriteResult, SaveAsResult } from '@shared/api'
 
 import { FrameRasterizer, createDefaultFrameRasterDeps } from './frameRaster'
@@ -10,6 +13,8 @@ import type { FrameRasterDeps } from './frameRaster'
 import { createEditorAudioMixdown } from './audioMixdown'
 import { reconcileEmbeddedFonts } from '../fontEmbedding'
 import { createResourceDataUrlResolver } from './resourceDataUrl'
+import { textNodeOutline } from '../textOutlines'
+import type { TextOutlineProvider } from '@shared/textOutline'
 import { CanceledError, canEncodeVideo, encodeVideo } from './videoEncoder'
 
 export interface ExportProgress {
@@ -29,6 +34,11 @@ export interface ExportRunnerDeps extends FrameRasterDeps {
   /** Mixes the document's audible audio layers for the export range, or null
    * when nothing is audible. Only used by the video formats. */
   renderAudioMix?(options: ExportOptions): Promise<AudioBuffer | null>
+  /** Outlines text nodes for the vector formats (Lottie, animated SVG);
+   * absent or null results degrade to placeholders with a diagnostic. */
+  outlineText?: TextOutlineProvider
+  /** App version recorded in export metadata (spritesheet, dotLottie). */
+  appVersion?(): Promise<string>
 }
 
 export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps {
@@ -39,16 +49,19 @@ export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps 
     writeExportFile: (path, bytes) => window.api.writeExportFile(path, bytes),
     showMessage: (message) => editor.showMessage(message),
     reconcileFonts: () => reconcileEmbeddedFonts(editor),
-    renderAudioMix: createEditorAudioMixdown(editor)
+    renderAudioMix: createEditorAudioMixdown(editor),
+    outlineText: textNodeOutline,
+    appVersion: () => window.api.versions().then((versions) => versions.app)
   }
 }
 
 /**
- * Runs one export end to end: asks for the destination, rasterizes the frame
- * range through the shared pipeline, encodes the chosen format and writes the
- * result. Returns true when a file was written; canceling or errors surface
- * through the status bar and return false. `signal.canceled` is polled
- * between frames — the dialog sets it from its Cancel button.
+ * Runs one export end to end: asks for the destination, encodes the chosen
+ * format — rasterizing frame ranges through the shared pipeline or building
+ * vector output directly — and writes the result. Returns true when a file
+ * was written; canceling or errors surface through the status bar and return
+ * false. `signal.canceled` is polled between frames — the dialog sets it from
+ * its Cancel button.
  */
 export async function runExport(
   editor: Editor,
@@ -73,12 +86,71 @@ export async function runExport(
   const rasterizer = new FrameRasterizer(document, options, deps)
   const { width, height } = exportPixelSize(document, options)
   let audioDropped = false
+  let alphaDropped = false
+  let diagnostics: string[] = []
   try {
     // Embed the font subsets the document renders before rasterizing, so the
     // exported frames keep their typography everywhere.
     await deps.reconcileFonts?.()
     let bytes: Uint8Array
-    if (options.format === 'png-sequence') {
+    if (options.format === 'lottie' || options.format === 'dotlottie') {
+      const built = await buildLottieAnimation(
+        document,
+        { fromFrame: options.fromFrame, toFrame: options.toFrame, fps: options.fps },
+        {
+          resolveResourceDataUrl: (resourceId) => deps.resolveResourceDataUrl(resourceId),
+          outlineText: deps.outlineText
+        }
+      )
+      diagnostics = built.diagnostics
+      bytes =
+        options.format === 'dotlottie'
+          ? packDotLottie(built.lottie, await appVersionOf(deps))
+          : serializeLottie(built.lottie)
+    } else if (options.format === 'svg-animation') {
+      const exported = await exportAnimatedSvg(
+        document,
+        {
+          fromFrame: options.fromFrame,
+          toFrame: options.toFrame,
+          fps: options.fps,
+          scale: options.scale,
+          transparent: options.transparent
+        },
+        {
+          resolveResourceDataUrl: (resourceId) => deps.resolveResourceDataUrl(resourceId),
+          outlineText: deps.outlineText
+        }
+      )
+      diagnostics = exported.diagnostics
+      bytes = new TextEncoder().encode(exported.svg)
+    } else if (options.format === 'spritesheet') {
+      const grid = computeSpritesheetGrid(total, width, height)
+      const atlas = deps.createCanvas(grid.width, grid.height)
+      const context = atlas.getContext('2d')
+      if (!context) throw new Error('Canvas 2D context unavailable')
+      for (let index = 0; index < total; index++) {
+        throwIfCanceled(signal)
+        const canvas = await rasterizer.rasterizeToCanvas(options.fromFrame + index)
+        context.drawImage(
+          canvas,
+          (index % grid.columns) * width,
+          Math.floor(index / grid.columns) * height
+        )
+        reportProgress(deps, index + 1, total)
+      }
+      const metadata = buildSpritesheetMetadata({
+        frameCount: total,
+        frameWidth: width,
+        frameHeight: height,
+        grid,
+        fps: options.fps,
+        fromFrame: options.fromFrame,
+        toFrame: options.toFrame,
+        version: await appVersionOf(deps)
+      })
+      bytes = packSpritesheet(await rasterizer.canvasToPng(atlas), metadata)
+    } else if (options.format === 'png-sequence') {
       const pngs: Uint8Array[] = []
       for (let frame = options.fromFrame; frame <= options.toFrame; frame++) {
         throwIfCanceled(signal)
@@ -122,15 +194,12 @@ export async function runExport(
       )
       bytes = encoded.bytes
       audioDropped = audioBuffer !== null && !encoded.audioIncluded
+      alphaDropped = !encoded.alphaIncluded
     }
 
     const written = await deps.writeExportFile(pick.path, bytes)
     if (!written.ok) throw new Error(written.error)
-    deps.showMessage(
-      audioDropped
-        ? `Exported to ${pick.path} without audio (no encoder available)`
-        : `Exported to ${pick.path}`
-    )
+    deps.showMessage(successMessage(pick.path, { alphaDropped, audioDropped, diagnostics }))
     return true
   } catch (error) {
     if (error instanceof CanceledError || signal.canceled) {
@@ -142,6 +211,28 @@ export async function runExport(
     deps.showMessage(`Export failed: ${message}`)
     return false
   }
+}
+
+async function appVersionOf(deps: ExportRunnerDeps): Promise<string> {
+  return deps.appVersion ? deps.appVersion() : '0.0.0'
+}
+
+function successMessage(
+  path: string,
+  outcome: { alphaDropped: boolean; audioDropped: boolean; diagnostics: string[] }
+): string {
+  let message = `Exported to ${path}`
+  if (outcome.alphaDropped) {
+    message += ' without transparency (no VP9 alpha encoder in this environment)'
+  }
+  if (outcome.audioDropped) {
+    message += ' without audio (no encoder available)'
+  }
+  if (outcome.diagnostics.length > 0) {
+    const count = outcome.diagnostics.length
+    message += ` (${count} export diagnostic${count === 1 ? '' : 's'})`
+  }
+  return message
 }
 
 function throwIfCanceled(signal: { canceled: boolean }): void {

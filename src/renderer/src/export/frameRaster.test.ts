@@ -80,6 +80,17 @@ describe('FrameRasterizer', () => {
     expect(calls.svgs[0]).toContain('viewBox="0 0 320 180"')
   })
 
+  it('omits the backdrop for transparent exports (alpha formats)', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const { deps, calls } = fakeDeps()
+    const rasterizer = new FrameRasterizer(document, options({ transparent: true }), deps)
+
+    await rasterizer.rasterizeToCanvas(0)
+
+    expect(calls.svgs[0]).not.toContain(`fill="${document.background}"`)
+    expect(calls.svgs[0]).toContain('viewBox="0 0 320 180"')
+  })
+
   it('caches the data-URL resolution per resource id across frames', async () => {
     const document = createDocument('demo', 320, 180, 12)
     const drawing = createDrawingLayer('paint')

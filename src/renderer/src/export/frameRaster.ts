@@ -89,6 +89,7 @@ export class FrameRasterizer {
       frame,
       (resourceId) => this.dataUrls.get(resourceId) ?? null,
       {
+        transparent: this.options.transparent,
         embeddedFontStyle: this.embeddedFontStyle(),
         resolveEmbeddedFont: embeddedFamilyResolverFor(this.document.fonts)
       }

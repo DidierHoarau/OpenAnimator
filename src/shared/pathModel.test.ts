@@ -5,6 +5,7 @@ import {
   parsePathCommands,
   pathDataBounds,
   pathDataToAnchors,
+  pathDataToSubpathAnchors,
   pathNaturalSize
 } from './pathModel'
 import type { PathNode } from './model'
@@ -147,6 +148,56 @@ describe('normalizePathData', () => {
 
   it('passes unparseable data through unchanged', () => {
     expect(normalizePathData('nonsense')).toBe('nonsense')
+  })
+})
+
+describe('pathDataToSubpathAnchors', () => {
+  it('converts a single subpath like pathDataToAnchors', () => {
+    expect(pathDataToSubpathAnchors('M0 0L10 0L10 10Z')).toEqual([
+      {
+        anchors: [
+          { x: 0, y: 0 },
+          { x: 10, y: 0 },
+          { x: 10, y: 10 }
+        ],
+        closed: true
+      }
+    ])
+  })
+
+  it('keeps every subpath of multi-contour paths separate', () => {
+    const subpaths = pathDataToSubpathAnchors('M0 0L50 0L50 20ZM5 5L10 5L10 10Z')
+    expect(subpaths).toHaveLength(2)
+    expect(subpaths![0].anchors).toHaveLength(3)
+    expect(subpaths![0].closed).toBe(true)
+    expect(subpaths![1].anchors).toEqual([
+      { x: 5, y: 5 },
+      { x: 10, y: 5 },
+      { x: 10, y: 10 }
+    ])
+    expect(subpaths![1].closed).toBe(true)
+  })
+
+  it('converts quadratic controls to cubic handles per subpath', () => {
+    const subpaths = pathDataToSubpathAnchors('M0 0Q6 0 9 9M20 0L30 0')
+    expect(subpaths).toHaveLength(2)
+    expect(subpaths![0].anchors[0].out).toEqual({ x: 4, y: 0 })
+    expect(subpaths![0].anchors[1].in).toEqual({ x: -2, y: -6 })
+    expect(subpaths![0].closed).toBe(false)
+    expect(subpaths![1].anchors).toEqual([
+      { x: 20, y: 0 },
+      { x: 30, y: 0 }
+    ])
+  })
+
+  it('rejects unparseable, empty and impossible data', () => {
+    expect(pathDataToSubpathAnchors('')).toBeNull()
+    expect(pathDataToSubpathAnchors('nonsense')).toBeNull()
+    expect(pathDataToSubpathAnchors('M0 0 A5 5 0 0 1 10 10')).toBeNull()
+    // Drawing continues after a Z without a new M.
+    expect(pathDataToSubpathAnchors('M0 0L10 0ZL20 20')).toBeNull()
+    // Coordinates before any M.
+    expect(pathDataToSubpathAnchors('L10 10')).toBeNull()
   })
 })
 
