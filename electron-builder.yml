@@ -27,6 +27,12 @@ win:
     - target: portable
       arch:
         - x64
+# No spaces in the names: GitHub sanitizes spaces in release assets to dots,
+# which would make the latest.yml download URLs (and thus auto-update) 404.
+nsis:
+  artifactName: "OpenAnimator-Setup-${version}.${ext}"
+portable:
+  artifactName: "OpenAnimator-Portable-${version}.${ext}"
 mac:
   target:
     - target: dmg

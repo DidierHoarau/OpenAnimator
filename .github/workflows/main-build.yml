@@ -155,7 +155,9 @@ jobs:
             dist/latest-mac.yml
 
   release:
-    needs: [build-linux, build-windows, build-macos]
+    # validate must be a DIRECT dependency: the needs context only exposes
+    # direct dependencies, and this job reads its version/tag_exists outputs.
+    needs: [validate, build-linux, build-windows, build-macos]
     if: needs.validate.outputs.tag_exists == 'false'
     runs-on: ubuntu-latest
     steps:
