@@ -6,6 +6,36 @@ directories:
 files:
   - out/**
   - package.json
+# electron-updater provider; with `--publish never` this only generates the
+# latest*.yml metadata and the in-app resources/app-update.yml (no upload).
+publish:
+  provider: github
+  owner: DidierHoarau
+  repo: OpenAnimator
+fileAssociations:
+  - ext: oanim
+    name: OpenAnimator Project
+    description: OpenAnimator vector animation project
+    # Required for the Linux .desktop MimeType entry and mime-info (deb/rpm/Flatpak).
+    mimeType: application/x-oanim
+    role: Editor
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  category: public.app-category.graphics-design
+  # Explicit unsigned build (no signing certificate on the runners).
+  identity: null
 linux:
   icon: build/icon.png
   category: Graphics

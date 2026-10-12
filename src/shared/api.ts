@@ -4,8 +4,19 @@ export const APP_API_CHANNEL = 'openanimator:app-info'
 /** IPC channel used by the application menu to dispatch editor commands. */
 export const APP_MENU_COMMAND_CHANNEL = 'openanimator:menu-command'
 
+/** IPC channel telling the renderer a newer version is available. */
+export const APP_UPDATE_AVAILABLE_CHANNEL = 'openanimator:update-available'
+
+/** IPC channel asking the main process to open a release page in the browser. */
+export const APP_OPEN_RELEASE_CHANNEL = 'openanimator:open-release'
+
+/** IPC channel delivering a `.oanim` path to open (file association, launch
+ * argument, second instance or macOS open-file event). */
+export const APP_OPEN_FILE_CHANNEL = 'openanimator:open-file'
+
 import type { AnimatorDocument, Asset } from './model'
 import type { FontEmbeddingPolicy } from './fontPolicy'
+import type { RecoveryInfo } from './recovery'
 
 export const DOCUMENT_SAVE_AS_CHANNEL = 'openanimator:document-save-as'
 export const DOCUMENT_SAVE_TO_CHANNEL = 'openanimator:document-save-to'
@@ -29,6 +40,10 @@ export const PALETTE_SET_CHANNEL = 'openanimator:palette-set'
 export const FONT_LIST_CHANNEL = 'openanimator:font-list'
 export const FONT_READ_CHANNEL = 'openanimator:font-read'
 export const FONT_POLICY_CHANNEL = 'openanimator:font-policy'
+export const RECOVERY_WRITE_CHANNEL = 'openanimator:recovery-write'
+export const RECOVERY_CHECK_CHANNEL = 'openanimator:recovery-check'
+export const RECOVERY_READ_CHANNEL = 'openanimator:recovery-read'
+export const RECOVERY_CLEAR_CHANNEL = 'openanimator:recovery-clear'
 
 export interface AppVersions {
   app: string
@@ -107,6 +122,11 @@ export type FontReadResult = { ok: true; bytes: Uint8Array } | { ok: false; erro
 /** Commands the application menu dispatches into the renderer. */
 export type MenuCommand = 'undo' | 'redo'
 
+/** Payload of the update-available notification. */
+export interface UpdateAvailableInfo {
+  version: string
+}
+
 /** API exposed to the renderer through the preload script. */
 export interface OpenAnimatorApi {
   versions(): Promise<AppVersions>
@@ -139,6 +159,21 @@ export interface OpenAnimatorApi {
   readSystemFont(family: string, weight: number): Promise<FontReadResult>
   /** Reads the effective font embedding policy (built-ins plus user rules). */
   getFontEmbeddingPolicy(): Promise<FontEmbeddingPolicy>
+  /** Opens the GitHub release page of the given version in the browser. */
+  openReleasePage(version: string): Promise<void>
   /** Listens for application-menu commands; returns an unsubscribe function. */
   onMenuCommand(listener: (command: MenuCommand) => void): () => void
+  /** Listens for update-available notifications (packaged builds); returns an
+   * unsubscribe function. */
+  onUpdateAvailable(listener: (info: UpdateAvailableInfo) => void): () => void
+  /** Listens for `.oanim` paths to open; returns an unsubscribe function. */
+  onOpenFile(listener: (path: string) => void): () => void
+  /** Writes an autosave recovery snapshot of the document. */
+  writeRecovery(path: string, document: AnimatorDocument): Promise<SaveToResult>
+  /** Pending recovery snapshot for the project, when newer than the file. */
+  checkRecovery(path: string): Promise<RecoveryInfo | null>
+  /** Reads the recovery snapshot of the project. */
+  readRecovery(path: string): Promise<ReadResult>
+  /** Deletes the recovery snapshot of the project. */
+  clearRecovery(path: string): Promise<void>
 }

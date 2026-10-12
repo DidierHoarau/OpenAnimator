@@ -9,8 +9,11 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag_exists: ${{ steps.tag.outputs.exists }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,27 +55,130 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+  build-linux:
+    needs: validate
+    if: needs.validate.outputs.tag_exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+      - name: Build
+        run: npm run build
+
       - name: Prepare Flatpak packaging
-        if: steps.tag.outputs.exists == 'false'
         run: |
           sudo apt-get update
           sudo apt-get install -y flatpak-builder
           flatpak --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
       - name: Build Linux packages
-        if: steps.tag.outputs.exists == 'false'
         run: npm run dist:linux
 
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm
+            dist/*.flatpak
+            dist/*.tar.gz
+            dist/latest-linux.yml
+
+  build-windows:
+    needs: validate
+    if: needs.validate.outputs.tag_exists == 'false'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Build Windows packages
+        run: npm run dist:win
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.exe
+            dist/latest.yml
+
+  build-macos:
+    needs: validate
+    if: needs.validate.outputs.tag_exists == 'false'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Build macOS packages
+        run: npm run dist:mac
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: |
+            dist/*.dmg
+            dist/latest-mac.yml
+
+  release:
+    needs: [build-linux, build-windows, build-macos]
+    if: needs.validate.outputs.tag_exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist
+
       - name: Create release
-        if: steps.tag.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: OpenAnimator v${{ steps.version.outputs.version }}
+          tag_name: v${{ needs.validate.outputs.version }}
+          name: OpenAnimator v${{ needs.validate.outputs.version }}
+          body: |
+            > **⚠ Windows and macOS builds are currently unsigned** — Windows shows a SmartScreen warning ("More info → Run anyway"); on macOS right-click the app → Open, or run `xattr -dr com.apple.quarantine /Applications/OpenAnimator.app`. See the README.
           files: |
             dist/*.AppImage
             dist/*.deb
             dist/*.rpm
             dist/*.flatpak
             dist/*.tar.gz
+            dist/*.exe
+            dist/*.dmg
+            dist/latest*.yml
           generate_release_notes: true
