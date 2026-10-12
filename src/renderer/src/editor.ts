@@ -58,6 +58,7 @@ import {
 } from '@shared/assets'
 import type { Easing } from '@shared/easing'
 import { fitImagePlacement } from '@shared/imagePlacement'
+import { shareSnapshot } from '@shared/shareSnapshot'
 import { nodeBounds } from '@shared/hitTesting'
 import type { Rect } from '@shared/hitTesting'
 import { groupNaturalSize, groupNodes, ungroupNode } from '@shared/groups'
@@ -310,7 +311,9 @@ export class Editor {
   }
 
   private pushSnapshot(): void {
-    this.undoStack.push(cloneDocument(this.document))
+    this.undoStack.push(
+      shareSnapshot(this.document, this.undoStack[this.undoStack.length - 1] ?? null)
+    )
     if (this.undoStack.length > Editor.HISTORY_LIMIT) this.undoStack.shift()
     this.redoStack.length = 0
   }
@@ -334,8 +337,12 @@ export class Editor {
       this.showMessage('Nothing to undo')
       return
     }
-    this.redoStack.push(cloneDocument(this.document))
-    this.applySnapshot(snapshot, 'Undo')
+    this.redoStack.push(
+      shareSnapshot(this.document, this.redoStack[this.redoStack.length - 1] ?? null)
+    )
+    // Installs clone: stack objects may share subtrees with each other, so
+    // the live document must be independent of every snapshot.
+    this.applySnapshot(cloneDocument(snapshot), 'Undo')
   }
 
   redo(): void {
@@ -344,8 +351,10 @@ export class Editor {
       this.showMessage('Nothing to redo')
       return
     }
-    this.undoStack.push(cloneDocument(this.document))
-    this.applySnapshot(snapshot, 'Redo')
+    this.undoStack.push(
+      shareSnapshot(this.document, this.undoStack[this.undoStack.length - 1] ?? null)
+    )
+    this.applySnapshot(cloneDocument(snapshot), 'Redo')
   }
 
   private applySnapshot(snapshot: AnimatorDocument, message: string): void {
