@@ -167,7 +167,7 @@ export function generatePerfDocument(): AnimatorDocument {
     })
   }
   return migrateDocument({
-    schemaVersion: 7,
+    schemaVersion: 8,
     name: 'perf-benchmark',
     width: PERF_WIDTH,
     height: PERF_HEIGHT,

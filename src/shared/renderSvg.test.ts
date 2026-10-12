@@ -95,6 +95,86 @@ describe('renderSvg', () => {
     expect(nodeToSvgMarkup(shape())).not.toContain('stroke')
   })
 
+  it('emits stroke-style attributes after the paint, only when set', () => {
+    const styled = nodeToSvgMarkup(
+      shape({
+        stroke: '#000000',
+        strokeWidth: 2,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'bevel',
+        strokeDasharray: [6, 4],
+        strokeDashoffset: 2
+      })
+    )
+    expect(styled).toContain(
+      'stroke="#000000" stroke-linecap="round" stroke-linejoin="bevel" ' +
+        'stroke-dasharray="6 4" stroke-dashoffset="2" stroke-width="2"'
+    )
+    // Fields without a stroke are inert and stay out of the markup.
+    const inert = nodeToSvgMarkup(shape({ strokeLinecap: 'round', strokeDasharray: [6, 4], strokeDashoffset: 2 }))
+    expect(inert).not.toContain('stroke-linecap')
+    expect(inert).not.toContain('stroke-dasharray')
+    expect(inert).not.toContain('stroke-dashoffset')
+    // Pre-v8 nodes (no fields) keep the exact historical markup.
+    expect(nodeToSvgMarkup(shape({ stroke: '#000000', strokeWidth: 2 }))).toBe(
+      '<rect x="-50" y="-25" width="100" height="50" fill="#38bdf8" stroke="#000000" stroke-width="2" ' +
+        'transform="translate(120 80) rotate(0)" opacity="1"/>'
+    )
+  })
+
+  it('emits the dash pattern space-joined, including single-value and fractional dashes', () => {
+    const single = nodeToSvgMarkup(shape({ stroke: '#000000', strokeDasharray: [6] }))
+    expect(single).toContain('stroke-dasharray="6"')
+    const fractional = nodeToSvgMarkup(shape({ stroke: '#000000', strokeDasharray: [0.5, 1.25, 2] }))
+    expect(fractional).toContain('stroke-dasharray="0.5 1.25 2"')
+    const zeroOffset = nodeToSvgMarkup(shape({ stroke: '#000000', strokeDashoffset: 0 }))
+    expect(zeroOffset).toContain('stroke-dashoffset="0"')
+  })
+
+  it('emits stroke styles on path and text nodes too', () => {
+    const path: PathNode = {
+      type: 'path',
+      id: 'p-styled',
+      center: { x: 0, y: 0 },
+      width: 40,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      d: 'M-20 -10L20 10',
+      stroke: '#f59e0b',
+      strokeWidth: 3,
+      strokeLinecap: 'square',
+      strokeDasharray: [4, 2],
+      strokeDashoffset: 1
+    }
+    expect(nodeToSvgMarkup(path)).toContain(
+      'stroke="#f59e0b" stroke-linecap="square" stroke-dasharray="4 2" stroke-dashoffset="1" stroke-width="3"'
+    )
+
+    const node: TextNode = {
+      type: 'text',
+      id: 't-styled',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#e2e8f0',
+      align: 'left',
+      stroke: '#000000',
+      strokeWidth: 1,
+      strokeLinejoin: 'bevel',
+      strokeDasharray: [2, 2]
+    }
+    expect(nodeToSvgMarkup(node)).toContain(
+      'stroke="#000000" stroke-linejoin="bevel" stroke-dasharray="2 2" stroke-width="1"'
+    )
+  })
+
   it('renders rotation, fractional sizes and partial opacity', () => {
     const markup = nodeToSvgMarkup(shape({ rotation: 45, width: 10.5, opacity: 0.5 }))
     expect(markup).toContain('transform="translate(120 80) rotate(45)"')

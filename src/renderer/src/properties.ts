@@ -13,8 +13,8 @@ import {
   normalizePaletteColors
 } from '@shared/document'
 import type { CellRange } from '@shared/document'
-import { isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
-import type { ImageNode, SceneNode } from '@shared/model'
+import { MAX_STROKE_DASH_VALUES, isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
+import type { ImageNode, SceneNode, StrokeLinecap, StrokeLinejoin, StrokeStyle } from '@shared/model'
 import { isGradientPaint, paintPrimaryColor } from '@shared/paint'
 import type { Paint } from '@shared/paint'
 import { pathDataToAnchors } from '@shared/pathModel'
@@ -84,6 +84,147 @@ class PanelSection {
   }
 }
 
+/** Parses a dash pattern typed as whitespace/comma-separated numbers; null
+ * when malformed, out of range (1–16 values) or all zeros. */
+function parseDashArrayInput(value: string): number[] | null {
+  const tokens = value.split(/[\s,]+/).filter((entry) => entry.length > 0)
+  if (tokens.length === 0 || tokens.length > MAX_STROKE_DASH_VALUES) return null
+  const values = tokens.map(Number)
+  if (values.some((entry) => !Number.isFinite(entry) || entry < 0)) return null
+  if (!values.some((entry) => entry > 0)) return null
+  return values
+}
+
+/**
+ * Stroke-style editor (caps/joins row + dash row) bound to one node slot via
+ * `onChange`. Clearing a control removes the field, so documents that never
+ * touched the controls keep byte-identical markup. All controls are inert
+ * (disabled) while the node's outline is off.
+ */
+class StrokeStyleControls {
+  private readonly linecap: HTMLSelectElement
+  private readonly linejoin: HTMLSelectElement
+  private readonly dashArray: HTMLInputElement
+  private readonly dashOffset: HTMLInputElement
+  private readonly onChange: (mutate: (style: StrokeStyle) => void) => void
+  private readonly rerender: () => void
+
+  constructor(options: {
+    row: (label: string) => HTMLDivElement
+    onChange: (mutate: (style: StrokeStyle) => void) => void
+    rerender: () => void
+  }) {
+    this.onChange = options.onChange
+    this.rerender = options.rerender
+
+    const styleRow = options.row('Style')
+    this.linecap = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['', 'Cap: default'],
+      ['round', 'Round cap'],
+      ['square', 'Square cap']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.linecap.appendChild(option)
+    }
+    this.linecap.title =
+      'Shape of dash segment ends (holds across tweened frames; default is butt)'
+    this.linecap.addEventListener('change', () => {
+      const value = this.linecap.value
+      this.onChange((style) => {
+        if (value === '') delete style.strokeLinecap
+        else style.strokeLinecap = value as StrokeLinecap
+      })
+    })
+    this.linejoin = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['', 'Join: default'],
+      ['round', 'Round join'],
+      ['bevel', 'Bevel join']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.linejoin.appendChild(option)
+    }
+    this.linejoin.title =
+      'Shape of stroke corners (holds across tweened frames; default is miter)'
+    this.linejoin.addEventListener('change', () => {
+      const value = this.linejoin.value
+      this.onChange((style) => {
+        if (value === '') delete style.strokeLinejoin
+        else style.strokeLinejoin = value as StrokeLinejoin
+      })
+    })
+    styleRow.append(this.linecap, this.linejoin)
+
+    const dashRow = options.row('Dash')
+    this.dashArray = el('input') as HTMLInputElement
+    this.dashArray.type = 'text'
+    this.dashArray.placeholder = '6 4'
+    this.dashArray.title =
+      'Dash pattern in stage pixels — up to 16 numbers, e.g. "6 4" (holds across tweened frames); empty keeps a solid stroke'
+    this.dashArray.addEventListener('change', () => {
+      const raw = this.dashArray.value.trim()
+      if (raw.length === 0) {
+        this.onChange((style) => delete style.strokeDasharray)
+        return
+      }
+      const values = parseDashArrayInput(raw)
+      if (!values) {
+        this.rerender()
+        return
+      }
+      this.onChange((style) => {
+        style.strokeDasharray = values
+      })
+    })
+    this.dashOffset = el('input') as HTMLInputElement
+    this.dashOffset.type = 'number'
+    this.dashOffset.step = '1'
+    this.dashOffset.title =
+      'Dash phase offset in stage pixels (interpolates across tweened frames; empty = 0)'
+    this.dashOffset.addEventListener('change', () => {
+      const raw = this.dashOffset.value.trim()
+      if (raw.length === 0) {
+        this.onChange((style) => delete style.strokeDashoffset)
+        return
+      }
+      const value = Number(raw)
+      if (!Number.isFinite(value)) {
+        this.rerender()
+        return
+      }
+      this.onChange((style) => {
+        style.strokeDashoffset = value
+      })
+    })
+    dashRow.append(this.dashArray, this.dashOffset)
+  }
+
+  /** Syncs the controls with one node's stroke style; focused controls keep
+   * the user's in-progress value. */
+  sync(
+    node: StrokeStyle,
+    state: { editable: boolean; outlined: boolean; keepFocused: (input: HTMLElement) => boolean }
+  ): void {
+    const disabled = !state.editable || !state.outlined
+    this.linecap.disabled = disabled
+    this.linejoin.disabled = disabled
+    this.dashArray.disabled = disabled
+    this.dashOffset.disabled = disabled
+    if (!state.keepFocused(this.linecap)) this.linecap.value = node.strokeLinecap ?? ''
+    if (!state.keepFocused(this.linejoin)) this.linejoin.value = node.strokeLinejoin ?? ''
+    if (!state.keepFocused(this.dashArray)) {
+      this.dashArray.value = node.strokeDasharray !== undefined ? node.strokeDasharray.join(' ') : ''
+    }
+    if (!state.keepFocused(this.dashOffset)) {
+      this.dashOffset.value =
+        node.strokeDashoffset !== undefined ? String(node.strokeDashoffset) : ''
+    }
+  }
+}
+
 /**
  * Right panel with collapsible sections: "Layer" operations on the selected
  * object (keyframe add/remove and tweening at the current frame), and the
@@ -142,6 +283,7 @@ export class PropertiesView {
   private readonly strokeToggle: HTMLInputElement
   private readonly strokeColor: HTMLInputElement
   private readonly strokeWidth: HTMLInputElement
+  private readonly strokeStyle: StrokeStyleControls
   private readonly ungroupButton: HTMLButtonElement
   private readonly imageFileLabel: HTMLElement
   private readonly nativeSizeButton: HTMLButtonElement
@@ -165,6 +307,7 @@ export class PropertiesView {
   private readonly pathStrokeToggle: HTMLInputElement
   private readonly pathStrokeColor: HTMLInputElement
   private readonly pathStrokeWidth: HTMLInputElement
+  private readonly pathStrokeStyle: StrokeStyleControls
   private readonly pathFillToggle: HTMLInputElement
   private readonly pathFillColor: HTMLInputElement
   private readonly pathInfoLabel: HTMLElement
@@ -183,6 +326,7 @@ export class PropertiesView {
   private readonly textStrokeToggle: HTMLInputElement
   private readonly textStrokeColor: HTMLInputElement
   private readonly textStrokeWidth: HTMLInputElement
+  private readonly textStrokeStyle: StrokeStyleControls
   private readonly outlinesButton: HTMLButtonElement
   private readonly imageImportDeps: ImageImportDeps
   private readonly listSystemFonts: () => Promise<SystemFont[]>
@@ -371,6 +515,15 @@ export class PropertiesView {
       })
     })
     outlineRow.append(this.strokeToggle, this.strokeColor, this.strokeWidth)
+    this.strokeStyle = new StrokeStyleControls({
+      row: (label) => this.row(fillRows, label),
+      onChange: (mutate) => {
+        editor.updateSelectedNode((current) => {
+          if (current.type === 'primitive') mutate(current)
+        })
+      },
+      rerender: () => this.render()
+    })
     this.strokeGradient = this.createPaintEditor((node, paint) => {
       if (node.type === 'primitive') node.stroke = paint
     })
@@ -428,6 +581,15 @@ export class PropertiesView {
       })
     })
     pathStrokeRow.append(this.pathStrokeToggle, this.pathStrokeColor, this.pathStrokeWidth)
+    this.pathStrokeStyle = new StrokeStyleControls({
+      row: (label) => this.row(pathStrokeRows, label),
+      onChange: (mutate) => {
+        editor.updateSelectedNode((current) => {
+          if (current.type === 'path') mutate(current)
+        })
+      },
+      rerender: () => this.render()
+    })
     this.pathStrokeGradient = this.createPaintEditor((node, paint) => {
       if (node.type === 'path') node.stroke = paint
     })
@@ -735,6 +897,15 @@ export class PropertiesView {
       })
     })
     textOutlineRow.append(this.textStrokeToggle, this.textStrokeColor, this.textStrokeWidth)
+    this.textStrokeStyle = new StrokeStyleControls({
+      row: (label) => this.row(fontRows, label),
+      onChange: (mutate) => {
+        editor.updateSelectedNode((current) => {
+          if (current.type === 'text') mutate(current)
+        })
+      },
+      rerender: () => this.render()
+    })
     this.textStrokeGradient = this.createPaintEditor((node, paint) => {
       if (node.type === 'text') node.stroke = paint
     })
@@ -1604,6 +1775,7 @@ export class PropertiesView {
       this.strokeSwatches.setColors(this.combinedPalette())
       this.strokeSwatches.setActive(stroke !== undefined ? paintPrimaryColor(stroke) : null)
       this.strokeSwatches.setDisabled(!editable || !outlined || strokeIsGradient)
+      this.strokeStyle.sync(node, { editable, outlined, keepFocused })
     }
     if (node.type === 'path') {
       const outlined = node.stroke !== undefined
@@ -1634,6 +1806,7 @@ export class PropertiesView {
       this.pathFillSwatches.setColors(this.combinedPalette())
       this.pathFillSwatches.setActive(fill !== undefined ? paintPrimaryColor(fill) : null)
       this.pathFillSwatches.setDisabled(!editable || !filled || fillIsGradient)
+      this.pathStrokeStyle.sync(node, { editable, outlined, keepFocused })
       const parsed = pathDataToAnchors(node.d)
       this.pathInfoLabel.textContent = parsed
         ? `${parsed.anchors.length} anchors${parsed.closed ? ' · closed' : ''}`
@@ -1680,6 +1853,7 @@ export class PropertiesView {
       this.textStrokeSwatches.setColors(this.combinedPalette())
       this.textStrokeSwatches.setActive(stroke !== undefined ? paintPrimaryColor(stroke) : null)
       this.textStrokeSwatches.setDisabled(!editable || !outlined || strokeIsGradient)
+      this.textStrokeStyle.sync(node, { editable, outlined, keepFocused })
       this.outlinesButton.disabled = !editable
     }
     this.lastNodeId = node.id

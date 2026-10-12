@@ -823,3 +823,116 @@ describe('PropertiesView — tween easing editor and motion path', () => {
     expect(pathSelect().value).toBe('linear')
   })
 })
+
+describe('PropertiesView — stroke style controls', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24))
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container)
+    editor.addNode(rect('a', 0, 0))
+  })
+
+  function row(label: string): HTMLElement {
+    const section = sectionByTitle(container, 'Shape')
+    const match = [...section.querySelectorAll('.panel-row')].find(
+      (candidate) => candidate.querySelector('label')?.textContent === label
+    )
+    if (!match) throw new Error(`missing row ${label}`)
+    return match as HTMLElement
+  }
+
+  function selectedRect(): PrimitiveNode {
+    const layer = editor.document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    return layer.keyframes[0].nodes[0] as PrimitiveNode
+  }
+
+  it('writes caps, joins and the dash pattern on an outlined shape', () => {
+    // Inert until the outline exists.
+    const styleRow = row('Style')
+    expect((styleRow.querySelectorAll('select')[0] as HTMLSelectElement).disabled).toBe(true)
+
+    const toggle = row('Outline').querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change'))
+
+    const capSelect = row('Style').querySelectorAll<HTMLSelectElement>('select')[0]
+    const joinSelect = row('Style').querySelectorAll<HTMLSelectElement>('select')[1]
+    expect(capSelect.disabled).toBe(false)
+    capSelect.value = 'round'
+    capSelect.dispatchEvent(new Event('change'))
+    joinSelect.value = 'bevel'
+    joinSelect.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeLinecap).toBe('round')
+    expect(selectedRect().strokeLinejoin).toBe('bevel')
+
+    // Clearing a select drops the field again (pre-v8 markup stays intact).
+    capSelect.value = ''
+    capSelect.dispatchEvent(new Event('change'))
+    expect('strokeLinecap' in selectedRect()).toBe(false)
+
+    const dashInput = row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!
+    dashInput.value = '6, 4 2'
+    dashInput.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDasharray).toEqual([6, 4, 2])
+
+    const offsetInput = row('Dash').querySelector<HTMLInputElement>('input[type="number"]')!
+    offsetInput.value = '3'
+    offsetInput.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDashoffset).toBe(3)
+
+    // Emptying the inputs removes the fields.
+    const dashAgain = row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!
+    dashAgain.value = ''
+    dashAgain.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDasharray).toBeUndefined()
+    const offsetAgain = row('Dash').querySelector<HTMLInputElement>('input[type="number"]')!
+    offsetAgain.value = ''
+    offsetAgain.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDashoffset).toBeUndefined()
+  })
+
+  it('rejects malformed dash patterns and reverts the input', () => {
+    const toggle = row('Outline').querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change'))
+
+    const dashInput = row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!
+    for (const bad of ['abc', '-3 4', '0 0', '1 '.repeat(17).trim()]) {
+      dashInput.value = bad
+      dashInput.dispatchEvent(new Event('change'))
+      expect(selectedRect().strokeDasharray).toBeUndefined()
+      expect(dashInput.value).toBe('')
+    }
+  })
+
+  it('syncs the controls from the selected node and disables them without an outline', () => {
+    editor.updateSelectedNode((node) => {
+      if (node.type !== 'primitive') return
+      node.stroke = '#ffffff'
+      node.strokeWidth = 2
+      node.strokeLinecap = 'square'
+      node.strokeDasharray = [8, 4]
+      node.strokeDashoffset = 1
+    })
+    const capSelect = row('Style').querySelectorAll<HTMLSelectElement>('select')[0]
+    expect(capSelect.value).toBe('square')
+    expect(row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe('8 4')
+    expect(row('Dash').querySelector<HTMLInputElement>('input[type="number"]')!.value).toBe('1')
+
+    // Turning the outline off leaves the fields in the document but disables
+    // every control (they render nothing).
+    const toggle = row('Outline').querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    toggle.checked = false
+    toggle.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDasharray).toEqual([8, 4])
+    expect(capSelect.disabled).toBe(true)
+    expect(row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!.disabled).toBe(true)
+  })
+})

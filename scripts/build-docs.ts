@@ -18,7 +18,7 @@ import { renderShortcutMarkdown } from '../src/shared/shortcuts'
  * 2. Renders every page (README, the `docs/*.md` guides, CONTRIBUTING) to
  *    static HTML with one shared template and nav.
  * 3. Copies the stylesheet, the sample projects/previews and the JSON
- *    schemas (`schemas/commands-v1.json`, `schemas/document-v7.json`) into
+ *    schemas (`schemas/commands-v1.json`, `schemas/document-v8.json`) into
  *    the site so everything is downloadable from one place.
  *
  * tsx runs this file as CommonJS: `__dirname`, no `import.meta`.

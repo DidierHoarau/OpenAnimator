@@ -1,6 +1,6 @@
 import { fontFamilyListFor } from './fontPolicy'
 import { groupNaturalSize } from './groups'
-import type { GroupNode, ImageNode, PathNode, PrimitiveNode, SceneNode, SymbolNode, TextNode } from './model'
+import type { GroupNode, ImageNode, PathNode, PrimitiveNode, SceneNode, StrokeStyle, SymbolNode, TextNode } from './model'
 import { paintGradientId } from './paint'
 import type { GradientPaint, Paint } from './paint'
 import { layoutText } from './textModel'
@@ -48,6 +48,18 @@ function placementAttrs(center: { x: number; y: number }, rotation: number, opac
     attr('transform', `translate(${center.x} ${center.y}) rotate(${rotation})`) +
     attr('opacity', opacity)
   )
+}
+
+/** SVG attributes of the optional stroke-style fields (linecap, linejoin,
+ * dash pattern as space-joined values, dash offset). Emitted only when the
+ * node carries them — pre-v8 documents keep byte-identical markup. */
+function strokeStyleAttrs(node: StrokeStyle): string {
+  let markup = ''
+  if (node.strokeLinecap !== undefined) markup += attr('stroke-linecap', node.strokeLinecap)
+  if (node.strokeLinejoin !== undefined) markup += attr('stroke-linejoin', node.strokeLinejoin)
+  if (node.strokeDasharray !== undefined) markup += attr('stroke-dasharray', node.strokeDasharray.join(' '))
+  if (node.strokeDashoffset !== undefined) markup += attr('stroke-dashoffset', node.strokeDashoffset)
+  return markup
 }
 
 /** Ids of the gradient defs emitted during one render, in emission order. */
@@ -118,7 +130,10 @@ function primitiveToSvgMarkup(
       attr('vector-effect', 'non-scaling-stroke')
   } else {
     markup += attr('fill', paintAttribute(node.fill, defs))
-    if (node.stroke !== undefined) markup += attr('stroke', paintAttribute(node.stroke, defs))
+    if (node.stroke !== undefined) {
+      markup += attr('stroke', paintAttribute(node.stroke, defs))
+      markup += strokeStyleAttrs(node)
+    }
     if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
   }
   markup += placementAttrs(node.center, node.rotation, node.opacity)
@@ -193,7 +208,10 @@ function pathToSvgMarkup(node: PathNode, outline: { color: string } | undefined,
       attr('vector-effect', 'non-scaling-stroke')
   } else {
     markup += attr('fill', node.fill !== undefined ? paintAttribute(node.fill, defs) : 'none')
-    if (node.stroke !== undefined) markup += attr('stroke', paintAttribute(node.stroke, defs))
+    if (node.stroke !== undefined) {
+      markup += attr('stroke', paintAttribute(node.stroke, defs))
+      markup += strokeStyleAttrs(node)
+    }
     if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
   }
   return `${markup}/></g>`
@@ -218,7 +236,10 @@ function textToSvgMarkup(node: TextNode, options: SvgRenderOptions | undefined, 
     `${attr('font-weight', node.fontWeight)}`
   if (layout.letterSpacing !== 0) markup += attr('letter-spacing', layout.letterSpacing)
   markup += attr('fill', paintAttribute(node.fill, defs))
-  if (node.stroke !== undefined) markup += attr('stroke', paintAttribute(node.stroke, defs))
+  if (node.stroke !== undefined) {
+    markup += attr('stroke', paintAttribute(node.stroke, defs))
+    markup += strokeStyleAttrs(node)
+  }
   if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
   markup +=
     `${attr('text-anchor', layout.anchor)}` +

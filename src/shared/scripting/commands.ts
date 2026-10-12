@@ -11,6 +11,7 @@ import {
   gradientPaintSchema,
   HEX_COLOR_PATTERN,
   MAX_PALETTE_COLORS,
+  MAX_STROKE_DASH_VALUES,
   paintSchema,
   sceneNodeSchema
 } from './documentSchema'
@@ -175,7 +176,17 @@ export const COMMANDS_SCHEMA = {
         letterSpacing: { type: 'number' },
         lineHeight: { type: 'number', minimum: 0.5, maximum: 5 },
         verticalAlign: { enum: ['top', 'middle', 'bottom'] },
-        fontFallback: { type: 'array', maxItems: 8, items: { type: 'string' } }
+        fontFallback: { type: 'array', maxItems: 8, items: { type: 'string' } },
+        strokeLinecap: { enum: ['butt', 'round', 'square'] },
+        strokeLinejoin: { enum: ['miter', 'round', 'bevel'] },
+        strokeDasharray: {
+          type: 'array',
+          minItems: 1,
+          maxItems: MAX_STROKE_DASH_VALUES,
+          items: { type: 'number', minimum: 0 },
+          contains: { type: 'number', exclusiveMinimum: 0 }
+        },
+        strokeDashoffset: { type: 'number' }
       }
     },
     frameNumber: { type: 'integer', minimum: 0 },
@@ -564,6 +575,9 @@ export interface FieldSpec {
   hexColors?: boolean
   /** Array items must be strings (the item shape of loose string lists). */
   stringItems?: boolean
+  /** Array items must be finite numbers ≥ 0 with at least one > 0 (stroke
+   * dash patterns). */
+  numberItems?: boolean
   minItems?: number
   maxItems?: number
 }
@@ -778,19 +792,35 @@ const NODE_BASE_FIELDS: Record<string, FieldSpec> = {
   opacity: { type: 'number', min: 0, max: 1 }
 }
 
+/** Optional stroke-style fields shared by every stroked node kind and by
+ * node patches (linecap/linejoin/dash pattern/dash offset). */
+const STROKE_STYLE_FIELDS: Record<string, FieldSpec> = {
+  strokeLinecap: { type: 'string', enum: ['butt', 'round', 'square'] },
+  strokeLinejoin: { type: 'string', enum: ['miter', 'round', 'bevel'] },
+  strokeDasharray: {
+    type: 'array',
+    numberItems: true,
+    minItems: 1,
+    maxItems: MAX_STROKE_DASH_VALUES
+  },
+  strokeDashoffset: { type: 'number' }
+}
+
 /** Per-kind extra fields; the values are required when the kind matches. */
 const NODE_KIND_FIELDS: Record<string, Record<string, FieldSpec>> = {
   primitive: {
     primitive: { type: 'string', enum: ['rect', 'ellipse'], required: true },
     fill: { type: 'string', paint: true, required: true },
     stroke: { type: 'string', paint: true },
-    strokeWidth: { type: 'number', min: 0 }
+    strokeWidth: { type: 'number', min: 0 },
+    ...STROKE_STYLE_FIELDS
   },
   path: {
     d: { type: 'string', required: true },
     fill: { type: 'string', paint: true },
     stroke: { type: 'string', paint: true },
-    strokeWidth: { type: 'number', min: 0 }
+    strokeWidth: { type: 'number', min: 0 },
+    ...STROKE_STYLE_FIELDS
   },
   text: {
     text: { type: 'string', required: true },
@@ -804,7 +834,8 @@ const NODE_KIND_FIELDS: Record<string, Record<string, FieldSpec>> = {
     stroke: { type: 'string', paint: true },
     strokeWidth: { type: 'number', min: 0 },
     verticalAlign: { type: 'string', enum: ['top', 'middle', 'bottom'] },
-    fontFallback: { type: 'array', stringItems: true, maxItems: 8 }
+    fontFallback: { type: 'array', stringItems: true, maxItems: 8 },
+    ...STROKE_STYLE_FIELDS
   },
   image: {
     resourceId: { type: 'string', required: true },
@@ -835,7 +866,8 @@ const NODE_PATCH_FIELDS: Record<string, FieldSpec> = {
   letterSpacing: { type: 'number' },
   lineHeight: { type: 'number', min: 0.5, max: 5 },
   verticalAlign: { type: 'string', enum: ['top', 'middle', 'bottom'] },
-  fontFallback: { type: 'array', stringItems: true, maxItems: 8 }
+  fontFallback: { type: 'array', stringItems: true, maxItems: 8 },
+  ...STROKE_STYLE_FIELDS
 }
 
 class Collector {
@@ -895,6 +927,19 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
           collector.at(`${path}/${index}`, 'must be string')
         }
       })
+    }
+    if (spec.numberItems) {
+      items.forEach((item, index) => {
+        if (typeof item !== 'number' || !Number.isFinite(item) || item < 0) {
+          collector.at(`${path}/${index}`, 'must be a number >= 0')
+        }
+      })
+      if (
+        items.length > 0 &&
+        !items.some((item) => typeof item === 'number' && Number.isFinite(item) && item > 0)
+      ) {
+        collector.at(path, 'must not be all zeros')
+      }
     }
     return
   }

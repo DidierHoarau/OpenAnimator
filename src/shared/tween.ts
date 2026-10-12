@@ -1,6 +1,6 @@
 import { lerp } from './geometry'
 import type { Vec2 } from './geometry'
-import type { SceneNode } from './model'
+import type { SceneNode, StrokeStyle } from './model'
 import { cloneNode } from './model'
 import { cubicBezierPoint } from './motionPath'
 import { lerpPaint } from './paint'
@@ -9,13 +9,33 @@ import { lerpPaint } from './paint'
  * Interpolates a node between two keyframe contents matched by id. Every node
  * type lerps transform + opacity; primitives additionally lerp fill, stroke
  * and stroke width (paints through `lerpPaint`: solid↔solid lerps the color,
- * matching gradients lerp geometry and stops, any mismatch snaps). Identity
- * fields (id, name, type, resourceId, assetId, children, …) never
- * interpolate — they come from `from`. Nodes whose type differs (or
- * primitives of a different `primitive` kind) snap from `from` to `to` at the
- * ends. When `centerPath` is given the center follows that cubic bezier
- * (smooth motion path) instead of the straight lerp.
+ * matching gradients lerp geometry and stops, any mismatch snaps). Authored
+ * stroke-style fields are carried through so they never vanish mid-tween:
+ * linecap, linejoin and the dash pattern hold `from`, the dash offset
+ * interpolates when both ends define it. Identity fields (id, name, type,
+ * resourceId, assetId, children, …) never interpolate — they come from
+ * `from`. Nodes whose type differs (or primitives of a different `primitive`
+ * kind) snap from `from` to `to` at the ends. When `centerPath` is given the
+ * center follows that cubic bezier (smooth motion path) instead of the
+ * straight lerp.
  */
+/** Carried stroke-style fields of a tweened node: linecap, linejoin and the
+ * dash pattern hold `from` (the geometry snap convention); the dash offset
+ * interpolates when both ends define it — otherwise the defined end wins,
+ * mirroring `strokeWidth`. Absent fields stay absent. */
+function strokeStyleTween(from: StrokeStyle, to: Partial<StrokeStyle>, t: number): StrokeStyle {
+  const style: StrokeStyle = {}
+  if (from.strokeLinecap !== undefined) style.strokeLinecap = from.strokeLinecap
+  if (from.strokeLinejoin !== undefined) style.strokeLinejoin = from.strokeLinejoin
+  if (from.strokeDasharray !== undefined) style.strokeDasharray = from.strokeDasharray
+  const dashoffset =
+    from.strokeDashoffset !== undefined && to.strokeDashoffset !== undefined
+      ? lerp(from.strokeDashoffset, to.strokeDashoffset, t)
+      : (to.strokeDashoffset ?? from.strokeDashoffset)
+  if (dashoffset !== undefined) style.strokeDashoffset = dashoffset
+  return style
+}
+
 export function tweenNode(
   from: SceneNode,
   to: SceneNode,
@@ -57,10 +77,11 @@ export function tweenNode(
     return { ...base, type: 'symbol', assetId: from.assetId }
   }
   if (from.type === 'path') {
-    // Path geometry and paints snap from `from`; the transform and stroke
-    // width interpolate.
+    // Path geometry and paints snap from `from`; the transform, stroke width
+    // and stroke-style fields carry (dash offset interpolates, the rest hold).
     return {
       ...base,
+      ...strokeStyleTween(from, to.type === 'path' ? to : {}, t),
       type: 'path',
       d: from.d,
       fill: from.fill,
@@ -76,6 +97,7 @@ export function tweenNode(
     // with it the laid-out box) interpolates.
     return {
       ...base,
+      ...strokeStyleTween(from, to.type === 'text' ? to : {}, t),
       type: 'text',
       text: from.text,
       fontFamily: from.fontFamily,
@@ -92,6 +114,7 @@ export function tweenNode(
   }
   return {
     ...base,
+    ...strokeStyleTween(from, to, t),
     type: 'primitive',
     primitive: from.primitive,
     fill: lerpPaint(from.fill, to.fill, t),

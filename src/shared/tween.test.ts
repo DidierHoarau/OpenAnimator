@@ -310,6 +310,93 @@ describe('tweenNode', () => {
     expect((tweenNode(from, to, 0.5) as PathNode).strokeWidth).toBe(4)
   })
 
+  it('carries path stroke styles through the tween: styles hold, dash offset lerps', () => {
+    const from: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0L1 1',
+      stroke: '#111111',
+      strokeWidth: 2,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'bevel',
+      strokeDasharray: [6, 4],
+      strokeDashoffset: 0
+    }
+    const to: PathNode = {
+      ...from,
+      strokeLinecap: 'butt',
+      strokeLinejoin: 'miter',
+      strokeDasharray: [2, 2],
+      strokeDashoffset: 10
+    }
+    const result = tweenNode(from, to, 0.5) as PathNode
+    expect(result.strokeLinecap).toBe('round')
+    expect(result.strokeLinejoin).toBe('bevel')
+    expect(result.strokeDasharray).toEqual([6, 4])
+    expect(result.strokeDashoffset).toBe(5)
+    // Absent style fields stay absent.
+    const bare = tweenNode({ ...from, strokeLinecap: undefined, strokeLinejoin: undefined, strokeDasharray: undefined, strokeDashoffset: undefined }, { ...from, strokeLinecap: undefined, strokeLinejoin: undefined, strokeDasharray: undefined, strokeDashoffset: undefined }, 0.5) as PathNode
+    expect(bare.strokeLinecap).toBeUndefined()
+    expect(bare.strokeLinejoin).toBeUndefined()
+    expect(bare.strokeDasharray).toBeUndefined()
+    expect(bare.strokeDashoffset).toBeUndefined()
+  })
+
+  it('carries stroke styles through primitive and text tweens', () => {
+    const primitive = tweenNode(
+      shape('a', {
+        stroke: '#000000',
+        strokeWidth: 2,
+        strokeLinecap: 'round',
+        strokeDasharray: [4, 2],
+        strokeDashoffset: 2
+      }),
+      shape('a', {
+        stroke: '#000000',
+        strokeWidth: 2,
+        strokeLinecap: 'butt',
+        strokeDasharray: [1, 1],
+        strokeDashoffset: 6
+      }),
+      0.25
+    ) as PrimitiveNode
+    expect(primitive.strokeLinecap).toBe('round')
+    expect(primitive.strokeDasharray).toEqual([4, 2])
+    expect(primitive.strokeDashoffset).toBe(3)
+    expect(primitive.strokeWidth).toBe(2)
+
+    const textFrom: TextNode = {
+      type: 'text',
+      id: 't',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 20,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left',
+      stroke: '#000000',
+      strokeWidth: 1,
+      strokeLinecap: 'square',
+      strokeDasharray: [3, 3],
+      strokeDashoffset: 1
+    }
+    const textTo: TextNode = { ...textFrom, strokeDashoffset: 5, strokeLinecap: 'butt' }
+    const text = tweenNode(textFrom, textTo, 0.5) as TextNode
+    expect(text.strokeLinecap).toBe('square')
+    expect(text.strokeDasharray).toEqual([3, 3])
+    expect(text.strokeDashoffset).toBe(3)
+  })
+
   it('tweens a text: font size lerps, content and font snap from `from`', () => {
     const from: TextNode = {
       type: 'text',
@@ -583,7 +670,7 @@ describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
-      schemaVersion: 7,
+      schemaVersion: 8,
       name: 'test',
       width: 100,
       height: 100,
