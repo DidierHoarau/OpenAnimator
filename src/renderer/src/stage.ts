@@ -37,6 +37,7 @@ import type { ViewTransform } from '@shared/viewTransform'
 import { setActiveSurface } from './activeSurface'
 import { DrawingSession, strokeToPathData } from './drawing'
 import type { StrokePoint } from './drawing'
+import { sampleStagePixel } from './eyedropper'
 import type { Editor } from './editor'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -306,12 +307,38 @@ export class StageView {
       this.editor.tool === 'pen' ||
       this.editor.tool === 'text' ||
       this.editor.tool === 'line' ||
-      this.editor.tool === 'vector'
+      this.editor.tool === 'vector' ||
+      this.editor.tool === 'eyedropper'
     ) {
       this.svg.style.cursor = 'crosshair'
     } else {
       this.svg.style.cursor = ''
     }
+  }
+
+  /**
+   * Eyedropper: samples the stage pixel under the pointer through the export
+   * raster pipeline and applies it like a palette click (plus the recent
+   * colors row). Points outside the document only surface a message.
+   */
+  private pickStageColor(point: Vec2): void {
+    const editor = this.editor
+    void sampleStagePixel(editor, point)
+      .then((color) => {
+        if (!color) {
+          editor.showMessage('Eyedropper: click inside the document to pick a color')
+          return
+        }
+        editor.applyPrimaryColor(color)
+        editor.addRecentColor(color)
+        editor.showMessage(`Picked ${color}`)
+      })
+      .catch((error: unknown) => {
+        editor.showMessage('Could not sample the stage color', {
+          severity: 'error',
+          details: error instanceof Error ? error.message : String(error)
+        })
+      })
   }
 
   private onWheel(event: WheelEvent): void {
@@ -335,6 +362,14 @@ export class StageView {
       return
     }
     if (event.button !== 0) return
+
+    // Eyedropper: the dedicated tool picks on click; Alt+click is a one-off
+    // pick from any tool (Alt is otherwise unused on the stage).
+    if (event.altKey || editor.tool === 'eyedropper') {
+      this.pickStageColor(point)
+      event.preventDefault()
+      return
+    }
 
     const layer = editor.currentLayer
 

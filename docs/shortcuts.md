@@ -87,6 +87,7 @@ On macOS every `Ctrl` below is `Cmd`.
 | `P` | Pen Tool |
 | `T` | Text Tool |
 | `N` | Vector Tool |
+| `I` | Eyedropper Tool |
 | `[` | Decrease Brush Size |
 | `]` | Increase Brush Size |
 

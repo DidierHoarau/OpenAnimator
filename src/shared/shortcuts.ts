@@ -67,6 +67,7 @@ export type ShortcutId =
   | 'tool.pen'
   | 'tool.text'
   | 'tool.vector'
+  | 'tool.eyedropper'
   | 'tool.brushDown'
   | 'tool.brushUp'
   | 'stage.pan'
@@ -169,6 +170,7 @@ export const SHORTCUTS: readonly ShortcutRow[] = [
   { id: 'tool.pen', label: 'Pen Tool', keys: 'P', category: 'Tools', owner: 'page', bindings: ['p'] },
   { id: 'tool.text', label: 'Text Tool', keys: 'T', category: 'Tools', owner: 'page', bindings: ['t'] },
   { id: 'tool.vector', label: 'Vector Tool', keys: 'N', category: 'Tools', owner: 'page', bindings: ['n'] },
+  { id: 'tool.eyedropper', label: 'Eyedropper Tool', keys: 'I', category: 'Tools', owner: 'page', bindings: ['i'] },
   { id: 'tool.brushDown', label: 'Decrease Brush Size', keys: '[', category: 'Tools', owner: 'page', bindings: ['['] },
   { id: 'tool.brushUp', label: 'Increase Brush Size', keys: ']', category: 'Tools', owner: 'page', bindings: [']'] },
 

@@ -6,12 +6,11 @@ import {
   evaluateCameraAtFrame,
   findCameraKeyframeAtFrame,
   findKeyframeAtFrame,
-  findKeyframeIndexForFrame,
-  findNearestNodeKeyframeIndex,
   findNextCellFrame,
   findPreviousCellFrame,
   normalizePaletteColors
 } from '@shared/document'
+import { parseGpl, serializeGpl } from '@shared/gpl'
 import type { CellRange } from '@shared/document'
 import { MAX_STROKE_DASH_VALUES, isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { ImageNode, SceneNode, StrokeLinecap, StrokeLinejoin, StrokeStyle } from '@shared/model'
@@ -347,6 +346,7 @@ export class PropertiesView {
   private readonly brushSwatches: SwatchStrip
   private readonly paletteDocStrip: SwatchStrip
   private readonly paletteGlobalStrip: SwatchStrip
+  private readonly paletteRecentStrip: SwatchStrip
   private readonly addDocSwatchButton: HTMLButtonElement
   private readonly addGlobalSwatchButton: HTMLButtonElement
   private globalPalette: string[] = []
@@ -1285,9 +1285,10 @@ export class PropertiesView {
     })
     cellMoveRow.appendChild(this.cellMoveInput)
 
-    // Palette section: the document swatches (stored in the project file) and
-    // the global swatches (stored on this machine); right-click removes a
-    // swatch, a click applies it to the selection (or the brush).
+    // Palette section: the document swatches (stored in the project file),
+    // the global swatches (stored on this machine) and the session's recent
+    // colors; right-click removes a swatch, a click applies it to the
+    // selection (or the brush).
     const palette = this.createSection('palette', 'Palette')
     const docPaletteRow = this.row(palette.content, 'Document')
     this.paletteDocStrip = new SwatchStrip({
@@ -1303,6 +1304,12 @@ export class PropertiesView {
       onRemove: (color) => this.removeGlobalColor(color)
     })
     globalPaletteRow.appendChild(this.paletteGlobalStrip.root)
+    const recentPaletteRow = this.row(palette.content, 'Recent')
+    this.paletteRecentStrip = new SwatchStrip({
+      title: 'Recent colors',
+      onPick: (color) => this.applyPaletteColor(color)
+    })
+    recentPaletteRow.appendChild(this.paletteRecentStrip.root)
     const paletteActions = el('div', 'panel-buttons')
     this.addDocSwatchButton = this.button(
       '+ Swatch',
@@ -1314,7 +1321,22 @@ export class PropertiesView {
       'Add the current color to the global palette (stored on this machine, shared by all projects)',
       () => this.addGlobalColor(this.currentPaletteColor())
     )
-    paletteActions.append(this.addDocSwatchButton, this.addGlobalSwatchButton)
+    const importPaletteButton = this.button(
+      'Import…',
+      'Import a GIMP palette (.gpl) file into the global palette',
+      () => void this.importGplPalette()
+    )
+    const exportPaletteButton = this.button(
+      'Export…',
+      'Export the global palette as a GIMP palette (.gpl) file',
+      () => void this.exportGplPalette()
+    )
+    paletteActions.append(
+      this.addDocSwatchButton,
+      this.addGlobalSwatchButton,
+      importPaletteButton,
+      exportPaletteButton
+    )
     palette.content.append(paletteActions)
 
     scroll.append(
@@ -1385,23 +1407,13 @@ export class PropertiesView {
   }
 
   /**
-   * Applies a palette color to the primary paint of the selection — the
-   * primitive fill, the path outline (falling back to its fill) or the text
-   * fill — and to the brush when nothing suitable is selected.
+   * Applies a palette color to the primary paint of the selection (the
+   * editor's shared routing: primitive fill, path outline else fill, text
+   * fill, else the brush) and records it as recently used.
    */
   private applyPaletteColor(color: string): void {
-    const node = this.selectedNodePose()
-    if (node?.type === 'primitive' || node?.type === 'path' || node?.type === 'text') {
-      this.editor.updateSelectedNode((current) => {
-        if (current.type === 'primitive') current.fill = color
-        else if (current.type === 'path') {
-          if (current.stroke !== undefined) current.stroke = color
-          else current.fill = color
-        } else if (current.type === 'text') current.fill = color
-      })
-      return
-    }
-    this.editor.setBrushColor(color)
+    this.editor.applyPrimaryColor(color)
+    this.editor.addRecentColor(color)
   }
 
   /** Representative color of the current selection's paint (else the brush). */
@@ -1467,6 +1479,57 @@ export class PropertiesView {
       // Persistence is best-effort; the session keeps the working copy.
     })
     this.render()
+  }
+
+  /** Imports a GIMP palette file into the global palette (merged, persisted
+   * once, capped like every palette). */
+  private async importGplPalette(): Promise<void> {
+    try {
+      const result = await window.api.importPaletteFile()
+      if (result.canceled) {
+        if (result.error) this.editor.showMessage(result.error, { severity: 'error' })
+        return
+      }
+      const colors = parseGpl(result.text)
+      if (!colors) {
+        this.editor.showMessage('Not a GIMP palette file')
+        return
+      }
+      const merged = normalizePaletteColors([...this.globalPalette, ...colors])
+      const added = merged.length - this.globalPalette.length
+      this.globalPalette = merged
+      this.persistGlobalPalette()
+      this.editor.showMessage(`Imported ${added} colors from ${result.fileName}`)
+    } catch (error) {
+      this.editor.showMessage('Could not import the palette', {
+        severity: 'error',
+        details: error instanceof Error ? error.message : String(error)
+      })
+    }
+  }
+
+  /** Exports the global palette as a GIMP palette file. */
+  private async exportGplPalette(): Promise<void> {
+    if (this.globalPalette.length === 0) {
+      this.editor.showMessage('The global palette is empty')
+      return
+    }
+    try {
+      const pick = await window.api.pickExportPath({
+        defaultName: 'palette.gpl',
+        filters: [{ name: 'GIMP palette', extensions: ['gpl'] }]
+      })
+      if (pick.canceled) return
+      const bytes = new TextEncoder().encode(serializeGpl(this.globalPalette))
+      const result = await window.api.writeExportFile(pick.path, bytes)
+      if (result.ok) this.editor.showMessage(`Exported ${this.globalPalette.length} colors`)
+      else this.editor.showMessage(result.error, { severity: 'error' })
+    } catch (error) {
+      this.editor.showMessage('Could not export the palette', {
+        severity: 'error',
+        details: error instanceof Error ? error.message : String(error)
+      })
+    }
   }
 
   private button(title: string, tooltip: string, onClick: () => void): HTMLButtonElement {
@@ -1944,13 +2007,15 @@ export class PropertiesView {
     for (const input of inputs) input.disabled = layer.locked
   }
 
-  /** Palette section: document and global swatch strips, always visible. */
+  /** Palette section: document, global and recent swatch strips. */
   private renderPaletteSection(): void {
     const current = this.currentPaletteColor()
     this.paletteDocStrip.setColors(this.editor.document.palette)
     this.paletteDocStrip.setActive(current)
     this.paletteGlobalStrip.setColors(this.globalPalette)
     this.paletteGlobalStrip.setActive(current)
+    this.paletteRecentStrip.setColors(this.editor.recentColors)
+    this.paletteRecentStrip.setActive(current)
   }
 
   /** Span of the cell covering the playhead of the active drawing layer. */
@@ -1971,18 +2036,6 @@ export class PropertiesView {
    * The first edit materialises the pose at the current frame via auto-key.
    */
   private selectedNodePose(): SceneNode | null {
-    const editor = this.editor
-    const nodeId = editor.primarySelectedNodeId
-    if (!nodeId) return null
-    const layer = editor.currentLayer
-    if (!layer || !isObjectLayer(layer)) return null
-    const activeIndex = findKeyframeIndexForFrame(layer, editor.currentFrame)
-    if (activeIndex !== -1) {
-      const node = layer.keyframes[activeIndex].nodes.find((node) => node.id === nodeId)
-      if (node) return node
-    }
-    const nearestIndex = findNearestNodeKeyframeIndex(layer, nodeId, editor.currentFrame)
-    if (nearestIndex === -1) return null
-    return layer.keyframes[nearestIndex].nodes.find((node) => node.id === nodeId) ?? null
+    return this.editor.selectedNodePose()
   }
 }

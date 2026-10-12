@@ -90,16 +90,17 @@ export type Tool =
   | 'pen'
   | 'text'
   | 'vector'
+  | 'eyedropper'
 
 /**
  * Whether a tool may be active while `layer` is the current layer: the tool
  * availability matrix (Brush/Eraser only on drawing layers, the object tools
  * — including the vector brush, which commits `PathNode`s, and the direct
  * selection tool, which edits them — only on object layers, Select/Hand on
- * the camera and audio control layers, Hand everywhere).
+ * the camera and audio control layers, Hand and the Eyedropper everywhere).
  */
 export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): boolean {
-  if (tool === 'hand') return true
+  if (tool === 'hand' || tool === 'eyedropper') return true
   if (!layer) return false
   if (isObjectLayer(layer)) {
     return (
@@ -122,6 +123,9 @@ function clampOnionCount(value: number): number {
   if (!Number.isFinite(value)) return 0
   return Math.min(5, Math.max(0, Math.round(value)))
 }
+
+/** Cap of the session's most-recently-used color list. */
+const MAX_RECENT_COLORS = 12
 
 /** Structural equality of two easing definitions. */
 function easingsEqual(a: Easing, b: Easing): boolean {
@@ -240,6 +244,8 @@ export class Editor {
   editingAssetId: string | null = null
   /** Brush color (session state, not part of the document). */
   brushColor = '#e6edf3'
+  /** Recently picked or applied colors, newest first (session state). */
+  recentColors: string[] = []
   /** Brush/eraser width in stage pixels, 1–100. */
   brushSize = 6
   /** Brush stroke opacity 0..1 (the eraser always erases fully). */
@@ -790,6 +796,61 @@ export class Editor {
     const primary = this.primarySelectedNodeId
     if (!primary) return false
     return this.updateNodesById([primary], update, 'Edit node')
+  }
+
+  /**
+   * Pose shown for the selected node: the one in the keyframe active at the
+   * current frame when present, otherwise its nearest existing pose (e.g. a
+   * node picked from the timeline tree that only exists in another keyframe).
+   * The first edit materialises the pose at the current frame via auto-key.
+   */
+  selectedNodePose(): SceneNode | null {
+    const nodeId = this.primarySelectedNodeId
+    if (!nodeId) return null
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer)) return null
+    const activeIndex = findKeyframeIndexForFrame(layer, this.currentFrame)
+    if (activeIndex !== -1) {
+      const node = layer.keyframes[activeIndex].nodes.find((node) => node.id === nodeId)
+      if (node) return node
+    }
+    const nearestIndex = findNearestNodeKeyframeIndex(layer, nodeId, this.currentFrame)
+    if (nearestIndex === -1) return null
+    return layer.keyframes[nearestIndex].nodes.find((node) => node.id === nodeId) ?? null
+  }
+
+  /**
+   * Applies a color to the primary paint of the selection — the primitive
+   * fill, the path outline (falling back to its fill) or the text fill — and
+   * to the brush when nothing suitable is selected. The palette clicks and
+   * the eyedropper share this routing.
+   */
+  applyPrimaryColor(color: string): void {
+    const node = this.selectedNodePose()
+    if (node?.type === 'primitive' || node?.type === 'path' || node?.type === 'text') {
+      this.updateSelectedNode((current) => {
+        if (current.type === 'primitive') current.fill = color
+        else if (current.type === 'path') {
+          if (current.stroke !== undefined) current.stroke = color
+          else current.fill = color
+        } else if (current.type === 'text') current.fill = color
+      })
+      return
+    }
+    this.setBrushColor(color)
+  }
+
+  /** Records a most-recently-used color (eyedropper picks, palette
+   * applications): normalized, deduplicated, newest first, capped. */
+  addRecentColor(color: string): void {
+    const rgb = parseHexColor(color)
+    if (!rgb) return
+    const hex = formatHexColor(rgb)
+    this.recentColors = [hex, ...this.recentColors.filter((entry) => entry !== hex)].slice(
+      0,
+      MAX_RECENT_COLORS
+    )
+    this.uiChanged()
   }
 
   /**

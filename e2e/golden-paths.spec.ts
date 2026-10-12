@@ -58,6 +58,18 @@ async function seekTrack(page: Page, track: Locator, frame: number): Promise<voi
   await page.mouse.click(box.x + frame * FRAME_WIDTH + FRAME_WIDTH / 2, box.y + box.height / 2)
 }
 
+/** Screen coordinates of a document point through the stage's own mapping. */
+async function screenPointOf(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
+  return page.evaluate((point) => {
+    const svg = document.querySelector('svg.stage') as SVGSVGElement | null
+    if (!svg) return point
+    const matrix = svg.getScreenCTM()
+    if (!matrix) return point
+    const mapped = new DOMPoint(point.x, point.y).matrixTransform(matrix)
+    return { x: mapped.x, y: mapped.y }
+  }, { x, y })
+}
+
 test('draws a rectangle, keys a held pose and tweens between the poses', async () => {
   const page = await start()
   await dismissStartup(page)
@@ -212,6 +224,27 @@ test('draws a pen path and edits its anchors', async () => {
   // ±2 px absorbs the 2-decimal rounding the serializer applies to `d`.
   expect(Math.abs(visualX - expected.x)).toBeLessThanOrEqual(2)
   expect(Math.abs(visualY - expected.y)).toBeLessThanOrEqual(2)
+})
+
+test('picks a stage color with the eyedropper', async () => {
+  const page = await start()
+  await dismissStartup(page)
+
+  // The starter demo's ball sits at document (180, 180) on frame 1: the
+  // eyedropper tool picks its fill (#f59e0b) and feeds the recent colors row.
+  const ballPoint = await screenPointOf(page, 180, 180)
+  await page.locator('.tool-button[data-tool="eyedropper"]').click()
+  await page.mouse.click(ballPoint.x, ballPoint.y)
+  await expect(page.locator('footer.statusbar')).toContainText('Picked #f59e0b')
+  await expect(page.locator('.properties-panel .swatch-chip[data-color="#f59e0b"]')).toHaveCount(1)
+
+  // Alt+click picks once from any tool: the select tool over the backdrop.
+  await page.locator('.tool-button[data-tool="select"]').click()
+  const backdropPoint = await screenPointOf(page, 40, 40)
+  await page.keyboard.down('Alt')
+  await page.mouse.click(backdropPoint.x, backdropPoint.y)
+  await page.keyboard.up('Alt')
+  await expect(page.locator('footer.statusbar')).toContainText('Picked #10151b')
 })
 
 test('saves the starter demo and reopens it after a new project', async () => {

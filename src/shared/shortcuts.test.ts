@@ -34,7 +34,7 @@ const ALL_IDS: ShortcutId[] = [
   'view.zoomIn', 'view.zoomOut', 'view.resetZoom', 'view.toggleGrid', 'view.toggleOnion',
   'view.toggleLibrary', 'view.toggleProperties',
   'tool.select', 'tool.direct', 'tool.hand', 'tool.brush', 'tool.eraser', 'tool.rect', 'tool.ellipse',
-  'tool.line', 'tool.pen', 'tool.text', 'tool.vector', 'tool.brushDown', 'tool.brushUp',
+  'tool.line', 'tool.pen', 'tool.text', 'tool.vector', 'tool.eyedropper', 'tool.brushDown', 'tool.brushUp',
   'stage.pan', 'edit.nudge', 'pen.finish', 'editor.escape',
   'help.shortcuts', 'help.documentation', 'help.about'
 ]

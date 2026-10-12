@@ -39,6 +39,15 @@ const TOOL_GROUPS: ToolEntry[][] = [
         '<path d="M14 10V4a2 2 0 0 0-4 0v2"/>' +
         '<path d="M10 10.5V6a2 2 0 0 0-4 0v8"/>' +
         '<path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>'
+    },
+    {
+      tool: 'eyedropper',
+      label: 'Eyedropper',
+      title: 'Pick a stage color into the selection or the brush (I, or Alt+click from any tool)',
+      icon:
+        '<path d="m2 22 1-1h3l9-9"/>' +
+        '<path d="M3 21v-3l9-9"/>' +
+        '<path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.7.7a2.1 2.1 0 1 1-3 3l-3.3-3.3a2.1 2.1 0 1 1 3-3l.6.6Z"/>'
     }
   ],
   [

@@ -28,6 +28,7 @@ describe('buildToolsPanel', () => {
       'select',
       'direct',
       'hand',
+      'eyedropper',
       'brush',
       'eraser',
       'rect',

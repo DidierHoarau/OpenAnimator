@@ -219,6 +219,9 @@ export function runEditorCommand(command: ShortcutId, deps: CommandDeps): void {
     case 'tool.vector':
       editor.setTool('vector')
       return
+    case 'tool.eyedropper':
+      editor.setTool('eyedropper')
+      return
     case 'tool.brushDown':
       editor.setBrushSize(editor.brushSize - 1)
       return
