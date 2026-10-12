@@ -6,6 +6,7 @@ import type { CubicBezierEasing, Easing } from './easing'
 import { groupNaturalSize } from './groups'
 import type {
   AnimatorDocument,
+  AudioLayer,
   CameraLayer,
   DrawingLayer,
   ImageNode,
@@ -15,8 +16,7 @@ import type {
   SceneNode
 } from './model'
 import { isAudioLayer, isCameraLayer, isObjectLayer } from './model'
-import type { Paint } from './paint'
-import { paintPrimaryColor } from './paint'
+import type { GradientPaint, Paint } from './paint'
 import { pathDataToSubpathAnchors, pathNaturalSize } from './pathModel'
 import { resolveSceneNodes } from './symbols'
 import type { TextOutlineProvider } from './textOutline'
@@ -24,15 +24,19 @@ import type { TextOutlineProvider } from './textOutline'
 /**
  * Lottie (bodymovin) exporter: converts a document range into a Lottie
  * animation JSON through the shared evaluator. The structural conventions
- * (layer/item order, key easing placement, shape formats) were verified
- * against lottie-web 5.13 — the same version the CI render gate uses.
+ * (layer/item order, key easing placement, shape formats, gradient and audio
+ * data shapes) were verified against lottie-web 5.13 — the same version the
+ * CI render gate uses.
  *
- * Scoped subset (documented in docs/export-formats.md): flat paints render
- * gradients as their first stop color; named easings map to canonical
- * cubic-bezier approximations; `smooth` tween paths export as linear; text
- * ships as outlined vector paths (fonts are never embedded — licensing);
- * audio is dropped with a diagnostic. Unsupported content degrades to a
- * dashed placeholder box plus a diagnostic, never a crash.
+ * Scoped subset (documented in docs/export-formats.md): solid and
+ * linear/radial gradient paints export natively (stop alpha folds into
+ * `stop-opacity`); named easings map to canonical cubic-bezier
+ * approximations; `smooth` tween paths bake per output frame so the exported
+ * motion matches the renderer exactly; text ships as outlined vector paths
+ * with its stroke (fonts are never embedded — licensing); audio layers ship
+ * as embedded data URIs or as side files when the caller resolves their
+ * bytes. Unsupported content degrades to a dashed placeholder box plus a
+ * diagnostic, never a crash.
  *
  * Ordering rules (lottie-web renders the FIRST element of every items array
  * on top): content layers are emitted top-first, node children are emitted
@@ -40,10 +44,24 @@ import type { TextOutlineProvider } from './textOutline'
  * exactly like the SVG renderer.
  */
 
+/** How audio resources ship: embedded as base64 data URIs inside the
+ * animation JSON (single-file, larger) or as side files for dotLottie
+ * archives. */
+export type LottieAudioMode = 'embed' | 'files'
+
 export interface LottieBuildOptions {
   fromFrame: number
   toFrame: number
   fps: number
+  /** Audio handling; defaults to `'embed'`. */
+  audio?: LottieAudioMode
+}
+
+export interface LottieAudioResource {
+  bytes: Uint8Array
+  /** Source file extension without the dot (drives the data-URI MIME type
+   * and the side-file name); the exporter sanitizes it. */
+  ext: string
 }
 
 export interface LottieBuildDeps {
@@ -51,11 +69,17 @@ export interface LottieBuildDeps {
   resolveResourceDataUrl: (resourceId: string) => Promise<string | null>
   /** Outlines text nodes; absent or null result → placeholder box. */
   outlineText?: TextOutlineProvider
+  /** Resolves an audio resource id to its bytes; absent or null keeps the
+   * soundtrack out of the file with a diagnostic. */
+  resolveResourceBytes?: (resourceId: string) => Promise<LottieAudioResource | null>
 }
 
 export interface LottieBuildResult {
   lottie: Record<string, unknown>
   diagnostics: string[]
+  /** Side files the animation references (audio in `'files'` mode), keyed by
+   * archive-relative path. Absent when the animation has none. */
+  files?: Record<string, Uint8Array>
 }
 
 type LottieObject = Record<string, unknown>
@@ -75,6 +99,13 @@ interface NodeKeys {
   op: number
 }
 
+/** One key of a numeric property channel. */
+interface ChannelKey {
+  t: number
+  value: number[]
+  easing: CubicBezierEasing | null
+}
+
 const EASING_BEZIERS: Record<string, CubicBezierEasing> = {
   linear: { x1: 0, y1: 0, x2: 1, y2: 1 },
   'ease-in': { x1: 0.32, y1: 0, x2: 0.67, y2: 0 },
@@ -82,11 +113,14 @@ const EASING_BEZIERS: Record<string, CubicBezierEasing> = {
   'ease-in-out': { x1: 0.65, y1: 0, x2: 0.35, y2: 1 }
 }
 
+const LINEAR_EASING: CubicBezierEasing = { x1: 0, y1: 0, x2: 1, y2: 1 }
+
 const PLACEHOLDER_FILL = '#e2e8f0'
 const PLACEHOLDER_STROKE = '#94a3b8'
 
 function round4(value: number): number {
-  return Math.round(value * 1e4) / 1e4
+  const rounded = Math.round(value * 1e4) / 1e4
+  return rounded === 0 ? 0 : rounded
 }
 
 function lerpPoint(
@@ -205,9 +239,7 @@ function arraysEqual(a: number[], b: number[]): boolean {
 /** Lottie animatable property from channel keys: a static value when nothing
  * changes, otherwise keyed values whose easing lives on the key that starts
  * each segment (the convention lottie-web reads). Hold keys use `h: 1`. */
-function propertyFromChannel(
-  channel: Array<{ t: number; value: number[]; easing: CubicBezierEasing | null }>
-): LottieObject {
+function propertyFromChannel(channel: ChannelKey[]): LottieObject {
   const rounded = channel.map((key) => ({ t: key.t, value: key.value.map(round4), easing: key.easing }))
   if (rounded.length === 1 || rounded.every((key) => arraysEqual(key.value, rounded[0].value))) {
     return { a: 0, k: rounded[0].value }
@@ -232,7 +264,7 @@ function propertyFromChannel(
  * appends the successor key when the last segment needs an interpolation
  * target. Returns null when the first boundary has no value at all. */
 function collectChannel(spec: NodeKeys, read: (docFrame: number) => number[] | null): LottieObject | null {
-  const channel: Array<{ t: number; value: number[]; easing: CubicBezierEasing | null }> = []
+  const channel: ChannelKey[] = []
   let last: number[] | null = null
   for (const key of spec.keys) {
     const value: number[] | null = read(key.docFrame) ?? last
@@ -342,6 +374,7 @@ interface Ctx {
   fromFrame: number
   toFrame: number
   frameCount: number
+  fps: number
   holdStep: number
   /** Document frame evaluated at each output frame (hold step applied). */
   evalFrames: number[]
@@ -351,6 +384,9 @@ interface Ctx {
   imageAssets: LottieObject[]
   assetIdByResource: Map<string, string | null>
   outlineCache: Map<string, PathNode | null>
+  audioAssets: LottieObject[]
+  audioAssetIdByResource: Map<string, string | null>
+  audioFiles: Map<string, Uint8Array>
 }
 
 function report(ctx: Ctx, message: string): void {
@@ -410,8 +446,10 @@ function containingFrames(layer: ObjectLayer, id: string): number[] {
 }
 
 /** Easing of the tween segment covering doc frame `f` for node `id`: null
- * for held segments, a split bezier when the range starts mid-segment. */
-function segmentEasingAt(ctx: Ctx, layer: ObjectLayer, id: string, f: number): CubicBezierEasing | null {
+ * for held segments, a split bezier when the range starts mid-segment.
+ * `smooth` segments never reach this path — `nodeKeysFor` bakes them per
+ * output frame instead. */
+function segmentEasingAt(layer: ObjectLayer, id: string, f: number): CubicBezierEasing | null {
   let sourceIndex = -1
   for (let i = 0; i < layer.keyframes.length; i++) {
     if (layer.keyframes[i].frame > f) break
@@ -430,9 +468,6 @@ function segmentEasingAt(ctx: Ctx, layer: ObjectLayer, id: string, f: number): C
   if (nextIndex === -1) return null
   const next = layer.keyframes[nextIndex]
   if (f >= next.frame) return null
-  if (source.tween.path === 'smooth') {
-    report(ctx, "A 'smooth' tween path is exported as linear interpolation in the Lottie file.")
-  }
   const mapped = lottieEasingFor(source.tween.easing)
   if (f > source.frame) {
     return splitBezier(mapped, (f - source.frame) / (next.frame - source.frame))
@@ -440,16 +475,40 @@ function segmentEasingAt(ctx: Ctx, layer: ObjectLayer, id: string, f: number): C
   return mapped
 }
 
+/** True when a `smooth` tween segment of node `id` intersects the export
+ * range — such nodes bake per output frame so the bezier motion matches the
+ * renderer exactly (lottie has no Catmull-Rom mode). */
+function hasSmoothSegment(ctx: Ctx, layer: ObjectLayer, id: string): boolean {
+  const keyframes = layer.keyframes
+  for (let i = 0; i < keyframes.length; i++) {
+    const source = keyframes[i]
+    if (!source.tween || source.tween.path !== 'smooth') continue
+    if (!source.nodes.some((node) => node.id === id)) continue
+    for (let j = i + 1; j < keyframes.length; j++) {
+      if (!keyframes[j].nodes.some((node) => node.id === id)) continue
+      if (source.frame <= ctx.toFrame && keyframes[j].frame >= ctx.fromFrame) return true
+      break
+    }
+  }
+  return false
+}
+
 /** Boundary keys and presence window of one node: keyframe boundaries with
- * mapped easings when every frame is addressed, baked hold keys sampled
- * through the evaluator when the document uses a hold step. */
+ * mapped easings when every frame is addressed, baked per-frame keys sampled
+ * through the evaluator when the document uses a hold step or the node has a
+ * `smooth` tween segment in range. */
 function nodeKeysFor(layer: ObjectLayer, id: string, ctx: Ctx): NodeKeys | null {
   const frames = containingFrames(layer, id)
   if (frames.length === 0) return null
   const first = frames[0]
   const last = frames[frames.length - 1]
 
-  if (ctx.holdStep > 1) {
+  if (ctx.holdStep > 1 || hasSmoothSegment(ctx, layer, id)) {
+    // Baked keys: hold keys under a hold step (every pose is a step), linear
+    // keys (except the final hold) for smooth segments so sub-frame playback
+    // stays in motion.
+    const smoothing = ctx.holdStep === 1
+    const keyEasing = smoothing ? LINEAR_EASING : null
     const keys: KeySpec[] = []
     let ip = -1
     let op = -1
@@ -460,12 +519,13 @@ function nodeKeysFor(layer: ObjectLayer, id: string, ctx: Ctx): NodeKeys | null 
       if (isFirst) {
         ip = i
       } else if (f !== ctx.evalFrames[i - 1]) {
-        keys.push({ t: i, docFrame: f, easing: null })
+        keys.push({ t: i, docFrame: f, easing: keyEasing })
       }
-      if (isFirst) keys.push({ t: i, docFrame: f, easing: null })
+      if (isFirst) keys.push({ t: i, docFrame: f, easing: keyEasing })
       op = i + 1
     }
     if (ip === -1) return null
+    if (smoothing) keys[keys.length - 1] = { ...keys[keys.length - 1], easing: null }
     return { keys, successor: null, ip, op }
   }
 
@@ -473,11 +533,11 @@ function nodeKeysFor(layer: ObjectLayer, id: string, ctx: Ctx): NodeKeys | null 
   const end = Math.min(last, ctx.toFrame)
   if (start > end) return null
   const keys: KeySpec[] = [
-    { t: start - ctx.fromFrame, docFrame: start, easing: segmentEasingAt(ctx, layer, id, start) }
+    { t: start - ctx.fromFrame, docFrame: start, easing: segmentEasingAt(layer, id, start) }
   ]
   for (const f of frames) {
     if (f <= start || f > end) continue
-    keys.push({ t: f - ctx.fromFrame, docFrame: f, easing: segmentEasingAt(ctx, layer, id, f) })
+    keys.push({ t: f - ctx.fromFrame, docFrame: f, easing: segmentEasingAt(layer, id, f) })
   }
   const lastKey = keys[keys.length - 1]
   const successorFrame =
@@ -699,14 +759,120 @@ function readScaleOf(pose: SceneNode): number[] {
 
 const READ_SCALE: NodeRead = (pose) => readScaleOf(pose)
 
-function paintChannelOf(ctx: Ctx, paint: Paint | undefined): number[] | null {
+type PaintBasisOf = (pose: SceneNode) => { width: number; height: number }
+
+/** A paint value usable for export: a parseable flat color or a gradient;
+ * null for `none`, unparseable strings and missing paints (callers fall back
+ * to the previous boundary, mirroring the numeric channels). */
+function usablePaintOf(paint: Paint | undefined): Paint | null {
   if (paint === undefined) return null
-  if (typeof paint !== 'string') {
-    report(ctx, 'A gradient paint is exported as its first stop color in the Lottie file.')
-    return colorChannels(paintPrimaryColor(paint))
+  if (typeof paint === 'string') {
+    if (paint.trim().toLowerCase() === 'none') return null
+    return colorChannels(paint) ? paint : null
   }
-  if (paint.trim().toLowerCase() === 'none') return null
-  return colorChannels(paint)
+  return paint
+}
+
+/** Flat stop array of a gradient: `[offset, r, g, b] × p` plus, when any
+ * stop carries alpha, the mirrored `[offset, alpha] × p` section lottie-web
+ * folds onto the stops as `stop-opacity` (lottie-web reads offsets ×100 and
+ * colors ×255). Null when a stop color cannot be parsed. */
+function gradientStopValues(paint: GradientPaint, includeAlpha: boolean): number[] | null {
+  const values: number[] = []
+  for (const stop of paint.stops) {
+    const rgb = parseHexColor(stop.color)
+    if (!rgb) return null
+    values.push(round4(stop.offset), round4(rgb[0] / 255), round4(rgb[1] / 255), round4(rgb[2] / 255))
+  }
+  if (includeAlpha) {
+    for (const stop of paint.stops) values.push(round4(stop.offset), round4(stop.alpha ?? 1))
+  }
+  return values
+}
+
+function gradientHasAlpha(paint: GradientPaint): boolean {
+  return paint.stops.some((stop) => stop.alpha !== undefined && stop.alpha !== 1)
+}
+
+/** Local-space endpoints of a gradient inside a node's bounding box. Linear
+ * angles reproduce the renderer's `objectBoundingBox` mapping exactly; the
+ * radial form uses the average of the box's width and height as the radius
+ * (lottie has a single radius — exact for square boxes, approximated
+ * otherwise with a diagnostic). */
+function gradientGeometry(
+  paint: GradientPaint,
+  basis: { width: number; height: number }
+): { start: number[]; end: number[] } {
+  if (paint.type === 'linear') {
+    const radians = (paint.angle * Math.PI) / 180
+    const dx = Math.cos(radians)
+    const dy = Math.sin(radians)
+    return {
+      start: [round4(-0.5 * dx * basis.width), round4(-0.5 * dy * basis.height)],
+      end: [round4(0.5 * dx * basis.width), round4(0.5 * dy * basis.height)]
+    }
+  }
+  const cx = round4((paint.cx - 0.5) * basis.width)
+  const cy = round4((paint.cy - 0.5) * basis.height)
+  const radius = round4((paint.r * (basis.width + basis.height)) / 2)
+  return { start: [cx, cy], end: [round4(cx + radius), cy] }
+}
+
+function gradientItemOf(
+  kind: 'fill' | 'stroke',
+  paint: GradientPaint,
+  start: LottieObject,
+  end: LottieObject,
+  stops: LottieObject,
+  widthProp: LottieObject | null
+): LottieObject {
+  const item: LottieObject = {
+    ty: kind === 'fill' ? 'gf' : 'gs',
+    o: { a: 0, k: 100 },
+    s: start,
+    e: end,
+    t: paint.type === 'linear' ? 1 : 2,
+    g: { p: paint.stops.length, k: stops },
+    nm: kind
+  }
+  if (kind === 'stroke' && widthProp) item.w = widthProp
+  return item
+}
+
+/** One static gradient item (`s`/`e`/`g` unkeyed) for the fallback cases. */
+function staticGradientItem(
+  kind: 'fill' | 'stroke',
+  paint: GradientPaint,
+  widthProp: LottieObject | null,
+  basis: { width: number; height: number }
+): LottieObject | null {
+  const stops = gradientStopValues(paint, gradientHasAlpha(paint))
+  if (!stops) return null
+  const geometry = gradientGeometry(paint, basis)
+  return gradientItemOf(
+    kind,
+    paint,
+    staticProp(geometry.start),
+    staticProp(geometry.end),
+    staticProp(stops),
+    widthProp
+  )
+}
+
+/** The paint item for a fallback decision: static color or static
+ * gradient, from one resolved paint value. */
+function staticPaintItem(
+  kind: 'fill' | 'stroke',
+  paint: Paint,
+  widthProp: LottieObject | null,
+  basis: { width: number; height: number }
+): LottieObject | null {
+  if (typeof paint === 'string') {
+    const channels = colorChannels(paint)
+    if (!channels) return null
+    return kind === 'fill' ? fillItem({ a: 0, k: channels }) : strokeItem({ a: 0, k: channels }, widthProp!)
+  }
+  return staticGradientItem(kind, paint, widthProp, basis)
 }
 
 interface NodeBuildArgs {
@@ -725,6 +891,141 @@ function channelFor(args: NodeBuildArgs, read: NodeRead): LottieObject | null {
     const pose = args.poseAt(docFrame)
     return pose ? read(pose) : null
   })
+}
+
+/**
+ * Fill or stroke item of one node. Solid paints export as color channels
+ * like before; gradients bake their endpoints and stops per output frame
+ * through the evaluator (exact at integer frames; lottie interpolates
+ * linearly between baked frames). A paint whose kind (solid ↔ gradient)
+ * changes across the node's keyframes keeps the first paint plus a
+ * diagnostic — the same snap the renderer's `lerpPaint` documents.
+ */
+function paintItemFor(
+  args: NodeBuildArgs,
+  kind: 'fill' | 'stroke',
+  readPaint: (pose: SceneNode) => Paint | undefined,
+  widthProp: LottieObject | null,
+  basisOf: PaintBasisOf
+): LottieObject | null {
+  if (kind === 'stroke' && !widthProp) return null
+  const boundaryKeys: KeySpec[] = [...args.spec.keys]
+  const tail = boundaryKeys[boundaryKeys.length - 1]
+  if (tail && tail.easing !== null && args.spec.successor) boundaryKeys.push(args.spec.successor)
+  const boundaries: Array<{ t: number; easing: CubicBezierEasing | null; paint: Paint }> = []
+  let last: Paint | null = null
+  for (const key of boundaryKeys) {
+    const pose = args.poseAt(key.docFrame)
+    const paint: Paint | null = (pose ? usablePaintOf(readPaint(pose)) : null) ?? last
+    if (!paint) return null
+    boundaries.push({ t: key.t, easing: key.easing, paint })
+    last = paint
+  }
+  if (boundaries.length === 0) return null
+  const hasSolid = boundaries.some((boundary) => typeof boundary.paint === 'string')
+  const hasGradient = boundaries.some((boundary) => typeof boundary.paint !== 'string')
+  if (hasSolid && hasGradient) {
+    report(
+      args.ctx,
+      `The paint of "${args.name}" changes between solid and gradient across keyframes; the Lottie file keeps the first paint.`
+    )
+    return staticPaintItem(kind, boundaries[0].paint, widthProp, basisOf(args.firstPose))
+  }
+  if (!hasGradient) {
+    const channel = propertyFromChannel(
+      boundaries.map((boundary) => ({
+        t: boundary.t,
+        value: colorChannels(boundary.paint as string)!,
+        easing: boundary.easing
+      }))
+    )
+    return kind === 'fill' ? fillItem(channel) : strokeItem(channel, widthProp!)
+  }
+  return bakedGradientItem(args, kind, readPaint, widthProp, basisOf)
+}
+
+/** Bakes one gradient paint into `gf`/`gs` channels: every output frame of
+ * the node's presence samples the evaluated pose (paint and basis together),
+ * so mid-tween geometry and stops match the renderer. A gradient whose stop
+ * count changes across keyframes keeps the first gradient plus a
+ * diagnostic. */
+function bakedGradientItem(
+  args: NodeBuildArgs,
+  kind: 'fill' | 'stroke',
+  readPaint: (pose: SceneNode) => Paint | undefined,
+  widthProp: LottieObject | null,
+  basisOf: PaintBasisOf
+): LottieObject | null {
+  interface GradientSample {
+    t: number
+    paint: GradientPaint
+    basis: { width: number; height: number }
+  }
+  const samples: GradientSample[] = []
+  let lastPaint: GradientPaint | null = null
+  let lastBasis: { width: number; height: number } | null = null
+  let previousFrame = Number.NaN
+  for (let i = args.spec.ip; i < args.spec.op; i++) {
+    const f = args.ctx.evalFrames[i]
+    if (f === previousFrame) continue
+    previousFrame = f
+    const pose = args.poseAt(f)
+    const sampled = pose ? usablePaintOf(readPaint(pose)) : null
+    const paint: GradientPaint | null = sampled && typeof sampled !== 'string' ? sampled : lastPaint
+    const basis: { width: number; height: number } | null = pose ? basisOf(pose) : lastBasis
+    if (!paint || !basis) return null
+    samples.push({ t: i, paint, basis })
+    lastPaint = paint
+    lastBasis = basis
+  }
+  if (samples.length === 0) return null
+  const stopCount = samples[0].paint.stops.length
+  if (samples.some((sample) => sample.paint.stops.length !== stopCount)) {
+    report(
+      args.ctx,
+      `The gradient of "${args.name}" changes its stop count across keyframes; the Lottie file keeps the first gradient.`
+    )
+    return staticGradientItem(kind, samples[0].paint, widthProp, samples[0].basis)
+  }
+  if (
+    samples.some(
+      (sample) =>
+        sample.paint.type === 'radial' &&
+        sample.paint.r > 0 &&
+        Math.abs(sample.basis.width - sample.basis.height) > 1e-6
+    )
+  ) {
+    report(
+      args.ctx,
+      `The radial gradient of "${args.name}" sits on a non-square box; the Lottie file approximates its radius.`
+    )
+  }
+  const holdMode = args.ctx.holdStep > 1
+  const easingAt = (index: number): CubicBezierEasing | null =>
+    holdMode || index === samples.length - 1 ? null : LINEAR_EASING
+  const hasAlpha = samples.some((sample) => gradientHasAlpha(sample.paint))
+  const startKeys: ChannelKey[] = []
+  const endKeys: ChannelKey[] = []
+  const stopKeys: ChannelKey[] = []
+  let lastStops: number[] | null = null
+  for (let index = 0; index < samples.length; index++) {
+    const sample = samples[index]
+    const geometry = gradientGeometry(sample.paint, sample.basis)
+    const stops: number[] | null = gradientStopValues(sample.paint, hasAlpha) ?? lastStops
+    if (!stops) return null
+    startKeys.push({ t: sample.t, value: geometry.start, easing: easingAt(index) })
+    endKeys.push({ t: sample.t, value: geometry.end, easing: easingAt(index) })
+    stopKeys.push({ t: sample.t, value: stops, easing: easingAt(index) })
+    lastStops = stops
+  }
+  return gradientItemOf(
+    kind,
+    samples[0].paint,
+    propertyFromChannel(startKeys),
+    propertyFromChannel(endKeys),
+    propertyFromChannel(stopKeys),
+    widthProp
+  )
 }
 
 /** Type/primitive-kind consistency across the node's keyframes: mismatches
@@ -754,6 +1055,7 @@ function primitiveContentItems(args: NodeBuildArgs): LottieObject[] {
   const rotation = channelFor(args, READ_ROTATION)
   const opacity = channelFor(args, READ_OPACITY)
   if (!size || !position || !rotation || !opacity) return []
+  const basis: PaintBasisOf = (candidate) => ({ width: candidate.width, height: candidate.height })
   const items: LottieObject[] = [
     {
       ty: pose.primitive === 'ellipse' ? 'el' : 'rc',
@@ -765,21 +1067,29 @@ function primitiveContentItems(args: NodeBuildArgs): LottieObject[] {
     }
   ]
   if (pose.stroke !== undefined) {
-    const color = channelFor(args, (candidate) => {
-      if (candidate.type !== 'primitive') return null
-      return paintChannelOf(args.ctx, candidate.stroke)
-    })
     const width = channelFor(args, (candidate) =>
       candidate.type === 'primitive' ? [candidate.strokeWidth ?? 1] : null
     )
-    if (color && width) items.push(strokeItem(color, width))
+    const stroke = width
+      ? paintItemFor(
+          args,
+          'stroke',
+          (candidate) => (candidate.type === 'primitive' ? candidate.stroke : undefined),
+          width,
+          basis
+        )
+      : null
+    if (stroke) items.push(stroke)
   }
   if (pose.fill !== 'none') {
-    const color = channelFor(args, (candidate) => {
-      if (candidate.type !== 'primitive') return null
-      return paintChannelOf(args.ctx, candidate.fill)
-    })
-    if (color) items.push(fillItem(color))
+    const fill = paintItemFor(
+      args,
+      'fill',
+      (candidate) => (candidate.type === 'primitive' ? candidate.fill : undefined),
+      null,
+      basis
+    )
+    if (fill) items.push(fill)
   }
   items.push(transformItem(position, rotation, scale100(), opacity))
   return items
@@ -793,23 +1103,35 @@ function pathContentItems(args: NodeBuildArgs): LottieObject[] {
   const opacity = channelFor(args, READ_OPACITY)
   const scale = channelFor(args, READ_SCALE)
   if (!position || !rotation || !opacity || !scale) return []
+  const basis: PaintBasisOf = (candidate) =>
+    candidate.type === 'path'
+      ? pathNaturalSize(candidate)
+      : { width: candidate.width, height: candidate.height }
   const items: LottieObject[] = pathGeometryFor(args)
   if (pose.stroke !== undefined) {
-    const color = channelFor(args, (candidate) => {
-      if (candidate.type !== 'path') return null
-      return paintChannelOf(args.ctx, candidate.stroke)
-    })
     const width = channelFor(args, (candidate) =>
       candidate.type === 'path' ? [candidate.strokeWidth ?? 1] : null
     )
-    if (color && width) items.push(strokeItem(color, width))
+    const stroke = width
+      ? paintItemFor(
+          args,
+          'stroke',
+          (candidate) => (candidate.type === 'path' ? candidate.stroke : undefined),
+          width,
+          basis
+        )
+      : null
+    if (stroke) items.push(stroke)
   }
   if (pose.fill !== undefined) {
-    const color = channelFor(args, (candidate) => {
-      if (candidate.type !== 'path') return null
-      return paintChannelOf(args.ctx, candidate.fill)
-    })
-    if (color) items.push(fillItem(color))
+    const fill = paintItemFor(
+      args,
+      'fill',
+      (candidate) => (candidate.type === 'path' ? candidate.fill : undefined),
+      null,
+      basis
+    )
+    if (fill) items.push(fill)
   }
   items.push(transformItem(position, rotation, scale, opacity))
   return items
@@ -967,9 +1289,6 @@ async function textContentItems(args: NodeBuildArgs): Promise<LottieObject[]> {
       }
     }
   }
-  if (pose.stroke !== undefined) {
-    report(args.ctx, 'A text stroke is dropped when text is exported as outlines in the Lottie file.')
-  }
   if (!outline) {
     report(
       args.ctx,
@@ -983,11 +1302,33 @@ async function textContentItems(args: NodeBuildArgs): Promise<LottieObject[]> {
     outlineNatural.width === 0 ? 100 : (outline.width / outlineNatural.width) * 100,
     outlineNatural.height === 0 ? 100 : (outline.height / outlineNatural.height) * 100
   ])
-  const color = channelFor(args, (candidate) => {
-    if (candidate.type !== 'text') return null
-    return paintChannelOf(args.ctx, candidate.fill)
-  })
-  if (color) items.push(fillItem(color))
+  const basis: PaintBasisOf = () => outlineNatural
+  if (pose.stroke !== undefined) {
+    // Outline geometry lives in natural glyph space; the width divides by
+    // the outline-to-node scale so the rendered stroke keeps its stage size.
+    const outlineScaleX = outlineNatural.width === 0 ? 1 : outline.width / outlineNatural.width
+    const width = channelFor(args, (candidate) =>
+      candidate.type === 'text' ? [round4((candidate.strokeWidth ?? 1) / outlineScaleX)] : null
+    )
+    const stroke = width
+      ? paintItemFor(
+          args,
+          'stroke',
+          (candidate) => (candidate.type === 'text' ? candidate.stroke : undefined),
+          width,
+          basis
+        )
+      : null
+    if (stroke) items.push(stroke)
+  }
+  const fill = paintItemFor(
+    args,
+    'fill',
+    (candidate) => (candidate.type === 'text' ? candidate.fill : undefined),
+    null,
+    basis
+  )
+  if (fill) items.push(fill)
   items.push(transformItem(position, rotation, scale, opacity))
   return items
 }
@@ -1172,6 +1513,107 @@ async function imageLayersFor(
 }
 
 // ---------------------------------------------------------------------------
+// Audio layers
+// ---------------------------------------------------------------------------
+
+const AUDIO_MIME_BY_EXT: Record<string, string> = {
+  mp3: 'audio/mpeg',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  oga: 'audio/ogg',
+  opus: 'audio/opus',
+  flac: 'audio/flac',
+  webm: 'audio/webm'
+}
+
+/** Chunked base64 for embedded audio (the spread-argument limit forbids one
+ * `String.fromCharCode` call over a whole file). */
+function base64Of(bytes: Uint8Array): string {
+  const CHUNK = 0x8000
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const chunk = bytes.subarray(i, i + CHUNK)
+    let part = ''
+    for (let j = 0; j < chunk.length; j++) part += String.fromCharCode(chunk[j])
+    binary += part
+  }
+  return btoa(binary)
+}
+
+/** Registers one audio asset (deduplicated by resource id): a data-URI asset
+ * when embedding, a side-file asset registered in `ctx.audioFiles` otherwise.
+ * Unresolvable resources report once and stay silent. */
+async function ensureAudioAsset(ctx: Ctx, layer: AudioLayer, mode: LottieAudioMode): Promise<string | null> {
+  const cached = ctx.audioAssetIdByResource.get(layer.resourceId)
+  if (cached !== undefined) return cached
+  const resolved = ctx.deps.resolveResourceBytes
+    ? await ctx.deps.resolveResourceBytes(layer.resourceId)
+    : null
+  if (!resolved) {
+    report(
+      ctx,
+      `Audio resource "${layer.resourceId}" could not be embedded; the exported animation is silent.`
+    )
+    ctx.audioAssetIdByResource.set(layer.resourceId, null)
+    return null
+  }
+  const id = `aud_${ctx.audioAssets.length + 1}`
+  const ext = /^[a-z0-9]{1,8}$/i.test(resolved.ext) ? resolved.ext.toLowerCase() : 'bin'
+  if (mode === 'files') {
+    const path = `audio/${id}.${ext}`
+    ctx.audioFiles.set(path, resolved.bytes)
+    ctx.audioAssets.push({ id, u: 'audio/', p: `${id}.${ext}`, e: 0 })
+  } else {
+    const mime = AUDIO_MIME_BY_EXT[ext] ?? 'application/octet-stream'
+    ctx.audioAssets.push({ id, u: '', p: `data:${mime};base64,${base64Of(resolved.bytes)}`, e: 1 })
+  }
+  ctx.audioAssetIdByResource.set(layer.resourceId, id)
+  return id
+}
+
+/** One `ty: 6` audio layer. `st` stays 0; the time-remap property carries
+ * the clip position in SECONDS (lottie-web multiplies it by the frame rate
+ * into frames, then seeks by value/rate again) so the audio skips into the
+ * clip when the export range starts after the layer. */
+function audioLayerOf(ctx: Ctx, layer: AudioLayer, refId: string): LottieObject {
+  const ip = Math.max(0, layer.startFrame - ctx.fromFrame)
+  const clipOffset = Math.max(0, ctx.fromFrame - layer.startFrame)
+  const first: ChannelKey = {
+    t: ip,
+    value: [round4(clipOffset / ctx.fps)],
+    easing: LINEAR_EASING
+  }
+  const tm =
+    ip < ctx.frameCount - 1
+      ? propertyFromChannel([
+          first,
+          {
+            t: ctx.frameCount - 1,
+            value: [round4((clipOffset + ctx.frameCount - 1 - ip) / ctx.fps)],
+            easing: null
+          }
+        ])
+      : propertyFromChannel([{ ...first, easing: null }])
+  return {
+    ddd: 0,
+    ty: 6,
+    nm: layer.name,
+    sr: 1,
+    ks: IDENTITY_LAYER_KS(),
+    ao: 0,
+    refId,
+    ip,
+    op: ctx.frameCount,
+    st: 0,
+    bm: 0,
+    au: { lv: { a: 0, k: [round4(layer.volume * 100)] } },
+    tm
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Object layer processing
 // ---------------------------------------------------------------------------
 
@@ -1331,7 +1773,7 @@ function appendCellEntries(ctx: Ctx, layer: DrawingLayer, out: LottieObject[]): 
 // Camera
 // ---------------------------------------------------------------------------
 
-function cameraEasingAt(ctx: Ctx, layer: CameraLayer, f: number): CubicBezierEasing | null {
+function cameraEasingAt(layer: CameraLayer, f: number): CubicBezierEasing | null {
   let sourceIndex = -1
   for (let i = 0; i < layer.keyframes.length; i++) {
     if (layer.keyframes[i].frame > f) break
@@ -1342,9 +1784,6 @@ function cameraEasingAt(ctx: Ctx, layer: CameraLayer, f: number): CubicBezierEas
   if (!source.tween || !layer.keyframes[sourceIndex + 1]) return null
   const next = layer.keyframes[sourceIndex + 1]
   if (f >= next.frame) return null
-  if (source.tween.path === 'smooth') {
-    report(ctx, "A 'smooth' tween path is exported as linear interpolation in the Lottie file.")
-  }
   const mapped = lottieEasingFor(source.tween.easing)
   if (f > source.frame) {
     return splitBezier(mapped, (f - source.frame) / (next.frame - source.frame))
@@ -1352,23 +1791,37 @@ function cameraEasingAt(ctx: Ctx, layer: CameraLayer, f: number): CubicBezierEas
   return mapped
 }
 
+/** True when a `smooth` camera segment intersects the export range — the
+ * camera then bakes per output frame like smooth node paths. */
+function hasSmoothCameraSegment(ctx: Ctx, layer: CameraLayer): boolean {
+  for (let i = 0; i < layer.keyframes.length - 1; i++) {
+    const source = layer.keyframes[i]
+    if (!source.tween || source.tween.path !== 'smooth') continue
+    if (source.frame <= ctx.toFrame && layer.keyframes[i + 1].frame >= ctx.fromFrame) return true
+  }
+  return false
+}
+
 function cameraKeys(ctx: Ctx, layer: CameraLayer): NodeKeys {
   const frames = layer.keyframes.map((keyframe) => keyframe.frame)
-  if (ctx.holdStep > 1) {
-    const keys: KeySpec[] = [{ t: 0, docFrame: ctx.evalFrames[0], easing: null }]
+  if (ctx.holdStep > 1 || hasSmoothCameraSegment(ctx, layer)) {
+    const smoothing = ctx.holdStep === 1
+    const keyEasing = smoothing ? LINEAR_EASING : null
+    const keys: KeySpec[] = [{ t: 0, docFrame: ctx.evalFrames[0], easing: keyEasing }]
     for (let i = 1; i < ctx.frameCount; i++) {
       if (ctx.evalFrames[i] !== ctx.evalFrames[i - 1]) {
-        keys.push({ t: i, docFrame: ctx.evalFrames[i], easing: null })
+        keys.push({ t: i, docFrame: ctx.evalFrames[i], easing: keyEasing })
       }
     }
+    if (smoothing) keys[keys.length - 1] = { ...keys[keys.length - 1], easing: null }
     return { keys, successor: null, ip: 0, op: ctx.frameCount }
   }
   const keys: KeySpec[] = [
-    { t: 0, docFrame: ctx.fromFrame, easing: cameraEasingAt(ctx, layer, ctx.fromFrame) }
+    { t: 0, docFrame: ctx.fromFrame, easing: cameraEasingAt(layer, ctx.fromFrame) }
   ]
   for (const f of frames) {
     if (f > ctx.fromFrame && f <= ctx.toFrame) {
-      keys.push({ t: f - ctx.fromFrame, docFrame: f, easing: cameraEasingAt(ctx, layer, f) })
+      keys.push({ t: f - ctx.fromFrame, docFrame: f, easing: cameraEasingAt(layer, f) })
     }
   }
   const lastKey = keys[keys.length - 1]
@@ -1454,6 +1907,7 @@ export async function buildLottieAnimation(
     fromFrame,
     toFrame,
     frameCount,
+    fps: options.fps,
     holdStep,
     evalFrames,
     deps,
@@ -1461,7 +1915,10 @@ export async function buildLottieAnimation(
     seenDiagnostics: new Set(),
     imageAssets: [],
     assetIdByResource: new Map(),
-    outlineCache: new Map()
+    outlineCache: new Map(),
+    audioAssets: [],
+    audioAssetIdByResource: new Map(),
+    audioFiles: new Map()
   }
 
   const paintOrderEntries: LottieObject[] = []
@@ -1475,11 +1932,12 @@ export async function buildLottieAnimation(
     }
   }
 
+  const audioMode: LottieAudioMode = options.audio ?? 'embed'
+  const audioLayers: LottieObject[] = []
   for (const layer of document.layers) {
-    if (isAudioLayer(layer) && layer.visible && layer.startFrame <= toFrame) {
-      report(ctx, 'Audio is not included in Lottie exports; the exported animation is silent.')
-      break
-    }
+    if (!isAudioLayer(layer) || !layer.visible || layer.startFrame > toFrame) continue
+    const refId = await ensureAudioAsset(ctx, layer, audioMode)
+    if (refId) audioLayers.push(audioLayerOf(ctx, layer, refId))
   }
 
   // Lottie layer 0 is the topmost; the paint-order list is bottom-first.
@@ -1489,7 +1947,7 @@ export async function buildLottieAnimation(
   const camera = cameraLayerOf(document)
   const cameraActive = !!camera && camera.visible && camera.keyframes.length > 0
   let layers = contentLayers
-  const assets: LottieObject[] = [...ctx.imageAssets]
+  const assets: LottieObject[] = [...ctx.imageAssets, ...ctx.audioAssets]
   if (cameraActive && camera && contentLayers.length > 0) {
     const spec = cameraKeys(ctx, camera)
     const precomp: LottieObject = { id: 'precomp_main', layers: contentLayers }
@@ -1498,6 +1956,12 @@ export async function buildLottieAnimation(
     layers = [entry]
     assets.push(precomp)
   }
+
+  // Audio layers sit below all visuals; nothing paints them either way.
+  for (let i = 0; i < audioLayers.length; i++) {
+    audioLayers[i].ind = layers.length + i + 1
+  }
+  layers = [...layers, ...audioLayers]
 
   const lottie: Record<string, unknown> = {
     v: '5.7.4',
@@ -1511,7 +1975,11 @@ export async function buildLottieAnimation(
     assets,
     layers
   }
-  return { lottie, diagnostics: ctx.diagnostics }
+  return {
+    lottie,
+    diagnostics: ctx.diagnostics,
+    ...(ctx.audioFiles.size > 0 ? { files: Object.fromEntries(ctx.audioFiles) } : {})
+  }
 }
 
 /** Deterministic UTF-8 serialization of a Lottie animation (pretty-printed,
@@ -1520,9 +1988,14 @@ export function serializeLottie(lottie: Record<string, unknown>): Uint8Array {
   return strToU8(JSON.stringify(lottie, null, 2))
 }
 
-/** Packs an animation into a dotLottie archive: `manifest.json` plus
- * `animations/animation.json` (the dotLottie 1.0 layout). */
-export function packDotLottie(lottie: Record<string, unknown>, version?: string): Uint8Array {
+/** Packs an animation into a dotLottie archive: `manifest.json`, the
+ * animation, plus side files (audio in `'files'` mode) at their recorded
+ * paths. */
+export function packDotLottie(
+  lottie: Record<string, unknown>,
+  version?: string,
+  files?: Record<string, Uint8Array>
+): Uint8Array {
   const manifest = {
     version: '1.0',
     generator: version ? `OpenAnimator ${version}` : 'OpenAnimator',
@@ -1530,6 +2003,7 @@ export function packDotLottie(lottie: Record<string, unknown>, version?: string)
   }
   return zipSync({
     'manifest.json': strToU8(JSON.stringify(manifest, null, 2)),
-    'animations/animation.json': strToU8(JSON.stringify(lottie, null, 2))
+    'animations/animation.json': strToU8(JSON.stringify(lottie, null, 2)),
+    ...(files ?? {})
   })
 }

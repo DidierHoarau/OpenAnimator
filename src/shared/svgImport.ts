@@ -3,6 +3,8 @@ import { createId } from './document'
 import { groupNodes } from './groups'
 import { MAX_STROKE_DASH_VALUES, cloneNode } from './model'
 import type { Asset, GroupNode, PathNode, PrimitiveNode, SceneNode, StrokeLinecap, StrokeLinejoin, SymbolNode } from './model'
+import { MAX_GRADIENT_STOPS, MIN_GRADIENT_STOPS } from './paint'
+import type { GradientPaint, GradientStop, Paint } from './paint'
 import { normalizePathData, parsePathCommands, pathDataBounds, serializeCommands } from './pathModel'
 import type { PathCommand } from './pathModel'
 
@@ -18,7 +20,9 @@ import type { PathCommand } from './pathModel'
  *
  * Supported: `svg`/`g`, `rect` (incl. rounded corners), `circle`, `ellipse`,
  * `line`, `polyline`, `polygon`, `path` (M/L/H/V/C/S/Q/T/Z, no arcs);
- * `fill`/`stroke` (`none`, `#rgb`, `#rrggbb`), `stroke-width`, `opacity`,
+ * `fill`/`stroke` (`none`, `#rgb`, `#rrggbb`, or a `url(#id)` reference to a
+ * `linearGradient`/`radialGradient` in objectBoundingBox units whose axis the
+ * native gradient model can reproduce), `stroke-width`, `opacity`,
  * `stroke-linecap`, `stroke-linejoin`, `stroke-dasharray` (`none` or up to 16
  * unitless/px values), `stroke-dashoffset`, the same keys in `style`, and
  * `transform`.
@@ -406,10 +410,267 @@ function parseColorValue(value: string): Parsed<string> {
   return { ok: true, value: `#${expanded}` }
 }
 
+// ---------------------------------------------------------------------------
+// Gradients
+// ---------------------------------------------------------------------------
+
+/** Paint value of one attribute or style declaration: a color or a `url(#id)`
+ * gradient reference resolved against the document's definitions. */
+type PaintResolver = (value: string) => Parsed<Paint>
+
+interface GradientDefinition {
+  element: XmlElement
+  kind: 'linear' | 'radial'
+}
+
+/** Extracts the fragment id of a `url(#id)` paint reference; null when the
+ * value is not a `url(…)` paint at all (then it must be a color). */
+function paintUrlId(value: string): Parsed<string> | null {
+  const trimmed = value.trim()
+  if (!/^url\s*\(/i.test(trimmed)) return null
+  const malformed = (): Parsed<string> => ({
+    ok: false,
+    reason: `unsupported paint "${trimmed}" (only local url(#id) references)`
+  })
+  const match = /^url\s*\(\s*(['"]?)([^)'"]*)\1\s*\)$/i.exec(trimmed)
+  if (!match) return malformed()
+  const target = match[2].trim()
+  if (!target.startsWith('#') || target.length === 1) return malformed()
+  return { ok: true, value: target.slice(1) }
+}
+
+/** Collects every `<linearGradient>`/`<radialGradient>` definition in the
+ * document keyed by id (typically inside `<defs>`, but any location works).
+ * A repeated id is recorded as a conflict: it only fails the import when a
+ * paint actually references it. */
+function collectGradientDefinitions(root: XmlElement): Map<string, GradientDefinition | 'duplicate'> {
+  const definitions = new Map<string, GradientDefinition | 'duplicate'>()
+  const visit = (el: XmlElement): void => {
+    if (el.name === 'linearGradient' || el.name === 'radialGradient') {
+      const id = el.attributes.get('id')
+      if (id !== undefined) {
+        if (definitions.has(id)) {
+          definitions.set(id, 'duplicate')
+        } else {
+          definitions.set(id, { element: el, kind: el.name === 'linearGradient' ? 'linear' : 'radial' })
+        }
+      }
+    }
+    for (const child of el.children) visit(child)
+  }
+  visit(root)
+  return definitions
+}
+
+/** ObjectBoundingBox gradient coordinate: a number (already a fraction) or a
+ * percentage converted to a fraction (50% → 0.5). */
+function parseGradientFraction(value: string, what: string): Parsed<number> {
+  const trimmed = value.trim()
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?%?$/.test(trimmed)) {
+    return { ok: false, reason: `unsupported value "${value}" for ${what} (only numbers or percentages)` }
+  }
+  const percent = trimmed.endsWith('%')
+  const number = Number(percent ? trimmed.slice(0, -1) : trimmed)
+  if (!Number.isFinite(number)) {
+    return { ok: false, reason: `unsupported value "${value}" for ${what}` }
+  }
+  return { ok: true, value: percent ? number / 100 : number }
+}
+
+function gradientFraction(el: XmlElement, name: string, fallback: number): Parsed<number> {
+  const raw = el.attributes.get(name)
+  if (raw === undefined) return { ok: true, value: fallback }
+  return parseGradientFraction(raw, name)
+}
+
+/** One `<stop>`: offset (number or %, default 0), stop-color (hex, default
+ * black) and stop-opacity (number or %, clamped, default 1 — stored as
+ * `alpha` only when it is not 1). */
+function parseGradientStop(el: XmlElement): Parsed<GradientStop> {
+  for (const name of el.attributes.keys()) {
+    if (name === 'xmlns' || name.includes(':') || name.startsWith('data-')) continue
+    if (name === 'id' || name === 'offset' || name === 'stop-color' || name === 'stop-opacity') continue
+    return { ok: false, reason: `unsupported attribute "${name}" on <stop>` }
+  }
+  if (el.children.length > 0) return { ok: false, reason: 'unexpected content inside <stop>' }
+  let offset = 0
+  const offsetRaw = el.attributes.get('offset')
+  if (offsetRaw !== undefined) {
+    const parsed = parseGradientFraction(offsetRaw, 'stop offset')
+    if (!parsed.ok) return parsed
+    if (parsed.value < 0 || parsed.value > 1) {
+      return { ok: false, reason: `gradient stop offset "${offsetRaw}" is outside 0..1` }
+    }
+    offset = parsed.value
+  }
+  let color = '#000000'
+  const colorRaw = el.attributes.get('stop-color')
+  if (colorRaw !== undefined) {
+    const parsed = parseColorValue(colorRaw)
+    if (!parsed.ok) return parsed
+    if (parsed.value === 'none') {
+      return { ok: false, reason: `unsupported stop-color "${colorRaw}" (a stop requires a color)` }
+    }
+    color = parsed.value
+  }
+  const stop: GradientStop = { offset, color }
+  const opacityRaw = el.attributes.get('stop-opacity')
+  if (opacityRaw !== undefined) {
+    const parsed = parseGradientFraction(opacityRaw, 'stop-opacity')
+    if (!parsed.ok) return parsed
+    const alpha = Math.min(1, Math.max(0, parsed.value))
+    if (alpha !== 1) stop.alpha = alpha
+  }
+  return { ok: true, value: stop }
+}
+
+const GRADIENT_GEOMETRY_ATTRIBUTES = {
+  linear: ['x1', 'y1', 'x2', 'y2'],
+  radial: ['cx', 'cy', 'r', 'fx', 'fy']
+} as const
+
+/**
+ * Converts one referenced gradient definition into a native paint. Only the
+ * faithful subset is accepted — href inheritance, gradientTransform,
+ * spreadMethod ≠ pad, userSpaceOnUse, focal points and linear axes that do
+ * not match the native centered full-span model all fail, so the caller can
+ * fall back to rasterizing.
+ */
+function parseGradientDefinition(id: string, definition: GradientDefinition): Parsed<GradientPaint> {
+  const { element, kind } = definition
+  const tag = kind === 'linear' ? 'linearGradient' : 'radialGradient'
+  const href = element.attributes.has('href')
+    ? 'href'
+    : element.attributes.has('xlink:href')
+      ? 'xlink:href'
+      : null
+  if (href !== null) {
+    return { ok: false, reason: `unsupported ${href} on <${tag}> (gradient inheritance is not supported)` }
+  }
+  if (element.attributes.has('gradientTransform')) {
+    return { ok: false, reason: `unsupported gradientTransform on <${tag}>` }
+  }
+  const spreadRaw = element.attributes.get('spreadMethod')
+  if (spreadRaw !== undefined && spreadRaw.trim() !== 'pad') {
+    return { ok: false, reason: `unsupported spreadMethod "${spreadRaw}" on <${tag}> (only "pad" is supported)` }
+  }
+  const unitsRaw = element.attributes.get('gradientUnits')
+  if (unitsRaw !== undefined && unitsRaw.trim() !== 'objectBoundingBox') {
+    return {
+      ok: false,
+      reason: `unsupported gradientUnits "${unitsRaw}" on <${tag}> (only objectBoundingBox is supported)`
+    }
+  }
+  const geometry: readonly string[] = GRADIENT_GEOMETRY_ATTRIBUTES[kind]
+  for (const name of element.attributes.keys()) {
+    if (name === 'xmlns' || name.includes(':') || name.startsWith('data-')) continue
+    if (name === 'id' || name === 'spreadMethod' || name === 'gradientUnits' || geometry.includes(name)) continue
+    return { ok: false, reason: `unsupported attribute "${name}" on <${tag}>` }
+  }
+  const stops: GradientStop[] = []
+  for (const child of element.children) {
+    if (child.name !== 'stop') {
+      return { ok: false, reason: `unsupported element <${child.name}> inside <${tag}>` }
+    }
+    const stop = parseGradientStop(child)
+    if (!stop.ok) return stop
+    stops.push(stop.value)
+  }
+  if (stops.length < MIN_GRADIENT_STOPS) {
+    return { ok: false, reason: `gradient "${id}" has fewer than ${MIN_GRADIENT_STOPS} stops` }
+  }
+  if (stops.length > MAX_GRADIENT_STOPS) {
+    return { ok: false, reason: `gradient "${id}" has more than ${MAX_GRADIENT_STOPS} stops` }
+  }
+  if (kind === 'radial') {
+    const cx = gradientFraction(element, 'cx', 0.5)
+    if (!cx.ok) return cx
+    const cy = gradientFraction(element, 'cy', 0.5)
+    if (!cy.ok) return cy
+    const r = gradientFraction(element, 'r', 0.5)
+    if (!r.ok) return r
+    if (r.value <= 0) {
+      return { ok: false, reason: `radial gradient "${id}" has a non-positive radius` }
+    }
+    const focal = (name: 'fx' | 'fy', center: number): string | null => {
+      const raw = element.attributes.get(name)
+      if (raw === undefined) return null
+      const parsed = parseGradientFraction(raw, name)
+      if (!parsed.ok) return parsed.reason
+      if (Math.abs(parsed.value - center) > 0.01) {
+        return `radial gradient "${id}" has a focal point, which is not supported`
+      }
+      return null
+    }
+    const fxError = focal('fx', cx.value)
+    if (fxError) return { ok: false, reason: fxError }
+    const fyError = focal('fy', cy.value)
+    if (fyError) return { ok: false, reason: fyError }
+    return { ok: true, value: { type: 'radial', cx: cx.value, cy: cy.value, r: r.value, stops } }
+  }
+  const x1 = gradientFraction(element, 'x1', 0)
+  if (!x1.ok) return x1
+  const y1 = gradientFraction(element, 'y1', 0)
+  if (!y1.ok) return y1
+  const x2 = gradientFraction(element, 'x2', 1)
+  if (!x2.ok) return x2
+  const y2 = gradientFraction(element, 'y2', 0)
+  if (!y2.ok) return y2
+  const dx = x2.value - x1.value
+  const dy = y2.value - y1.value
+  const length = Math.hypot(dx, dy)
+  if (length <= 1e-9) {
+    return { ok: false, reason: `linear gradient "${id}" has a zero-length vector` }
+  }
+  // The native model renders the canonical axis (0.5−0.5cosθ, 0.5−0.5sinθ) →
+  // (0.5+0.5cosθ, 0.5+0.5sinθ); a source axis renders identically iff it is
+  // parallel and its projection interval onto the unit direction matches.
+  const ux = dx / length
+  const uy = dy / length
+  const p1 = x1.value * ux + y1.value * uy
+  const expected = 0.5 * (ux + uy) - 0.5
+  if (Math.abs(p1 - expected) > 0.02 || Math.abs(length - 1) > 0.02) {
+    return {
+      ok: false,
+      reason: `unsupported linear gradient "${id}" (only centered full-span axes can be represented natively)`
+    }
+  }
+  const angle = (Math.atan2(dy, dx) * 180) / Math.PI
+  return { ok: true, value: { type: 'linear', angle, stops } }
+}
+
+/** Resolves attribute/style paint values, parsing each referenced gradient at
+ * most once per import. */
+function createPaintResolver(
+  definitions: Map<string, GradientDefinition | 'duplicate'>
+): PaintResolver {
+  const cache = new Map<string, Parsed<GradientPaint>>()
+  return (value) => {
+    const reference = paintUrlId(value)
+    if (reference === null) return parseColorValue(value)
+    if (!reference.ok) return reference
+    const id = reference.value
+    const definition = definitions.get(id)
+    if (definition === undefined) {
+      return { ok: false, reason: `unsupported paint "${value.trim()}" (no gradient with id "${id}")` }
+    }
+    if (definition === 'duplicate') {
+      return { ok: false, reason: `unsupported paint "${value.trim()}" (duplicate gradient id "${id}")` }
+    }
+    let parsed = cache.get(id)
+    if (parsed === undefined) {
+      parsed = parseGradientDefinition(id, definition)
+      cache.set(id, parsed)
+    }
+    if (!parsed.ok) return { ok: false, reason: parsed.reason }
+    return { ok: true, value: parsed.value }
+  }
+}
+
 /** Resolved paint state of one element (inherited from its ancestors). */
 interface Appearance {
-  fill: string
-  stroke: string
+  fill: Paint
+  stroke: Paint
   strokeWidth: number
   opacity: number
   strokeLinecap?: StrokeLinecap
@@ -455,8 +716,9 @@ function parseStyleDeclarations(value: string): Parsed<Map<string, string>> {
 /** Resolves the element's paint state over its inherited base. Presentation
  * attributes are applied first, then the `style` attribute (CSS wins).
  * `opacity` is folded multiplicatively into the inherited value; the
- * stroke-style fields inherit like the paints. */
-function resolveAppearance(el: XmlElement, base: Appearance): Parsed<Appearance> {
+ * stroke-style fields inherit like the paints. Paints are colors or
+ * `url(#id)` gradient references resolved through `resolvePaint`. */
+function resolveAppearance(el: XmlElement, base: Appearance, resolvePaint: PaintResolver): Parsed<Appearance> {
   let fill = base.fill
   let stroke = base.stroke
   let strokeWidth = base.strokeWidth
@@ -467,7 +729,7 @@ function resolveAppearance(el: XmlElement, base: Appearance): Parsed<Appearance>
   let strokeDashoffset = base.strokeDashoffset
 
   const applyPaint = (key: 'fill' | 'stroke', raw: string): string | null => {
-    const parsed = parseColorValue(raw)
+    const parsed = resolvePaint(raw)
     if (!parsed.ok) return parsed.reason
     if (key === 'fill') fill = parsed.value
     else stroke = parsed.value
@@ -913,6 +1175,9 @@ function materializeShape(
 // ---------------------------------------------------------------------------
 
 const IGNORED_ELEMENTS = new Set(['title', 'desc', 'metadata'])
+/** Elements that never render directly: `<defs>` content only draws through
+ * `<use>` (unsupported) and paint servers/`<stop>` are only referenced. */
+const NEVER_DRAWN_ELEMENTS = new Set(['defs', 'linearGradient', 'radialGradient', 'stop'])
 const ROOT_ATTRIBUTES = ['width', 'height', 'viewBox', 'preserveAspectRatio']
 
 /** Viewport matrix of the root `<svg>`: viewBox mapping (xMidYMid meet by
@@ -969,7 +1234,8 @@ function visitShape(
   attributes: readonly string[],
   matrix: Matrix,
   appearance: Appearance,
-  out: SceneNode[]
+  out: SceneNode[],
+  resolvePaint: PaintResolver
 ): string | null {
   const attributeError = checkAttributes(el, attributes)
   if (attributeError) return attributeError
@@ -978,7 +1244,7 @@ function visitShape(
       return `unexpected content inside <${el.name}>`
     }
   }
-  const resolved = resolveAppearance(el, appearance)
+  const resolved = resolveAppearance(el, appearance, resolvePaint)
   if (!resolved.ok) return resolved.reason
   const next = transformOf(el, matrix)
   if (!next.ok) return next.reason
@@ -997,33 +1263,38 @@ function visitElement(
   matrix: Matrix,
   appearance: Appearance,
   out: SceneNode[],
-  depth: number
+  depth: number,
+  resolvePaint: PaintResolver
 ): string | null {
   if (depth > MAX_DEPTH) return 'the SVG is nested too deeply'
   if (IGNORED_ELEMENTS.has(el.name)) return null
+  // Definition containers and paint servers never draw directly (a shape
+  // inside <defs> is only rendered through <use>, which is unsupported).
+  if (NEVER_DRAWN_ELEMENTS.has(el.name)) return null
   if (el.name === 'svg') return 'nested <svg> elements are not supported'
   if (el.name === 'g') {
     const attributeError = checkAttributes(el, [])
     if (attributeError) return attributeError
-    const resolved = resolveAppearance(el, appearance)
+    const resolved = resolveAppearance(el, appearance, resolvePaint)
     if (!resolved.ok) return resolved.reason
     const next = transformOf(el, matrix)
     if (!next.ok) return next.reason
     for (const child of el.children) {
-      const error = visitElement(child, next.value, resolved.value, out, depth + 1)
+      const error = visitElement(child, next.value, resolved.value, out, depth + 1, resolvePaint)
       if (error) return error
     }
     return null
   }
   const attributes = SHAPE_ATTRIBUTES[el.name]
   if (!attributes) return `unsupported element <${el.name}>`
-  return visitShape(el, attributes, matrix, appearance, out)
+  return visitShape(el, attributes, matrix, appearance, out, resolvePaint)
 }
 
 function importRoot(root: XmlElement, out: SceneNode[]): string | null {
   const attributeError = checkAttributes(root, ROOT_ATTRIBUTES)
   if (attributeError) return attributeError
-  const resolved = resolveAppearance(root, DEFAULT_APPEARANCE)
+  const resolvePaint = createPaintResolver(collectGradientDefinitions(root))
+  const resolved = resolveAppearance(root, DEFAULT_APPEARANCE, resolvePaint)
   if (!resolved.ok) return resolved.reason
   const viewport = rootViewportMatrix(root)
   if (!viewport.ok) return viewport.reason
@@ -1032,7 +1303,7 @@ function importRoot(root: XmlElement, out: SceneNode[]): string | null {
   if (!transform.ok) return transform.reason
   matrix = multiply(transform.value, matrix)
   for (const child of root.children) {
-    const error = visitElement(child, matrix, resolved.value, out, 1)
+    const error = visitElement(child, matrix, resolved.value, out, 1, resolvePaint)
     if (error) return error
   }
   return null

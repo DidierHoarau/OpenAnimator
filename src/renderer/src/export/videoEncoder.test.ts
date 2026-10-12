@@ -120,6 +120,8 @@ const mediabunny = vi.hoisted(() => {
     Output,
     WebMOutputFormat,
     Mp4OutputFormat,
+    QUALITY_LOW: 'low',
+    QUALITY_MEDIUM: 'medium',
     QUALITY_HIGH: 'high',
     getFirstEncodableVideoCodec: vi.fn(
       async (codecs: string[], options: unknown): Promise<string | null> => {
@@ -150,6 +152,10 @@ function options(overrides: Partial<ExportOptions> = {}): ExportOptions {
     fromFrame: 0,
     toFrame: 2,
     transparent: false,
+    gifPalette: 'perFrame',
+    gifDither: false,
+    gifLoop: 0,
+    videoQuality: 'high',
     ...overrides
   }
 }
@@ -279,6 +285,25 @@ describe('encodeVideo', () => {
     expect(result.audioIncluded).toBe(false)
     expect(mediabunny.state.audioCodecQueries).toHaveLength(0)
     expect(mediabunny.state.outputs.at(-1)!.audioTracks).toHaveLength(0)
+  })
+
+  it('maps the quality tier onto the video and audio encoder presets', async () => {
+    mediabunny.state.videoCodecs = ['vp9', 'vp9']
+    mediabunny.state.audioCodecs = ['opus', 'opus']
+    const buffer = mix()
+    await encodeVideo(options({ videoQuality: 'low' }), SIZE, vi.fn(), { canceled: false }, {
+      buffer
+    })
+    const low = mediabunny.state.outputs.at(-1)!
+    expect(low.videoTracks[0].source.options).toEqual({ codec: 'vp9', quality: 'low' })
+    expect(low.audioTracks[0].options).toEqual({ codec: 'opus', quality: 'low' })
+
+    await encodeVideo(options({ videoQuality: 'medium' }), SIZE, vi.fn(), { canceled: false }, {
+      buffer
+    })
+    const medium = mediabunny.state.outputs.at(-1)!
+    expect(medium.videoTracks[0].source.options).toEqual({ codec: 'vp9', quality: 'medium' })
+    expect(medium.audioTracks[0].options).toEqual({ codec: 'opus', quality: 'medium' })
   })
 
   it('negotiates the mp4 container and its audio candidates for mp4 exports', async () => {

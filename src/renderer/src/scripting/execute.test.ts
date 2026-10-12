@@ -5,13 +5,23 @@ import type { LibraryListResult } from '@shared/api'
 import { isAudioLayer, isObjectLayer } from '@shared/model'
 import type { Asset, DrawingLayer, PrimitiveNode } from '@shared/model'
 import { DEFAULT_PREFERENCES } from '@shared/preferences'
+import type { ExportOptions } from '@shared/exportOptions'
 import { createStarterDocument } from '@shared/starterDocument'
 import { SCRIPT_EXAMPLES } from '@shared/scripting/examples'
 import { validateScriptPayload } from '@shared/scripting/commands'
 
 import { Editor } from '../editor'
 import { executeScriptCommands } from './execute'
-import type { ScriptLibraryBridge, ScriptPreferencesBridge } from './execute'
+import type {
+  ScriptExportBridge,
+  ScriptGlobalPaletteBridge,
+  ScriptImportAudioBridge,
+  ScriptImportAudioRequest,
+  ScriptImportImageBridge,
+  ScriptImportImageRequest,
+  ScriptLibraryBridge,
+  ScriptPreferencesBridge
+} from './execute'
 
 const AUDIO_RESOURCE = 'a1b2c3d4'.repeat(8)
 const AUDIO_BYTES = new Uint8Array([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
@@ -1298,5 +1308,233 @@ describe('executeScriptCommands', () => {
     expect(noStore.applied).toBe(0)
     expect(noStore.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
     expect(noStore.issues[0].message).toContain('no preference store')
+  })
+
+  it('export runs through the bridge with sanitized options and reports the path', async () => {
+    const editor = createEditor()
+    const calls: Array<{ options: ExportOptions; out?: string }> = []
+    const bridge: ScriptExportBridge = async (options, out) => {
+      calls.push({ options, out })
+      return { ok: true, path: out ?? '/tmp/picked.gif' }
+    }
+    const result = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          {
+            op: 'export',
+            format: 'gif',
+            out: '/tmp/bounce.gif',
+            fromFrame: 10,
+            toFrame: 2,
+            scale: 2,
+            fps: 12,
+            transparent: true,
+            gifPalette: 'global',
+            gifDither: true,
+            gifLoop: 0,
+            videoQuality: 'high'
+          }
+        ]
+      }),
+      { export: bridge }
+    )
+    expect(result.applied).toBe(1)
+    expect(result.issues).toHaveLength(1)
+    expect(result.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
+    expect(result.issues[0].message).toContain('/tmp/bounce.gif')
+    expect(calls).toHaveLength(1)
+    expect(calls[0].out).toBe('/tmp/bounce.gif')
+    // Sanitized: the frame range is reordered, size/rate/alpha carried over,
+    // and the GIF/video keys pass straight through.
+    expect(calls[0].options).toMatchObject({
+      format: 'gif',
+      fromFrame: 2,
+      toFrame: 10,
+      scale: 2,
+      fps: 12,
+      transparent: true,
+      gifPalette: 'global',
+      gifDither: true,
+      gifLoop: 0,
+      videoQuality: 'high'
+    })
+
+    // Bridge failures surface the error text; missing bridges fail cleanly.
+    const failed = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'export', format: 'webm' }] }),
+      { export: async () => ({ ok: false, error: 'disk is full' }) }
+    )
+    expect(failed.applied).toBe(0)
+    expect(failed.issues[0]).toMatchObject({ index: 0, severity: 'error' })
+    expect(failed.issues[0].message).toContain('disk is full')
+
+    const missing = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'export', format: 'webm' }] })
+    )
+    expect(missing.applied).toBe(0)
+    expect(missing.issues[0]).toMatchObject({ index: 0, severity: 'error' })
+    expect(missing.issues[0].message).toContain('not available')
+  })
+
+  it('importImage and importAudio delegate to their bridges and report ids', async () => {
+    const editor = createEditor()
+    const imageRequests: ScriptImportImageRequest[] = []
+    const imageBridge: ScriptImportImageBridge = async (request) => {
+      imageRequests.push(request)
+      return { ok: true, nodeId: 'node-7' }
+    }
+    const audioRequests: ScriptImportAudioRequest[] = []
+    const audioBridge: ScriptImportAudioBridge = async (request) => {
+      audioRequests.push(request)
+      return { ok: true, layerId: 'layer-9' }
+    }
+    const result = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          {
+            op: 'importImage',
+            frame: 4,
+            layerId: 'l1',
+            at: { x: 10, y: 20 },
+            width: 100,
+            height: 50,
+            name: 'logo.png'
+          },
+          { op: 'importImage' },
+          { op: 'importAudio', startFrame: 6 }
+        ]
+      }),
+      { importImage: imageBridge, importAudio: audioBridge }
+    )
+    expect(result.applied).toBe(3)
+    expect(result.issues.map((entry) => entry.severity)).toEqual(['warning', 'warning', 'warning'])
+    expect(result.issues[0].message).toContain('node-7')
+    expect(result.issues[2].message).toContain('layer-9')
+    expect(imageRequests).toEqual([
+      { frame: 4, layerId: 'l1', at: { x: 10, y: 20 }, width: 100, height: 50, name: 'logo.png' },
+      {}
+    ])
+    expect(audioRequests).toEqual([{ startFrame: 6 }])
+
+    // Bridge errors surface their text; missing bridges fail cleanly.
+    const failed = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'importImage' }] }),
+      { importImage: async () => ({ ok: false, error: 'no image picked' }) }
+    )
+    expect(failed.applied).toBe(0)
+    expect(failed.issues[0]).toMatchObject({ index: 0, severity: 'error' })
+    expect(failed.issues[0].message).toContain('no image picked')
+
+    const missing = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'importImage' }, { op: 'importAudio' }] })
+    )
+    expect(missing.applied).toBe(0)
+    expect(missing.issues).toHaveLength(2)
+    expect(missing.issues.every((entry) => entry.severity === 'error')).toBe(true)
+    expect(missing.issues[0].message).toContain('not available')
+    expect(missing.issues[1].message).toContain('not available')
+  })
+
+  it('setOnionSkin and setBrush drive the session display options', async () => {
+    const editor = createEditor()
+    const result = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'setOnionSkin', enabled: true, before: 3, after: 1 },
+          { op: 'setBrush', color: '#ff8800', size: 24, opacity: 0.4 }
+        ]
+      })
+    )
+    expect(result.issues).toEqual([])
+    expect(result.applied).toBe(2)
+    expect(editor.onionSkin).toBe(true)
+    expect(editor.onionBefore).toBe(3)
+    expect(editor.onionAfter).toBe(1)
+    expect(editor.brushColor).toBe('#ff8800')
+    expect(editor.brushSize).toBe(24)
+    expect(editor.brushOpacity).toBe(0.4)
+
+    // `enabled: false` toggles back off when onion skinning is on.
+    const off = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setOnionSkin', enabled: false }] })
+    )
+    expect(off.issues).toEqual([])
+    expect(off.applied).toBe(1)
+    expect(editor.onionSkin).toBe(false)
+  })
+
+  it('setGlobalPalette and addGlobalPaletteColor go through the palette bridge', async () => {
+    const editor = createEditor()
+    let colors: string[] = []
+    const set = vi.fn(async (next: string[]) => {
+      colors = next
+    })
+    const get = vi.fn(async () => [...colors])
+    const bridge: ScriptGlobalPaletteBridge = { get, set }
+
+    const replaced = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setGlobalPalette', colors: ['#111111', '#222222'] }] }),
+      { globalPalette: bridge }
+    )
+    expect(replaced.issues).toEqual([])
+    expect(replaced.applied).toBe(1)
+    expect(colors).toEqual(['#111111', '#222222'])
+
+    // Appending normalizes the color to lowercase #rrggbb.
+    const appended = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'addGlobalPaletteColor', color: '#AABBCC' }] }),
+      { globalPalette: bridge }
+    )
+    expect(appended.issues).toEqual([])
+    expect(appended.applied).toBe(1)
+    expect(colors).toEqual(['#111111', '#222222', '#aabbcc'])
+
+    // Duplicates are rejected case-insensitively, without writing.
+    const duplicate = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'addGlobalPaletteColor', color: '#aabbcc' }] }),
+      { globalPalette: bridge }
+    )
+    expect(duplicate.applied).toBe(0)
+    expect(duplicate.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
+    expect(duplicate.issues[0].message).toContain('already')
+    expect(set).toHaveBeenCalledTimes(2)
+
+    // The 48-color cap rejects without writing.
+    colors = Array.from({ length: 48 }, (_, index) => `#${index.toString(16).padStart(6, '0')}`)
+    const full = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'addGlobalPaletteColor', color: '#ffffff' }] }),
+      { globalPalette: bridge }
+    )
+    expect(full.applied).toBe(0)
+    expect(full.issues[0]).toMatchObject({ index: 0, severity: 'error' })
+    expect(full.issues[0].message).toContain('full')
+    expect(set).toHaveBeenCalledTimes(2)
+
+    // Without a bridge both palette commands fail cleanly.
+    const missing = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'setGlobalPalette', colors: ['#ffffff'] },
+          { op: 'addGlobalPaletteColor', color: '#ffffff' }
+        ]
+      })
+    )
+    expect(missing.applied).toBe(0)
+    expect(missing.issues).toHaveLength(2)
+    expect(missing.issues.every((entry) => entry.severity === 'error')).toBe(true)
+    expect(missing.issues[0].message).toContain('not available')
   })
 })

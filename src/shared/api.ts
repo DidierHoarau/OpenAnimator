@@ -28,6 +28,7 @@ export const APP_CLOSE_REQUEST_CHANNEL = 'openanimator:close-request'
 export const APP_CLOSE_RESPONSE_CHANNEL = 'openanimator:close-response'
 
 import type { AnimatorDocument, Asset } from './model'
+import type { ExportPresetsData } from './exportPresets'
 import type { FontEmbeddingPolicy } from './fontPolicy'
 import type { AppPreferences } from './preferences'
 import type { RecoveryInfo } from './recovery'
@@ -56,6 +57,8 @@ export const EXPORT_STREAM_COMMIT_CHANNEL = 'openanimator:export-stream-commit'
 export const PALETTE_GET_CHANNEL = 'openanimator:palette-get'
 export const PALETTE_SET_CHANNEL = 'openanimator:palette-set'
 export const PALETTE_IMPORT_CHANNEL = 'openanimator:palette-import'
+export const EXPORT_PRESETS_GET_CHANNEL = 'openanimator:export-presets-get'
+export const EXPORT_PRESETS_SET_CHANNEL = 'openanimator:export-presets-set'
 export const FONT_LIST_CHANNEL = 'openanimator:font-list'
 export const FONT_READ_CHANNEL = 'openanimator:font-read'
 export const FONT_POLICY_CHANNEL = 'openanimator:font-policy'
@@ -198,6 +201,11 @@ export interface OpenAnimatorApi {
   saveGlobalPalette(colors: string[]): Promise<boolean>
   /** Asks the user for a GIMP palette (`.gpl`) file and reads its text. */
   importPaletteFile(): Promise<PaletteImportResult>
+  /** Reads the persistent export presets (named option sets + last-used). */
+  loadExportPresets(): Promise<ExportPresetsData>
+  /** Replaces the persistent export presets (sanitized and capped by the
+   * main process). */
+  saveExportPresets(data: ExportPresetsData): Promise<boolean>
   /** Lists installed system font families and their available weights. */
   listSystemFonts(): Promise<SystemFont[]>
   /** Reads the installed face nearest to (family, weight, style) as raw font

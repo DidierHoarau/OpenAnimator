@@ -16,6 +16,8 @@ import {
   DOCUMENT_SAVE_AS_CHANNEL,
   DOCUMENT_SAVE_TO_CHANNEL,
   EXPORT_PICK_PATH_CHANNEL,
+  EXPORT_PRESETS_GET_CHANNEL,
+  EXPORT_PRESETS_SET_CHANNEL,
   EXPORT_STREAM_COMMIT_CHANNEL,
   EXPORT_STREAM_OPEN_CHANNEL,
   EXPORT_STREAM_WRITE_CHANNEL,
@@ -74,6 +76,8 @@ const api: OpenAnimatorApi = {
   loadGlobalPalette: () => ipcRenderer.invoke(PALETTE_GET_CHANNEL),
   saveGlobalPalette: (colors) => ipcRenderer.invoke(PALETTE_SET_CHANNEL, colors),
   importPaletteFile: () => ipcRenderer.invoke(PALETTE_IMPORT_CHANNEL),
+  loadExportPresets: () => ipcRenderer.invoke(EXPORT_PRESETS_GET_CHANNEL),
+  saveExportPresets: (data) => ipcRenderer.invoke(EXPORT_PRESETS_SET_CHANNEL, data),
   listSystemFonts: () => ipcRenderer.invoke(FONT_LIST_CHANNEL),
   readSystemFont: (family, weight, italic) =>
     ipcRenderer.invoke(FONT_READ_CHANNEL, family, weight, italic),

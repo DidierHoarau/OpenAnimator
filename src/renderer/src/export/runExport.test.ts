@@ -2,9 +2,10 @@
 import { strFromU8, unzipSync } from 'fflate'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createDocument, createDrawingLayer } from '@shared/document'
+import { createAudioLayer, createDocument, createDrawingLayer } from '@shared/document'
 import type { ExportOptions } from '@shared/exportOptions'
 import { createIncrementalGifEncoder } from '@shared/gifEncode'
+import type { GifEncodeOptions } from '@shared/gifEncode'
 import type { TextNode } from '@shared/model'
 import { Editor } from '../editor'
 
@@ -143,8 +144,23 @@ function options(overrides: Partial<ExportOptions> = {}): ExportOptions {
     fromFrame: 0,
     toFrame: 1,
     transparent: true,
+    gifPalette: 'perFrame',
+    gifDither: false,
+    gifLoop: 0,
+    videoQuality: 'high',
     ...overrides
   }
+}
+
+/** First index of `needle` inside `haystack`, or -1. */
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array): number {
+  outer: for (let i = 0; i + needle.length <= haystack.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer
+    }
+    return i
+  }
+  return -1
 }
 
 describe('runExport', () => {
@@ -489,6 +505,81 @@ describe('runExport — vector and spritesheet formats', () => {
   })
 })
 
+describe('runExport — GIF options and Lottie audio resources', () => {
+  it('threads the palette, dithering and loop choices into the GIF encoder', async () => {
+    const captures: Array<Partial<GifEncodeOptions> | undefined> = []
+    const deps = fakeDeps({
+      createGifEncodeClient: (gifOptions) => {
+        captures.push(gifOptions)
+        const encoder = createIncrementalGifEncoder(gifOptions)
+        return Promise.resolve({
+          addFrame: (frame) => {
+            encoder.addFrame(frame)
+            return Promise.resolve()
+          },
+          finish: () => Promise.resolve(encoder.finish()),
+          dispose: () => undefined
+        })
+      }
+    })
+    const result = await runExport(
+      drawingEditor(),
+      options({ format: 'gif', gifPalette: 'global', gifDither: true, gifLoop: 3 }),
+      deps,
+      { canceled: false }
+    )
+
+    expect(result).toBe(true)
+    expect(captures).toEqual([{ palette: 'global', dither: true, loop: 3 }])
+    // The loop choice lands in the NETSCAPE extension of the encoded file.
+    const netscape = new Uint8Array([
+      0x21, 0xff, 0x0b, 0x4e, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2e, 0x30, 0x03,
+      0x01, 0x03, 0x00
+    ])
+    expect(indexOfBytes(deps.written[0].bytes, netscape)).toBeGreaterThan(-1)
+  })
+
+  it('embeds audio as dotLottie side files and reports unresolvable resources', async () => {
+    const editor = drawingEditor()
+    editor.document.layers.push(createAudioLayer('res-song', 'song'))
+    const deps = fakeDeps({
+      appVersion: () => Promise.resolve('9.9.9'),
+      resolveResourceBytes: () =>
+        Promise.resolve({ bytes: new Uint8Array([1, 2, 3, 4]), ext: 'mp3' })
+    })
+    const result = await runExport(
+      editor,
+      options({ format: 'dotlottie' }),
+      deps,
+      { canceled: false }
+    )
+
+    expect(result).toBe(true)
+    const entries = unzipSync(deps.written[0].bytes)
+    expect(Array.from(entries['audio/aud_1.mp3'])).toEqual([1, 2, 3, 4])
+    const animation = JSON.parse(strFromU8(entries['animations/animation.json'])) as {
+      layers: Array<{ ty: number; refId?: string }>
+      assets: Array<{ id: string; u: string; p: string; e: number }>
+    }
+    const audioLayer = animation.layers.find((layer) => layer.ty === 6)
+    expect(audioLayer).toBeDefined()
+    expect(animation.assets).toContainEqual({ id: 'aud_1', u: 'audio/', p: 'aud_1.mp3', e: 0 })
+  })
+
+  it('keeps a missing audio resource out of the Lottie JSON with a diagnostic', async () => {
+    const editor = drawingEditor()
+    editor.document.layers.push(createAudioLayer('res-gone', 'song'))
+    const deps = fakeDeps({ resolveResourceBytes: () => Promise.resolve(null) })
+    const result = await runExport(editor, options({ format: 'lottie' }), deps, { canceled: false })
+
+    expect(result).toBe(true)
+    const parsed = JSON.parse(strFromU8(deps.written[0].bytes)) as { layers: unknown[] }
+    expect(parsed.layers.every((layer) => (layer as { ty: number }).ty !== 6)).toBe(true)
+    expect(deps.messages).toEqual(['Exported to /tmp/out (1 export diagnostic)'])
+    expect(deps.diagnostics[0][0]).toContain('res-gone')
+  })
+})
+
 describe('createDefaultExportRunnerDeps', () => {
   it('wires every dependency to the window.api surface', async () => {
     const api = {
@@ -529,6 +620,7 @@ describe('createDefaultExportRunnerDeps', () => {
 
       expect(await deps.appVersion?.()).toBe('1.2.3')
       expect(await deps.resolveResourceDataUrl('missing')).toBeNull()
+      expect(await deps.resolveResourceBytes?.('missing')).toBeNull()
 
       const client = await deps.createGifEncodeClient?.()
       if (!client) throw new Error('no GIF client')

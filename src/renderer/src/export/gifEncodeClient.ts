@@ -1,5 +1,5 @@
-import { createIncrementalGifEncoder } from '@shared/gifEncode'
-import type { GifFrame } from '@shared/gifEncode'
+import { createIncrementalGifEncoder, normalizeGifOptions } from '@shared/gifEncode'
+import type { GifEncodeOptions, GifFrame } from '@shared/gifEncode'
 
 /** Frame-at-a-time GIF encoder used by the export runner; `dispose()` frees
  * the worker (or is a no-op for the inline fallback) after finish or a
@@ -18,26 +18,39 @@ type WorkerReply =
 /**
  * Creates a GIF encoder client: a real worker when the environment provides
  * `Worker` (the export UI — keeps encoding off the render thread), the inline
- * incremental encoder otherwise (unit tests, degraded environments). Calls
- * must be issued sequentially — the runner awaits every frame — so replies
- * need no correlation ids.
+ * incremental encoder otherwise (unit tests, degraded environments). The
+ * resolved options are sent to the worker before the first frame (and applied
+ * by the inline fallback). Calls must be issued sequentially — the runner
+ * awaits every frame — so replies need no correlation ids.
  */
-export async function createGifEncodeClient(): Promise<GifEncodeClient> {
-  if (typeof Worker === 'undefined') return createInlineClient()
+export async function createGifEncodeClient(
+  options?: Partial<GifEncodeOptions>
+): Promise<GifEncodeClient> {
+  const resolved = normalizeGifOptions(options)
+  if (typeof Worker === 'undefined') return createInlineClient(resolved)
   try {
     const { default: GifEncodeWorker } = await import('./gifEncodeWorker?worker')
-    return createWorkerClient(new GifEncodeWorker())
+    return createWorkerClient(new GifEncodeWorker(), resolved)
   } catch {
     // Worker bundling unavailable (or blocked): encoding still works inline.
-    return createInlineClient()
+    return createInlineClient(resolved)
   }
 }
 
-function createWorkerClient(worker: Worker): GifEncodeClient {
+function createWorkerClient(worker: Worker, options: GifEncodeOptions): GifEncodeClient {
   let pendingFrame: { resolve: () => void; reject: (error: Error) => void } | null = null
   let pendingDone: { resolve: (bytes: Uint8Array) => void; reject: (error: Error) => void } | null =
     null
   let progress: ((done: number) => void) | null = null
+  let optionsSent = false
+
+  // The worker constructs its encoder from the first options/frame message, so
+  // the carrier must precede the first frame (also sent before a lone finish).
+  const sendOptions = (): void => {
+    if (optionsSent) return
+    optionsSent = true
+    worker.postMessage({ type: 'options', options })
+  }
 
   const fail = (message: string): void => {
     const error = new Error(message)
@@ -67,6 +80,7 @@ function createWorkerClient(worker: Worker): GifEncodeClient {
   return {
     addFrame(frame, onProgress) {
       return new Promise((resolve, reject) => {
+        sendOptions()
         progress = onProgress ?? null
         pendingFrame = { resolve, reject }
         const data = toBytes(frame.data)
@@ -84,6 +98,7 @@ function createWorkerClient(worker: Worker): GifEncodeClient {
     },
     finish() {
       return new Promise((resolve, reject) => {
+        sendOptions()
         pendingDone = { resolve, reject }
         worker.postMessage({ type: 'finish' })
       })
@@ -95,8 +110,8 @@ function createWorkerClient(worker: Worker): GifEncodeClient {
   }
 }
 
-function createInlineClient(): GifEncodeClient {
-  const encoder = createIncrementalGifEncoder()
+function createInlineClient(options: GifEncodeOptions): GifEncodeClient {
+  const encoder = createIncrementalGifEncoder(options)
   let done = 0
   return {
     async addFrame(frame, onProgress): Promise<void> {

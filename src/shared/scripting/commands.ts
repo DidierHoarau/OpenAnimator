@@ -37,6 +37,18 @@ import {
  * external tooling, and the validator is kept in sync with it by tests.
  */
 
+/** Formats the scripting `export` op accepts (mirrors `ExportFormat`). */
+const SCRIPT_EXPORT_FORMATS = [
+  'png-sequence',
+  'gif',
+  'webm',
+  'mp4',
+  'lottie',
+  'dotlottie',
+  'svg-animation',
+  'spritesheet'
+] as const
+
 export type ScriptCommand =
   | {
       op: 'addLayer'
@@ -45,6 +57,9 @@ export type ScriptCommand =
       /** Required for `kind: 'audio'` (an existing session resource). */
       resourceId?: string
       startFrame?: number
+      /** Explicit id for the new layer (used by the script recorder so
+       * replays reproduce exact ids); ignored when already taken. */
+      layerId?: string
     }
   | { op: 'renameLayer'; layerId: string; name: string }
   | { op: 'removeLayer'; layerId: string }
@@ -124,6 +139,35 @@ export type ScriptCommand =
        * corner/smooth toggles in one undo step). */
       subpaths: ScriptSubpath[]
     }
+  | {
+      op: 'export'
+      format: (typeof SCRIPT_EXPORT_FORMATS)[number]
+      /** Absolute destination path; when omitted the environment asks the user. */
+      out?: string
+      fromFrame?: number
+      toFrame?: number
+      scale?: number
+      fps?: number
+      transparent?: boolean
+      gifPalette?: 'perFrame' | 'global'
+      gifDither?: boolean
+      gifLoop?: number
+      videoQuality?: 'low' | 'medium' | 'high'
+    }
+  | {
+      op: 'importImage'
+      frame?: number
+      layerId?: string
+      at?: { x: number; y: number }
+      width?: number
+      height?: number
+      name?: string
+    }
+  | { op: 'importAudio'; startFrame?: number }
+  | { op: 'setOnionSkin'; enabled?: boolean; before?: number; after?: number }
+  | { op: 'setBrush'; color?: string; size?: number; opacity?: number }
+  | { op: 'setGlobalPalette'; colors: string[] }
+  | { op: 'addGlobalPaletteColor'; color: string }
 
 /** One editable subpath of a `setPathAnchors` command. */
 export interface ScriptSubpath {
@@ -219,42 +263,52 @@ export const COMMANDS_SCHEMA = {
     paint: paintSchema(),
     gradientPaint: gradientPaintSchema(),
     sceneNode: sceneNodeSchema(false),
-    /** Loose structural patch of a node: only known fields, no deep shape. */
+    /** Loose structural patch of a node: only known fields, no deep shape.
+     * Fields optional in the document model accept `null` to clear them
+     * (the executor deletes the key) — the script recorder relies on this
+     * for bit-identical replays. */
     nodePatch: {
       type: 'object',
       additionalProperties: false,
       properties: {
-        name: { type: 'string' },
+        name: { anyOf: [{ type: 'string' }, { type: 'null' }] },
         center: { $ref: '#/definitions/vec2' },
         width: { type: 'number', minimum: 0 },
         height: { type: 'number', minimum: 0 },
         rotation: { type: 'number' },
         opacity: { type: 'number', minimum: 0, maximum: 1 },
-        fill: { $ref: '#/definitions/paint' },
-        stroke: { $ref: '#/definitions/paint' },
-        strokeWidth: { type: 'number', minimum: 0 },
+        fill: { anyOf: [{ $ref: '#/definitions/paint' }, { type: 'null' }] },
+        stroke: { anyOf: [{ $ref: '#/definitions/paint' }, { type: 'null' }] },
+        strokeWidth: { anyOf: [{ type: 'number', minimum: 0 }, { type: 'null' }] },
         d: { type: 'string' },
         text: { type: 'string' },
         fontFamily: { type: 'string' },
         fontSize: { type: 'number', exclusiveMinimum: 0 },
         fontWeight: { type: 'number', minimum: 1, maximum: 1000 },
-        fontStyle: { enum: ['normal', 'italic'] },
-        ligatures: { type: 'boolean' },
+        fontStyle: { anyOf: [{ enum: ['normal', 'italic'] }, { type: 'null' }] },
+        ligatures: { anyOf: [{ type: 'boolean' }, { type: 'null' }] },
         align: { enum: ['left', 'center', 'right'] },
-        letterSpacing: { type: 'number' },
-        lineHeight: { type: 'number', minimum: 0.5, maximum: 5 },
-        verticalAlign: { enum: ['top', 'middle', 'bottom'] },
-        fontFallback: { type: 'array', maxItems: 8, items: { type: 'string' } },
-        strokeLinecap: { enum: ['butt', 'round', 'square'] },
-        strokeLinejoin: { enum: ['miter', 'round', 'bevel'] },
-        strokeDasharray: {
-          type: 'array',
-          minItems: 1,
-          maxItems: MAX_STROKE_DASH_VALUES,
-          items: { type: 'number', minimum: 0 },
-          contains: { type: 'number', exclusiveMinimum: 0 }
+        letterSpacing: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+        lineHeight: { anyOf: [{ type: 'number', minimum: 0.5, maximum: 5 }, { type: 'null' }] },
+        verticalAlign: { anyOf: [{ enum: ['top', 'middle', 'bottom'] }, { type: 'null' }] },
+        fontFallback: {
+          anyOf: [{ type: 'array', maxItems: 8, items: { type: 'string' } }, { type: 'null' }]
         },
-        strokeDashoffset: { type: 'number' }
+        strokeLinecap: { anyOf: [{ enum: ['butt', 'round', 'square'] }, { type: 'null' }] },
+        strokeLinejoin: { anyOf: [{ enum: ['miter', 'round', 'bevel'] }, { type: 'null' }] },
+        strokeDasharray: {
+          anyOf: [
+            {
+              type: 'array',
+              minItems: 1,
+              maxItems: MAX_STROKE_DASH_VALUES,
+              items: { type: 'number', minimum: 0 },
+              contains: { type: 'number', exclusiveMinimum: 0 }
+            },
+            { type: 'null' }
+          ]
+        },
+        strokeDashoffset: { anyOf: [{ type: 'number' }, { type: 'null' }] }
       }
     },
     frameNumber: { type: 'integer', minimum: 0 },
@@ -312,7 +366,14 @@ export const COMMANDS_SCHEMA = {
             'align',
             'distribute',
             'setPreferences',
-            'setPathAnchors'
+            'setPathAnchors',
+            'export',
+            'importImage',
+            'importAudio',
+            'setOnionSkin',
+            'setBrush',
+            'setGlobalPalette',
+            'addGlobalPaletteColor'
           ]
         },
         kind: { enum: ['object', 'drawing', 'camera', 'audio'] },
@@ -351,14 +412,30 @@ export const COMMANDS_SCHEMA = {
         mode: { enum: ALIGN_MODES },
         axis: { enum: DISTRIBUTE_AXES },
         subpaths: { $ref: '#/definitions/anchorSubpaths' },
-        preferences: { $ref: '#/definitions/preferencesPatch' }
+        preferences: { $ref: '#/definitions/preferencesPatch' },
+        format: { enum: SCRIPT_EXPORT_FORMATS },
+        out: { type: 'string' },
+        scale: { type: 'number' },
+        transparent: { type: 'boolean' },
+        gifPalette: { enum: ['perFrame', 'global'] },
+        gifDither: { type: 'boolean' },
+        gifLoop: { type: 'integer', minimum: -1 },
+        videoQuality: { enum: ['low', 'medium', 'high'] },
+        width: { type: 'number', exclusiveMinimum: 0 },
+        height: { type: 'number', exclusiveMinimum: 0 },
+        color: { type: 'string', pattern: HEX_COLOR_PATTERN },
+        enabled: { type: 'boolean' },
+        before: { type: 'integer', minimum: 0, maximum: 5 },
+        after: { type: 'integer', minimum: 0, maximum: 5 },
+        size: { type: 'number', exclusiveMinimum: 0 },
+        opacity: { type: 'number', minimum: 0, maximum: 1 }
       },
       allOf: [
         {
           if: { properties: { op: { const: 'addLayer' } }, required: ['op'] },
           then: {
             additionalProperties: false,
-            properties: { op: {}, kind: {}, name: {}, resourceId: {}, startFrame: {} }
+            properties: { op: {}, kind: {}, name: {}, resourceId: {}, startFrame: {}, layerId: {} }
           }
         },
         {
@@ -631,6 +708,81 @@ export const COMMANDS_SCHEMA = {
             additionalProperties: false,
             properties: { op: {}, nodeId: {}, layerId: {}, frame: {}, subpaths: {} }
           }
+        },
+        {
+          if: { properties: { op: { const: 'export' } }, required: ['op'] },
+          then: {
+            required: ['format'],
+            additionalProperties: false,
+            properties: {
+              op: {},
+              format: {},
+              out: {},
+              fromFrame: {},
+              toFrame: {},
+              scale: {},
+              fps: { type: 'integer', minimum: 1 },
+              transparent: {},
+              gifPalette: {},
+              gifDither: {},
+              gifLoop: {},
+              videoQuality: {}
+            }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'importImage' } }, required: ['op'] },
+          then: {
+            additionalProperties: false,
+            properties: { op: {}, frame: {}, layerId: {}, at: {}, width: {}, height: {}, name: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'importAudio' } }, required: ['op'] },
+          then: {
+            additionalProperties: false,
+            properties: { op: {}, startFrame: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'setOnionSkin' } }, required: ['op'] },
+          then: {
+            anyOf: [{ required: ['enabled'] }, { required: ['before'] }, { required: ['after'] }],
+            additionalProperties: false,
+            properties: { op: {}, enabled: {}, before: {}, after: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'setBrush' } }, required: ['op'] },
+          then: {
+            anyOf: [{ required: ['color'] }, { required: ['size'] }, { required: ['opacity'] }],
+            additionalProperties: false,
+            properties: { op: {}, color: {}, size: {}, opacity: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'setGlobalPalette' } }, required: ['op'] },
+          then: {
+            required: ['colors'],
+            additionalProperties: false,
+            properties: {
+              op: {},
+              colors: {
+                type: 'array',
+                minItems: 1,
+                maxItems: MAX_PALETTE_COLORS,
+                items: { type: 'string', pattern: HEX_COLOR_PATTERN }
+              }
+            }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'addGlobalPaletteColor' } }, required: ['op'] },
+          then: {
+            required: ['color'],
+            additionalProperties: false,
+            properties: { op: {}, color: {} }
+          }
         }
       ]
     }
@@ -655,6 +807,8 @@ export interface FieldSpec {
   tweenEasings?: boolean
   /** Array items must be `#rgb`/`#rrggbb` strings. */
   hexColors?: boolean
+  /** String field that must be a `#rgb`/`#rrggbb` color. */
+  hexColor?: boolean
   /** Array items must be strings (the item shape of loose string lists). */
   stringItems?: boolean
   /** Array items must be finite numbers ≥ 0 with at least one > 0 (stroke
@@ -707,7 +861,14 @@ export const OPS = [
   'align',
   'distribute',
   'setPreferences',
-  'setPathAnchors'
+  'setPathAnchors',
+  'export',
+  'importImage',
+  'importAudio',
+  'setOnionSkin',
+  'setBrush',
+  'setGlobalPalette',
+  'addGlobalPaletteColor'
 ] as const
 
 /** One scripting op name. */
@@ -718,7 +879,8 @@ export const OP_FIELDS: Record<Op, Record<string, FieldSpec>> = {
     kind: { type: 'string', enum: ['object', 'drawing', 'camera', 'audio'] },
     name: { type: 'string' },
     resourceId: { type: 'string' },
-    startFrame: { type: 'integer', min: 0 }
+    startFrame: { type: 'integer', min: 0 },
+    layerId: { type: 'string' }
   },
   renameLayer: {
     layerId: { type: 'string', required: true },
@@ -870,6 +1032,46 @@ export const OP_FIELDS: Record<Op, Record<string, FieldSpec>> = {
     layerId: { type: 'string' },
     frame: { type: 'integer', min: 0 },
     subpaths: { type: 'array', pathSubpaths: true, minItems: 1, required: true }
+  },
+  export: {
+    format: { type: 'string', enum: SCRIPT_EXPORT_FORMATS, required: true },
+    out: { type: 'string' },
+    fromFrame: { type: 'integer', min: 0 },
+    toFrame: { type: 'integer', min: 0 },
+    scale: { type: 'number' },
+    fps: { type: 'integer', min: 1 },
+    transparent: { type: 'boolean' },
+    gifPalette: { type: 'string', enum: ['perFrame', 'global'] },
+    gifDither: { type: 'boolean' },
+    gifLoop: { type: 'integer', min: -1 },
+    videoQuality: { type: 'string', enum: ['low', 'medium', 'high'] }
+  },
+  importImage: {
+    frame: { type: 'integer', min: 0 },
+    layerId: { type: 'string' },
+    at: { type: 'object' },
+    width: { type: 'number', exclusiveMin: 0 },
+    height: { type: 'number', exclusiveMin: 0 },
+    name: { type: 'string' }
+  },
+  importAudio: {
+    startFrame: { type: 'integer', min: 0 }
+  },
+  setOnionSkin: {
+    enabled: { type: 'boolean' },
+    before: { type: 'integer', min: 0, max: 5 },
+    after: { type: 'integer', min: 0, max: 5 }
+  },
+  setBrush: {
+    color: { type: 'string', hexColor: true },
+    size: { type: 'number', exclusiveMin: 0 },
+    opacity: { type: 'number', min: 0, max: 1 }
+  },
+  setGlobalPalette: {
+    colors: { type: 'array', hexColors: true, minItems: 1, maxItems: MAX_PALETTE_COLORS, required: true }
+  },
+  addGlobalPaletteColor: {
+    color: { type: 'string', hexColor: true, required: true }
   }
 }
 
@@ -942,28 +1144,37 @@ const NODE_KIND_FIELDS: Record<string, Record<string, FieldSpec>> = {
 }
 
 const NODE_PATCH_FIELDS: Record<string, FieldSpec> = {
-  name: { type: 'string' },
+  name: { type: 'string', nullable: true },
   center: { type: 'object' },
   width: { type: 'number', min: 0 },
   height: { type: 'number', min: 0 },
   rotation: { type: 'number' },
   opacity: { type: 'number', min: 0, max: 1 },
-  fill: { type: 'string', paint: true },
-  stroke: { type: 'string', paint: true },
-  strokeWidth: { type: 'number', min: 0 },
+  fill: { type: 'string', paint: true, nullable: true },
+  stroke: { type: 'string', paint: true, nullable: true },
+  strokeWidth: { type: 'number', min: 0, nullable: true },
   d: { type: 'string' },
   text: { type: 'string' },
   fontFamily: { type: 'string' },
   fontSize: { type: 'number', exclusiveMin: 0 },
   fontWeight: { type: 'number', min: 1, max: 1000 },
-  fontStyle: { type: 'string', enum: ['normal', 'italic'] },
-  ligatures: { type: 'boolean' },
+  fontStyle: { type: 'string', enum: ['normal', 'italic'], nullable: true },
+  ligatures: { type: 'boolean', nullable: true },
   align: { type: 'string', enum: ['left', 'center', 'right'] },
-  letterSpacing: { type: 'number' },
-  lineHeight: { type: 'number', min: 0.5, max: 5 },
-  verticalAlign: { type: 'string', enum: ['top', 'middle', 'bottom'] },
-  fontFallback: { type: 'array', stringItems: true, maxItems: 8 },
-  ...STROKE_STYLE_FIELDS
+  letterSpacing: { type: 'number', nullable: true },
+  lineHeight: { type: 'number', min: 0.5, max: 5, nullable: true },
+  verticalAlign: { type: 'string', enum: ['top', 'middle', 'bottom'], nullable: true },
+  fontFallback: { type: 'array', stringItems: true, maxItems: 8, nullable: true },
+  strokeLinecap: { type: 'string', enum: ['butt', 'round', 'square'], nullable: true },
+  strokeLinejoin: { type: 'string', enum: ['miter', 'round', 'bevel'], nullable: true },
+  strokeDasharray: {
+    type: 'array',
+    numberItems: true,
+    minItems: 1,
+    maxItems: MAX_STROKE_DASH_VALUES,
+    nullable: true
+  },
+  strokeDashoffset: { type: 'number', nullable: true }
 }
 
 class Collector {
@@ -1053,6 +1264,9 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
     }
     if (spec.enum && !spec.enum.includes(value as string)) {
       collector.at(path, `must be one of ${spec.enum.map((entry) => JSON.stringify(entry)).join(', ')}`)
+    }
+    if (spec.hexColor && parseHexColor(value as string) === null) {
+      collector.at(path, 'must be a hex color (#rgb or #rrggbb)')
     }
     return
   }
@@ -1408,6 +1622,22 @@ export function validateScriptPayload(value: unknown): { commands: ScriptCommand
     }
     if (op === 'insertFromLibrary' && command.assetId === undefined && command.name === undefined) {
       collector.at(`${path}/assetId`, 'is required (or provide "name")')
+    }
+    if (
+      op === 'setOnionSkin' &&
+      command.enabled === undefined &&
+      command.before === undefined &&
+      command.after === undefined
+    ) {
+      collector.at(path, 'must set at least one of "enabled", "before", "after"')
+    }
+    if (
+      op === 'setBrush' &&
+      command.color === undefined &&
+      command.size === undefined &&
+      command.opacity === undefined
+    ) {
+      collector.at(path, 'must set at least one of "color", "size", "opacity"')
     }
   })
   if (collector.errors.length > 0) return { commands: [], errors: collector.errors }

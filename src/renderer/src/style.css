@@ -1485,6 +1485,28 @@ input:disabled {
   width: 72px;
 }
 
+.export-row input[type='text'] {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-deep);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.export-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.export-gif-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .export-range-sep {
   color: var(--muted);
 }
@@ -1573,6 +1595,18 @@ input:disabled {
   border: 1px solid var(--border);
   background: var(--panel-deep);
   color: var(--text);
+}
+
+.script-record-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.script-record-count {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .script-input {

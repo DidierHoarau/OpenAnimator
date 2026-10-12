@@ -6,6 +6,9 @@ import { MAX_PALETTE_COLORS, createId, extractKeyframeChunk } from '@shared/docu
 import { collectAssetResourceIds } from '@shared/assets'
 import { isAudioLayer, isCameraLayer, isObjectLayer } from '@shared/model'
 import { applyAnchorEdit } from '@shared/pathEdit'
+import { formatHexColor, parseHexColor } from '@shared/color'
+import { sanitizeExportOptions } from '@shared/exportOptions'
+import type { ExportOptions } from '@shared/exportOptions'
 
 import type { Editor } from '../editor'
 import { applyTextMetrics } from '@shared/textModel'
@@ -32,11 +35,65 @@ export interface ScriptPreferencesBridge {
   update(patch: Partial<AppPreferences>): Promise<AppPreferences>
 }
 
+/** Export bridge result: the written path, or the failure reason. */
+export type ScriptExportResult = { ok: true; path: string } | { ok: false; error: string }
+
+/** Export bridge: runs one export through the app's export pipeline with the
+ * already-sanitized options; `outPath` replaces the save dialog destination. */
+export type ScriptExportBridge = (
+  options: ExportOptions,
+  outPath?: string
+) => Promise<ScriptExportResult>
+
+/** Request of the `importImage` command: pick an image file and add it as an
+ * image node (the environment owns the file dialog and the insertion). */
+export interface ScriptImportImageRequest {
+  frame?: number
+  layerId?: string
+  at?: { x: number; y: number }
+  width?: number
+  height?: number
+  name?: string
+}
+
+export type ScriptImportImageResult = { ok: true; nodeId: string } | { ok: false; error: string }
+
+export type ScriptImportImageBridge = (
+  request: ScriptImportImageRequest
+) => Promise<ScriptImportImageResult>
+
+/** Request of the `importAudio` command: pick an audio file and add it as an
+ * audio layer (the environment owns the file dialog and the insertion). */
+export interface ScriptImportAudioRequest {
+  startFrame?: number
+}
+
+export type ScriptImportAudioResult = { ok: true; layerId: string } | { ok: false; error: string }
+
+export type ScriptImportAudioBridge = (
+  request: ScriptImportAudioRequest
+) => Promise<ScriptImportAudioResult>
+
+/** Persistent cross-document color palette the global-palette commands use
+ * (`window.api.loadGlobalPalette`/`saveGlobalPalette` in the app). */
+export interface ScriptGlobalPaletteBridge {
+  get(): Promise<string[]>
+  set(colors: string[]): Promise<void>
+}
+
 export interface ScriptRunOptions {
   /** Global "My Library" bridge for the save/insert-library commands. */
   library?: ScriptLibraryBridge
   /** Renderer preferences store for `setPreferences`. */
   preferences?: ScriptPreferencesBridge
+  /** Export pipeline for the `export` command. */
+  export?: ScriptExportBridge
+  /** File picker + node insertion for the `importImage` command. */
+  importImage?: ScriptImportImageBridge
+  /** File picker + layer insertion for the `importAudio` command. */
+  importAudio?: ScriptImportAudioBridge
+  /** Persistent global palette for the `setGlobalPalette` commands. */
+  globalPalette?: ScriptGlobalPaletteBridge
 }
 
 /**
@@ -96,7 +153,7 @@ async function applyCommand(
   switch (command.op) {
     case 'addLayer': {
       if (command.kind === 'camera') {
-        const layer = editor.addCameraLayer()
+        const layer = editor.addCameraLayer(command.layerId)
         if (!layer) {
           issue(issues, index, 'addLayer: the document already has a camera layer')
           return false
@@ -108,7 +165,8 @@ async function applyCommand(
         const layer = editor.addAudioLayer(
           command.resourceId ?? '',
           command.name ?? 'Audio',
-          command.startFrame ?? 0
+          command.startFrame ?? 0,
+          command.layerId
         )
         if (!layer) {
           issue(
@@ -120,7 +178,7 @@ async function applyCommand(
         }
         return true
       }
-      editor.addLayerAtBottom(command.kind ?? 'object')
+      editor.addLayerAtBottom(command.kind ?? 'object', command.layerId)
       if (command.name) editor.renameLayer(editor.currentLayerId, command.name)
       return true
     }
@@ -770,7 +828,129 @@ async function applyCommand(
       }
       return true
     }
+    case 'export': {
+      const bridge = options.export
+      if (!bridge) {
+        issue(issues, index, 'export: the export command is not available in this environment')
+        return false
+      }
+      // The extra GIF/video keys are typed loosely so this compiles before and
+      // after ExportOptions grows them; sanitizeExportOptions clamps the rest.
+      const raw: Partial<ExportOptions> & Record<string, unknown> = { format: command.format }
+      if (command.fromFrame !== undefined) raw.fromFrame = command.fromFrame
+      if (command.toFrame !== undefined) raw.toFrame = command.toFrame
+      if (command.scale !== undefined) raw.scale = command.scale
+      if (command.fps !== undefined) raw.fps = command.fps
+      if (command.transparent !== undefined) raw.transparent = command.transparent
+      if (command.gifPalette !== undefined) raw.gifPalette = command.gifPalette
+      if (command.gifDither !== undefined) raw.gifDither = command.gifDither
+      if (command.gifLoop !== undefined) raw.gifLoop = command.gifLoop
+      if (command.videoQuality !== undefined) raw.videoQuality = command.videoQuality
+      const sanitized = sanitizeExportOptions(raw as Partial<ExportOptions>, editor.document)
+      const result = await bridge(sanitized, command.out)
+      if (!result.ok) {
+        issue(issues, index, `export: ${result.error}`)
+        return false
+      }
+      issue(issues, index, `export: exported to ${result.path}`, 'warning')
+      return true
+    }
+    case 'importImage': {
+      const bridge = options.importImage
+      if (!bridge) {
+        issue(issues, index, 'importImage: the image import command is not available in this context')
+        return false
+      }
+      const request: ScriptImportImageRequest = {}
+      if (command.frame !== undefined) request.frame = command.frame
+      if (command.layerId !== undefined) request.layerId = command.layerId
+      if (command.at !== undefined) request.at = command.at
+      if (command.width !== undefined) request.width = command.width
+      if (command.height !== undefined) request.height = command.height
+      if (command.name !== undefined) request.name = command.name
+      const result = await bridge(request)
+      if (!result.ok) {
+        issue(issues, index, `importImage: ${result.error}`)
+        return false
+      }
+      issue(issues, index, `importImage: imported as node ${result.nodeId}`, 'warning')
+      return true
+    }
+    case 'importAudio': {
+      const bridge = options.importAudio
+      if (!bridge) {
+        issue(issues, index, 'importAudio: the audio import command is not available in this context')
+        return false
+      }
+      const request: ScriptImportAudioRequest = {}
+      if (command.startFrame !== undefined) request.startFrame = command.startFrame
+      const result = await bridge(request)
+      if (!result.ok) {
+        issue(issues, index, `importAudio: ${result.error}`)
+        return false
+      }
+      issue(issues, index, `importAudio: imported as layer ${result.layerId}`, 'warning')
+      return true
+    }
+    case 'setOnionSkin': {
+      // Session display state: mirrors the timeline's own toggle/option calls
+      // (the editor clamps counts to 0–5; the schema caps them at the same).
+      if (command.enabled !== undefined && editor.onionSkin !== command.enabled) {
+        editor.toggleOnionSkin()
+      }
+      const onion: { onionBefore?: number; onionAfter?: number } = {}
+      if (command.before !== undefined) onion.onionBefore = command.before
+      if (command.after !== undefined) onion.onionAfter = command.after
+      if (Object.keys(onion).length > 0) editor.setOnionOptions(onion)
+      return true
+    }
+    case 'setBrush': {
+      if (command.color !== undefined) editor.setBrushColor(command.color)
+      if (command.size !== undefined) editor.setBrushSize(command.size)
+      if (command.opacity !== undefined) editor.setBrushOpacity(command.opacity)
+      return true
+    }
+    case 'setGlobalPalette': {
+      const palette = options.globalPalette
+      if (!palette) {
+        issue(issues, index, 'setGlobalPalette: the global palette is not available in this context')
+        return false
+      }
+      await palette.set(command.colors)
+      return true
+    }
+    case 'addGlobalPaletteColor': {
+      const palette = options.globalPalette
+      if (!palette) {
+        issue(issues, index, 'addGlobalPaletteColor: the global palette is not available in this context')
+        return false
+      }
+      const rgb = parseHexColor(command.color)
+      if (!rgb) {
+        issue(issues, index, `addGlobalPaletteColor: "${command.color}" is not a hex color (#rgb or #rrggbb)`)
+        return false
+      }
+      const color = formatHexColor(rgb)
+      const current = await palette.get()
+      if (current.some((entry) => normalizePaletteColor(entry) === color)) {
+        issue(issues, index, `addGlobalPaletteColor: ${color} is already in the global palette`, 'warning')
+        return false
+      }
+      if (current.length >= MAX_PALETTE_COLORS) {
+        issue(issues, index, `addGlobalPaletteColor: the global palette is full (${MAX_PALETTE_COLORS} colors)`)
+        return false
+      }
+      await palette.set([...current, color])
+      return true
+    }
   }
+}
+
+/** Normalizes one global-palette entry to lowercase `#rrggbb` for duplicate
+ * comparison; unknown shapes fall back to a trimmed lowercase copy. */
+function normalizePaletteColor(color: string): string {
+  const rgb = parseHexColor(color)
+  return rgb ? formatHexColor(rgb) : color.trim().toLowerCase()
 }
 
 function applyAddNode(
@@ -877,7 +1057,9 @@ function applyNodePatch(
   return true
 }
 
-/** Applies the whitelisted patch fields (schema-validated) to a node. */
+/** Applies the whitelisted patch fields (schema-validated) to a node. A
+ * `null` value clears the key (fields optional in the document model only —
+ * validation rejects `null` elsewhere), so a replay can restore absence. */
 function applyPatchFields(
   node: SceneNode,
   patch: Record<string, unknown>,
@@ -889,6 +1071,10 @@ function applyPatchFields(
       const center = value as { x?: unknown; y?: unknown }
       if (typeof center.x === 'number') (node as NodeBase).center.x = center.x
       if (typeof center.y === 'number') (node as NodeBase).center.y = center.y
+      continue
+    }
+    if (value === null) {
+      delete target[key]
       continue
     }
     target[key] = value

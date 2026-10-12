@@ -27,6 +27,35 @@ straight back to a model for a validate-and-retry loop.
 - **Headless:** `npm run cli -- validate payload.json` checks the schema
   (exit 1 with ajv messages on failure). See [CLI](#headless-cli) below.
 
+## Recording gestures
+
+The script console can write the payload for you: press **Record** and every
+committed change — drags included — is captured as the minimal commands that
+reproduce it, using real ids and the frame the gesture ran on. **Stop &
+insert** prefills the input with the recorded `{"commands": [...]}`; running
+it goes through the console's normal Validate/Run → `executeScriptCommands`
+path like any pasted payload (the recorder never applies anything itself —
+one pipeline, no second execution path). Gestures are diffed between
+document snapshots taken around each commit, so undoing a gesture before
+stopping reconciles to nothing and replaying the capture on the same
+document state reproduces it bit-identically.
+
+**Recorded:** document mutations on every layer kind — nodes and keyframes
+(add/remove/move, minimal `updateNode` patches covering paint, `d` and box
+changes), tween flags/easing/path, frame inserts/removals,
+duration/fps/palette/hold-step, drawing cells, camera poses/tweens, audio
+clip fields, group and symbol edits, layer add/remove/rename — plus
+global-palette sets (tapped at the palette persistence path).
+
+**Not recorded (v1 limits):** pure view state — `seek`/playback, zoom, tool
+and selection changes, panel layout — and the brush/onion-skin values: they
+leave no document trace, so there is nothing for the diff to replay. Layers'
+visibility/lock toggles are not expressible either (no command exists).
+Anything the command surface cannot express is surfaced as a *note* next to
+the inserted payload (e.g. stage size, asset/font edits, layer reordering),
+so a partial recording is never silently inaccurate; imports and exports
+are command-only, not recorded.
+
 ## Command reference
 
 The full, always-current field-by-field table lives in
@@ -44,10 +73,15 @@ the implementation. The command families:
   `distribute`, `setPreferences`.
 - **Grouping & symbols** — `group`, `ungroup`, `breakApart`,
   `createSymbol`, `placeAsset`, `editSymbol`, `endSymbolEdit`,
-  `renameAsset`, `duplicateAsset`, `deleteAsset`.
+  `renameAsset`, `duplicateAsset`, `deleteAsset`, `saveToLibrary`,
+  `insertFromLibrary`.
 - **Camera & audio** — `setCameraKeyframe`, `removeCameraKeyframe`,
   `setAudio`.
 - **Tweening** — `setTween`.
+- **Import & export** — `importImage`, `importAudio`, `export`.
+- **Global palette** — `setGlobalPalette`, `addGlobalPaletteColor`.
+- **View helpers** — `setOnionSkin`, `setBrush` (session display state —
+  they leave no document trace).
 
 All commands accept optional `layerId` where a layer context is needed; when
 omitted the executor resolves it from the node or falls back to the current
@@ -236,6 +270,25 @@ WebM/MP4 exports; PNG sequences and GIF are silent.
   {"op": "setAudio", "layerId": "lay7", "volume": 0.6}
 ]}
 ```
+
+### Import, export and view helpers
+
+`importImage` opens the native image picker and imports through the toolbar's
+byte path (raster images, or SVGs as editable vectors): `frame`/`layerId`
+choose where the node lands, `at` is the drop point, `width`/`height`/`name`
+override the placed size and node name. `importAudio` does the same for
+WAV/MP3/OGG, adding an audio layer at `startFrame`. `export` runs the app's
+export pipeline with a patch of the export-dialog options (`format`, frame
+range, `scale`, `fps`, `transparent`, the GIF `gifPalette`/`gifDither`/
+`gifLoop` keys and `videoQuality`); `out` names the destination file,
+without it the native save dialog asks. Like the library and preference
+bridges, these need the console's environment bridges — the app passes them
+automatically; a headless executor reports a clear error per command and
+keeps running.
+
+`setOnionSkin` and `setBrush` drive the timeline/brush session display
+state, and `setGlobalPalette` / `addGlobalPaletteColor` replace/append in
+the global cross-document palette (bridge-gated like `setPreferences`).
 
 ## Validate-and-retry loop
 

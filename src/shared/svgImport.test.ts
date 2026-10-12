@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { Asset, GroupNode, PathNode, PrimitiveNode, SymbolNode } from './model'
+import type { GradientPaint, LinearGradientPaint, RadialGradientPaint } from './paint'
 import { collapseDuplicateShapes, importSvgAsVectors, parseSvgXml } from './svgImport'
 
 function encode(source: string): Uint8Array {
@@ -449,6 +450,357 @@ describe('importSvgAsVectors — unsupported input', () => {
     expect(invalid).toEqual({ ok: false, reason: 'the file is not valid UTF-8 text' })
     const empty = importSvgAsVectors(new Uint8Array(0))
     expect(empty).toEqual({ ok: false, reason: 'malformed XML: the document is empty' })
+  })
+})
+
+describe('importSvgAsVectors — gradients', () => {
+  const TWO_STOPS = '<stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff"/>'
+
+  function fillOf(node: PrimitiveNode | PathNode): GradientPaint {
+    const fill = node.fill
+    if (fill === undefined || typeof fill === 'string') throw new Error('expected a gradient fill')
+    return fill
+  }
+
+  function linearFill(node: PrimitiveNode | PathNode): LinearGradientPaint {
+    const fill = fillOf(node)
+    if (fill.type !== 'linear') throw new Error(`expected a linear gradient, got ${fill.type}`)
+    return fill
+  }
+
+  function radialFill(node: PrimitiveNode | PathNode): RadialGradientPaint {
+    const fill = fillOf(node)
+    if (fill.type !== 'radial') throw new Error(`expected a radial gradient, got ${fill.type}`)
+    return fill
+  }
+
+  it('converts a horizontal linear gradient with percentage stops', () => {
+    const { group } = importOk(
+      HEADER +
+        '<defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">' +
+        '<stop offset="0" stop-color="#ff0000"/>' +
+        '<stop offset="50%" stop-color="#00ff00" stop-opacity="50%"/>' +
+        '<stop offset="100%" stop-color="#0000ff"/>' +
+        '</linearGradient></defs>' +
+        '<rect width="10" height="10" fill="url(#g1)"/></svg>'
+    )
+    expect(fillOf(group.children[0] as PrimitiveNode)).toEqual({
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 0.5, color: '#00ff00', alpha: 0.5 },
+        { offset: 1, color: '#0000ff' }
+      ]
+    })
+  })
+
+  it('defaults linear geometry to (0,0) → (1,0)', () => {
+    const { group } = importOk(
+      HEADER +
+        '<defs><linearGradient id="def">' + TWO_STOPS + '</linearGradient></defs>' +
+        '<rect width="10" height="10" fill="url(#def)"/></svg>'
+    )
+    expect(linearFill(group.children[0] as PrimitiveNode).angle).toBe(0)
+  })
+
+  it('maps vertical and canonical centered 45-degree axes to angles', () => {
+    const { group } = importOk(
+      HEADER +
+        '<defs>' +
+        '<linearGradient id="v" x1="50%" y1="0%" x2="50%" y2="100%">' + TWO_STOPS + '</linearGradient>' +
+        '<linearGradient id="d45" x1="14.64466094%" y1="14.64466094%" x2="85.35533906%" y2="85.35533906%">' +
+        TWO_STOPS +
+        '</linearGradient>' +
+        '</defs>' +
+        '<rect width="10" height="10" fill="url(#v)"/>' +
+        '<rect width="10" height="10" fill="url(#d45)"/></svg>'
+    )
+    expect(linearFill(group.children[0] as PrimitiveNode).angle).toBeCloseTo(90, 6)
+    expect(linearFill(group.children[1] as PrimitiveNode).angle).toBeCloseTo(45, 6)
+  })
+
+  it('rejects a diagonal axis that the native model cannot reproduce', () => {
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="dg" x1="0" y1="0" x2="1" y2="1">' + TWO_STOPS + '</linearGradient></defs>' +
+          '<rect width="10" height="10" fill="url(#dg)"/></svg>'
+      )
+    ).toBe('unsupported linear gradient "dg" (only centered full-span axes can be represented natively)')
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="short" x1="0" y1="0" x2="0.9" y2="0">' + TWO_STOPS + '</linearGradient></defs>' +
+          '<rect width="10" height="10" fill="url(#short)"/></svg>'
+      )
+    ).toBe('unsupported linear gradient "short" (only centered full-span axes can be represented natively)')
+  })
+
+  it('rejects gradientTransform, spreadMethod, userSpaceOnUse and missing ids', () => {
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="gt" gradientTransform="rotate(45)" x1="0" x2="1">' + TWO_STOPS +
+          '</linearGradient></defs><rect width="5" height="5" fill="url(#gt)"/></svg>'
+      )
+    ).toBe('unsupported gradientTransform on <linearGradient>')
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="sm" spreadMethod="reflect" x1="0" x2="1">' + TWO_STOPS +
+          '</linearGradient></defs><rect width="5" height="5" fill="url(#sm)"/></svg>'
+      )
+    ).toBe('unsupported spreadMethod "reflect" on <linearGradient> (only "pad" is supported)')
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="us" gradientUnits="userSpaceOnUse" x1="0" x2="1">' + TWO_STOPS +
+          '</linearGradient></defs><rect width="5" height="5" fill="url(#us)"/></svg>'
+      )
+    ).toBe('unsupported gradientUnits "userSpaceOnUse" on <linearGradient> (only objectBoundingBox is supported)')
+    expect(importReason(`${HEADER}<rect width="5" height="5" fill="url(#nope)"/></svg>`)).toBe(
+      'unsupported paint "url(#nope)" (no gradient with id "nope")'
+    )
+  })
+
+  it('requires 2 to 8 stops', () => {
+    const stopsOf = (count: number): string =>
+      Array.from(
+        { length: count },
+        (_, index) => `<stop offset="${index / count}" stop-color="#ff0000"/>`
+      ).join('')
+    const gradient = (id: string, count: number): string =>
+      `<linearGradient id="${id}" x1="0" y1="0" x2="1" y2="0">${stopsOf(count)}</linearGradient>`
+    const { group } = importOk(
+      HEADER +
+        `<defs>${gradient('two', 2)}${gradient('eight', 8)}</defs>` +
+        '<rect width="5" height="5" fill="url(#two)"/>' +
+        '<rect x="10" width="5" height="5" fill="url(#eight)"/></svg>'
+    )
+    expect(linearFill(group.children[0] as PrimitiveNode).stops).toHaveLength(2)
+    expect(linearFill(group.children[1] as PrimitiveNode).stops).toHaveLength(8)
+    expect(
+      importReason(`${HEADER}<defs>${gradient('nine', 9)}</defs><rect width="5" height="5" fill="url(#nine)"/></svg>`)
+    ).toBe('gradient "nine" has more than 8 stops')
+    expect(
+      importReason(`${HEADER}<defs>${gradient('one', 1)}</defs><rect width="5" height="5" fill="url(#one)"/></svg>`)
+    ).toBe('gradient "one" has fewer than 2 stops')
+  })
+
+  it('rejects href gradient inheritance and duplicate ids', () => {
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="a" x1="0" x2="1">' + TWO_STOPS + '</linearGradient>' +
+          '<linearGradient id="b" href="#a">' + TWO_STOPS + '</linearGradient></defs>' +
+          '<rect width="5" height="5" fill="url(#b)"/></svg>'
+      )
+    ).toBe('unsupported href on <linearGradient> (gradient inheritance is not supported)')
+    expect(
+      importReason(
+        HEADER +
+          '<defs><radialGradient id="c">' + TWO_STOPS + '</radialGradient>' +
+          '<radialGradient id="d" xlink:href="#c">' + TWO_STOPS + '</radialGradient></defs>' +
+          '<rect width="5" height="5" fill="url(#d)"/></svg>'
+      )
+    ).toBe('unsupported xlink:href on <radialGradient> (gradient inheritance is not supported)')
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="dup" x1="0" x2="1">' + TWO_STOPS + '</linearGradient>' +
+          '<linearGradient id="dup" x1="0" x2="1">' + TWO_STOPS + '</linearGradient></defs>' +
+          '<rect width="5" height="5" fill="url(#dup)"/></svg>'
+      )
+    ).toBe('unsupported paint "url(#dup)" (duplicate gradient id "dup")')
+  })
+
+  it('rejects stop colors the importer cannot represent', () => {
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="named" x1="0" x2="1">' +
+          '<stop offset="0" stop-color="red"/><stop offset="1" stop-color="#0000ff"/>' +
+          '</linearGradient></defs><rect width="5" height="5" fill="url(#named)"/></svg>'
+      )
+    ).toBe('unsupported color "red" (supported: none, #rgb, #rrggbb)')
+    expect(
+      importReason(
+        HEADER +
+          '<defs><linearGradient id="none" x1="0" x2="1">' +
+          '<stop offset="0" stop-color="none"/><stop offset="1" stop-color="#0000ff"/>' +
+          '</linearGradient></defs><rect width="5" height="5" fill="url(#none)"/></svg>'
+      )
+    ).toBe('unsupported stop-color "none" (a stop requires a color)')
+  })
+
+  it('converts radial gradients and carries stop alpha only when it is not 1', () => {
+    const { group } = importOk(
+      HEADER +
+        '<defs><radialGradient id="rg" cx="25%" cy="75%" r="0.4">' +
+        '<stop offset="0" stop-color="#ff0000" stop-opacity="0.5"/>' +
+        '<stop offset="1" stop-color="#0000ff" stop-opacity="1"/>' +
+        '</radialGradient></defs>' +
+        '<circle cx="10" cy="10" r="5" fill="url(#rg)"/></svg>'
+    )
+    const radial = radialFill(group.children[0] as PrimitiveNode)
+    expect(radial).toEqual({
+      type: 'radial',
+      cx: 0.25,
+      cy: 0.75,
+      r: 0.4,
+      stops: [
+        { offset: 0, color: '#ff0000', alpha: 0.5 },
+        { offset: 1, color: '#0000ff' }
+      ]
+    })
+    expect(radial.stops[1]).not.toHaveProperty('alpha')
+  })
+
+  it('defaults radial geometry to the bounding-box center and half radius', () => {
+    const { group } = importOk(
+      HEADER +
+        '<defs><radialGradient id="rd">' + TWO_STOPS + '</radialGradient></defs>' +
+        '<rect width="10" height="10" fill="url(#rd)"/></svg>'
+    )
+    const radial = radialFill(group.children[0] as PrimitiveNode)
+    expect(radial.cx).toBe(0.5)
+    expect(radial.cy).toBe(0.5)
+    expect(radial.r).toBe(0.5)
+  })
+
+  it('accepts focal points within 0.01 of the center and rejects off-center ones', () => {
+    const { group } = importOk(
+      HEADER +
+        '<defs><radialGradient id="near" cx="50%" cy="50%" fx="49.5%" fy="50.5%">' + TWO_STOPS +
+        '</radialGradient></defs><rect width="10" height="10" fill="url(#near)"/></svg>'
+    )
+    expect(radialFill(group.children[0] as PrimitiveNode).cx).toBe(0.5)
+    expect(
+      importReason(
+        HEADER +
+          '<defs><radialGradient id="off" cx="50%" cy="50%" fx="20%">' + TWO_STOPS +
+          '</radialGradient></defs><rect width="5" height="5" fill="url(#off)"/></svg>'
+      )
+    ).toBe('radial gradient "off" has a focal point, which is not supported')
+    expect(
+      importReason(
+        HEADER +
+          '<defs><radialGradient id="zero" r="0">' + TWO_STOPS +
+          '</radialGradient></defs><rect width="5" height="5" fill="url(#zero)"/></svg>'
+      )
+    ).toBe('radial gradient "zero" has a non-positive radius')
+  })
+
+  it('resolves a gradient stroke', () => {
+    const { group } = importOk(
+      HEADER +
+        '<defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="0">' + TWO_STOPS + '</linearGradient></defs>' +
+        '<line x1="0" y1="0" x2="10" y2="10" stroke="url(#sg)" stroke-width="2"/></svg>'
+    )
+    const line = group.children[0] as PathNode
+    expect(line.fill).toBeUndefined()
+    expect(line.strokeWidth).toBe(2)
+    expect(line.stroke).toEqual({
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 1, color: '#0000ff' }
+      ]
+    })
+  })
+
+  it('inherits gradients through groups and accepts quoted url references', () => {
+    const expected = {
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    const { group } = importOk(
+      HEADER +
+        '<defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">' + TWO_STOPS + '</linearGradient></defs>' +
+        '<g transform="translate(5 5)"><rect width="10" height="10" fill="url(#g1)"/></g>' +
+        "<g fill=\"url( #g1 )\"><rect x=\"30\" width=\"12\" height=\"10\"/></g>" +
+        "<g fill=\"url('#g1')\"><rect x=\"60\" width=\"14\" height=\"10\"/></g></svg>"
+    )
+    expect(group.children).toHaveLength(3)
+    for (const child of group.children) {
+      expect(fillOf(child as PrimitiveNode)).toEqual(expected)
+    }
+  })
+
+  it('collects gradients outside <defs> and never draws <defs> content', () => {
+    const { group } = importOk(
+      HEADER +
+        '<linearGradient id="loose" x1="0" y1="0" x2="1" y2="0">' + TWO_STOPS + '</linearGradient>' +
+        '<defs><rect width="50" height="50" fill="#00ff00"/></defs>' +
+        '<rect x="5" y="5" width="10" height="10" fill="url(#loose)"/></svg>'
+    )
+    expect(group.children).toHaveLength(1)
+    expect(fillOf(group.children[0] as PrimitiveNode)).toEqual({
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 1, color: '#0000ff' }
+      ]
+    })
+  })
+
+  it('collapses duplicate gradient-filled shapes and keeps differing gradients apart', () => {
+    const { group, assets } = importOk(
+      HEADER +
+        '<defs><linearGradient id="g1" x1="0" y1="0" x2="1" y2="0">' + TWO_STOPS + '</linearGradient></defs>' +
+        '<rect x="10" width="10" height="10" fill="url(#g1)"/>' +
+        '<rect x="60" width="10" height="10" fill="url(#g1)"/></svg>'
+    )
+    expect(assets).toHaveLength(1)
+    expect(group.children.every((child) => child.type === 'symbol')).toBe(true)
+
+    const different = importOk(
+      HEADER +
+        '<defs>' +
+        '<linearGradient id="h" x1="0" y1="0" x2="1" y2="0">' + TWO_STOPS + '</linearGradient>' +
+        '<linearGradient id="v" x1="0" y1="0" x2="0" y2="1">' + TWO_STOPS + '</linearGradient>' +
+        '</defs>' +
+        '<rect x="10" width="10" height="10" fill="url(#h)"/>' +
+        '<rect x="60" width="10" height="10" fill="url(#v)"/></svg>'
+    )
+    expect(different.assets).toHaveLength(0)
+    expect(different.group.children.every((child) => child.type === 'primitive')).toBe(true)
+  })
+
+  it('round-trips native gradient paints back through the importer', async () => {
+    const { nodeToSvgMarkup } = await import('./renderSvg')
+    const { group } = importOk(
+      HEADER +
+        '<defs><linearGradient id="orig" x1="0" y1="0" x2="1" y2="0">' +
+        '<stop offset="0" stop-color="#ff0000" stop-opacity="0.25"/>' +
+        '<stop offset="1" stop-color="#0000ff"/>' +
+        '</linearGradient></defs>' +
+        '<rect width="20" height="10" fill="url(#orig)"/></svg>'
+    )
+    const original = group.children[0] as PrimitiveNode
+    const reimported = importOk(`<svg xmlns="http://www.w3.org/2000/svg">${nodeToSvgMarkup(original)}</svg>`)
+    expect((reimported.group.children[0] as PrimitiveNode).fill).toEqual(original.fill)
+
+    const { group: angled } = importOk(
+      HEADER +
+        '<defs><linearGradient id="a45" x1="0.14644661" y1="0.14644661" x2="0.85355339" y2="0.85355339">' +
+        TWO_STOPS +
+        '</linearGradient></defs><rect width="20" height="10" fill="url(#a45)"/></svg>'
+    )
+    const angledOriginal = angled.children[0] as PrimitiveNode
+    const angledReimported = importOk(
+      `<svg xmlns="http://www.w3.org/2000/svg">${nodeToSvgMarkup(angledOriginal)}</svg>`
+    )
+    const fill = linearFill(angledReimported.group.children[0] as PrimitiveNode)
+    expect(fill.angle).toBeCloseTo(45, 2)
+    expect(fill.stops).toEqual((angledOriginal.fill as LinearGradientPaint).stops)
   })
 })
 

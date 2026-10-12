@@ -9,7 +9,9 @@ import {
   exportPixelSize
 } from '@shared/exportOptions'
 import { gifDelayMs } from '@shared/gifEncode'
+import type { GifEncodeOptions } from '@shared/gifEncode'
 import { buildLottieAnimation, packDotLottie, serializeLottie } from '@shared/lottieExport'
+import type { LottieAudioResource } from '@shared/lottieExport'
 import { exportAnimatedSvg } from '@shared/exportSvgAnimation'
 import { buildSpritesheetMetadata, computeSpritesheetGrid } from '@shared/spritesheet'
 import { StreamingZip } from '@shared/streamingZip'
@@ -26,6 +28,7 @@ import { createEditorAudioMixdown } from './audioMixdown'
 import { createGifEncodeClient } from './gifEncodeClient'
 import type { GifEncodeClient } from './gifEncodeClient'
 import { reconcileEmbeddedFonts } from '../fontEmbedding'
+import { createResourceBytesResolver } from './resourceBytes'
 import { createResourceDataUrlResolver } from './resourceDataUrl'
 import { textNodeOutline } from '../textOutlines'
 import type { TextOutlineProvider } from '@shared/textOutline'
@@ -50,8 +53,12 @@ export interface ExportRunnerDeps extends FrameRasterDeps {
   /** Non-fatal export notes (vector placeholders), surfaced in the dialog. */
   onDiagnostics?(diagnostics: string[]): void
   /** GIF encoder factory: a worker in the export UI, the inline encoder in
-   * environments without one. */
-  createGifEncodeClient?(): Promise<GifEncodeClient>
+   * environments without one. Receives the document's palette/dither/loop
+   * choices. */
+  createGifEncodeClient?(options?: Partial<GifEncodeOptions>): Promise<GifEncodeClient>
+  /** Raw bytes of an audio resource for Lottie audio embedding; absent or
+   * null keeps the soundtrack out with an export diagnostic. */
+  resolveResourceBytes?(resourceId: string): Promise<LottieAudioResource | null>
   /** Embeds the font subsets the document renders (optional; harnesses that
    * rasterize fixtures directly may omit it). */
   reconcileFonts?(): Promise<unknown>
@@ -69,6 +76,7 @@ export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps 
   return {
     ...createDefaultFrameRasterDeps(),
     resolveResourceDataUrl: createResourceDataUrlResolver(editor.resources),
+    resolveResourceBytes: createResourceBytesResolver(editor.resources),
     pickExportPath: (request) => window.api.pickExportPath(request),
     writeExportFile: (path, bytes) => window.api.writeExportFile(path, bytes),
     openExportStream: (path) => window.api.openExportStream(path),
@@ -129,16 +137,24 @@ export async function runExport(
     if (options.format === 'lottie' || options.format === 'dotlottie') {
       const built = await buildLottieAnimation(
         document,
-        { fromFrame: options.fromFrame, toFrame: options.toFrame, fps: options.fps },
+        {
+          fromFrame: options.fromFrame,
+          toFrame: options.toFrame,
+          fps: options.fps,
+          // dotLottie archives ship audio as side files; the plain JSON format
+          // embeds it as data URIs.
+          audio: options.format === 'dotlottie' ? 'files' : 'embed'
+        },
         {
           resolveResourceDataUrl: (resourceId) => deps.resolveResourceDataUrl(resourceId),
+          resolveResourceBytes: deps.resolveResourceBytes,
           outlineText: deps.outlineText
         }
       )
       diagnostics = built.diagnostics
       bytes =
         options.format === 'dotlottie'
-          ? packDotLottie(built.lottie, await appVersionOf(deps))
+          ? packDotLottie(built.lottie, await appVersionOf(deps), built.files)
           : serializeLottie(built.lottie)
     } else if (options.format === 'svg-animation') {
       const exported = await exportAnimatedSvg(
@@ -203,9 +219,14 @@ export async function runExport(
       })
     } else if (options.format === 'gif') {
       const delayMs = gifDelayMs(options)
+      const gifOptions = {
+        palette: options.gifPalette,
+        dither: options.gifDither,
+        loop: options.gifLoop
+      }
       const client = deps.createGifEncodeClient
-        ? await deps.createGifEncodeClient()
-        : await createGifEncodeClient()
+        ? await deps.createGifEncodeClient(gifOptions)
+        : await createGifEncodeClient(gifOptions)
       try {
         let done = 0
         for (let frame = options.fromFrame; frame <= options.toFrame; frame++) {

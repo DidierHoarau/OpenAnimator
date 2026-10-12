@@ -388,6 +388,96 @@ describe('validateScriptPayload', () => {
     expect(joined).toContain('/commands/5/nodeId')
     expect(joined).toContain('/commands/6/targetFrame')
   })
+
+  it('accepts the export, import, onion, brush and global-palette ops and rejects bad shapes', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        {
+          op: 'export',
+          format: 'gif',
+          out: '/tmp/bounce.gif',
+          fromFrame: 0,
+          toFrame: 23,
+          scale: 2,
+          fps: 12,
+          transparent: true,
+          gifPalette: 'global',
+          gifDither: false,
+          gifLoop: 0,
+          videoQuality: 'high'
+        },
+        {
+          op: 'importImage',
+          frame: 3,
+          layerId: 'l1',
+          at: { x: 10, y: 20 },
+          width: 100,
+          height: 50,
+          name: 'logo.png'
+        },
+        { op: 'importImage' },
+        { op: 'importAudio', startFrame: 6 },
+        { op: 'setOnionSkin', enabled: true, before: 3, after: 1 },
+        { op: 'setBrush', color: '#ff8800', size: 12, opacity: 0.5 },
+        { op: 'setGlobalPalette', colors: ['#fff', '#123456'] },
+        { op: 'addGlobalPaletteColor', color: '#a1b2c3' }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+    expect(ok.commands).toHaveLength(8)
+
+    const bad = validateScriptPayload({
+      commands: [
+        { op: 'export' },
+        { op: 'export', format: 'bogus' },
+        { op: 'export', format: 'gif', fps: 12.5 },
+        { op: 'export', format: 'gif', gifPalette: 'adaptive' },
+        { op: 'export', format: 'gif', videoQuality: 'ultra' },
+        { op: 'export', format: 'gif', gifLoop: -2 },
+        { op: 'export', format: 'gif', extra: 1 },
+        { op: 'importImage', width: 0 },
+        { op: 'importImage', at: { x: 1 } },
+        { op: 'importAudio', startFrame: -1 },
+        { op: 'importAudio', surprise: 1 },
+        { op: 'setOnionSkin' },
+        { op: 'setOnionSkin', before: 6 },
+        { op: 'setOnionSkin', enabled: 'yes' },
+        { op: 'setBrush' },
+        { op: 'setBrush', color: 'red' },
+        { op: 'setBrush', size: 0 },
+        { op: 'setBrush', opacity: 1.5 },
+        { op: 'setGlobalPalette' },
+        { op: 'setGlobalPalette', colors: [] },
+        { op: 'setGlobalPalette', colors: ['red'] },
+        { op: 'addGlobalPaletteColor' },
+        { op: 'addGlobalPaletteColor', color: 'red' }
+      ]
+    })
+    const joined = bad.errors.join('\n')
+    expect(joined).toContain('/commands/0/format')
+    expect(joined).toContain('/commands/1/format')
+    expect(joined).toContain('/commands/2/fps')
+    expect(joined).toContain('/commands/3/gifPalette')
+    expect(joined).toContain('/commands/4/videoQuality')
+    expect(joined).toContain('/commands/5/gifLoop')
+    expect(joined).toContain('/commands/6/extra')
+    expect(joined).toContain('/commands/7/width')
+    expect(joined).toContain('/commands/8/at')
+    expect(joined).toContain('/commands/9/startFrame')
+    expect(joined).toContain('/commands/10/surprise')
+    expect(joined).toContain('/commands/11: must set at least one')
+    expect(joined).toContain('/commands/12/before')
+    expect(joined).toContain('/commands/13/enabled')
+    expect(joined).toContain('/commands/14: must set at least one')
+    expect(joined).toContain('/commands/15/color')
+    expect(joined).toContain('/commands/16/size')
+    expect(joined).toContain('/commands/17/opacity')
+    expect(joined).toContain('/commands/18/colors')
+    expect(joined).toContain('/commands/19/colors')
+    expect(joined).toContain('/commands/20/colors/0')
+    expect(joined).toContain('/commands/21/color')
+    expect(joined).toContain('/commands/22/color')
+  })
 })
 
 describe('validateDocumentPayload', () => {
@@ -980,7 +1070,121 @@ describe('hand-rolled validator vs JSON Schema', () => {
           extra: 1
         }
       ]
-    }
+    },
+    {
+      commands: [
+        {
+          op: 'export',
+          format: 'gif',
+          out: '/tmp/out.gif',
+          fromFrame: 0,
+          toFrame: 12,
+          scale: 2,
+          fps: 12,
+          transparent: true,
+          gifPalette: 'global',
+          gifDither: false,
+          gifLoop: 0,
+          videoQuality: 'high'
+        }
+      ]
+    },
+    { commands: [{ op: 'export', format: 'png-sequence' }] },
+    { commands: [{ op: 'export', format: 'lottie', fps: 24 }] },
+    { commands: [{ op: 'export' }] },
+    { commands: [{ op: 'export', format: 'bogus' }] },
+    { commands: [{ op: 'export', format: 'gif', fps: 12.5 }] },
+    { commands: [{ op: 'export', format: 'gif', fps: 0 }] },
+    { commands: [{ op: 'export', format: 'gif', gifPalette: 'adaptive' }] },
+    { commands: [{ op: 'export', format: 'webm', gifPalette: 'perFrame' }] },
+    { commands: [{ op: 'export', format: 'mp4', videoQuality: 'ultra' }] },
+    { commands: [{ op: 'export', format: 'gif', gifLoop: -2 }] },
+    { commands: [{ op: 'export', format: 'gif', gifLoop: -1 }] },
+    { commands: [{ op: 'export', format: 'gif', extra: 1 }] },
+    { commands: [{ op: 'export', format: 'gif', fromFrame: -1 }] },
+    {
+      commands: [
+        {
+          op: 'importImage',
+          frame: 3,
+          layerId: 'l1',
+          at: { x: 10, y: 20 },
+          width: 100,
+          height: 50,
+          name: 'logo.png'
+        }
+      ]
+    },
+    { commands: [{ op: 'importImage' }] },
+    { commands: [{ op: 'importImage', width: 0 }] },
+    { commands: [{ op: 'importImage', height: -2 }] },
+    { commands: [{ op: 'importImage', at: { x: 1 } }] },
+    { commands: [{ op: 'importImage', at: { x: 1, y: 2, z: 3 } }] },
+    { commands: [{ op: 'importImage', layerId: 'l1', extra: 1 }] },
+    { commands: [{ op: 'importAudio', startFrame: 6 }] },
+    { commands: [{ op: 'importAudio' }] },
+    { commands: [{ op: 'importAudio', startFrame: -1 }] },
+    { commands: [{ op: 'importAudio', surprise: 1 }] },
+    { commands: [{ op: 'setOnionSkin', enabled: true, before: 3, after: 1 }] },
+    { commands: [{ op: 'setOnionSkin', enabled: false }] },
+    { commands: [{ op: 'setOnionSkin', before: 5 }] },
+    { commands: [{ op: 'setOnionSkin' }] },
+    { commands: [{ op: 'setOnionSkin', before: 6 }] },
+    { commands: [{ op: 'setOnionSkin', after: -1 }] },
+    { commands: [{ op: 'setOnionSkin', enabled: 'yes' }] },
+    { commands: [{ op: 'setOnionSkin', opacity: 0.5 }] },
+    { commands: [{ op: 'setBrush', color: '#ff8800', size: 12, opacity: 0.5 }] },
+    { commands: [{ op: 'setBrush', color: '#FFF' }] },
+    { commands: [{ op: 'setBrush', size: 0.5 }] },
+    { commands: [{ op: 'setBrush' }] },
+    { commands: [{ op: 'setBrush', color: 'red' }] },
+    { commands: [{ op: 'setBrush', size: 0 }] },
+    { commands: [{ op: 'setBrush', opacity: 1.5 }] },
+    { commands: [{ op: 'setBrush', color: '#aabbcc', extra: 1 }] },
+    { commands: [{ op: 'setGlobalPalette', colors: ['#fff', '#123456'] }] },
+    { commands: [{ op: 'setGlobalPalette', colors: ['#ffffff'] }] },
+    { commands: [{ op: 'setGlobalPalette', colors: Array.from({ length: 48 }, () => '#fff') }] },
+    { commands: [{ op: 'setGlobalPalette', colors: Array.from({ length: 49 }, () => '#fff') }] },
+    { commands: [{ op: 'setGlobalPalette', colors: [] }] },
+    { commands: [{ op: 'setGlobalPalette' }] },
+    { commands: [{ op: 'setGlobalPalette', colors: ['red'] }] },
+    { commands: [{ op: 'setGlobalPalette', colors: ['#fff'], extra: 1 }] },
+    { commands: [{ op: 'addGlobalPaletteColor', color: '#a1b2c3' }] },
+    { commands: [{ op: 'addGlobalPaletteColor' }] },
+    { commands: [{ op: 'addGlobalPaletteColor', color: 'red' }] },
+    { commands: [{ op: 'addGlobalPaletteColor', color: '#abc', extra: 1 }] },
+    { commands: [{ op: 'addLayer', kind: 'object', layerId: 'layer-7', name: 'Layer 7' }] },
+    { commands: [{ op: 'addLayer', kind: 'audio', resourceId: 'clip-1', layerId: 'aud-1', startFrame: 0 }] },
+    { commands: [{ op: 'addLayer', kind: 'audio', layerId: 'aud-1' }] },
+    { commands: [{ op: 'addLayer', layerId: null }] },
+    {
+      commands: [
+        {
+          op: 'updateNode',
+          nodeId: 'x',
+          patch: {
+            name: null,
+            stroke: null,
+            strokeWidth: null,
+            fontStyle: null,
+            ligatures: null,
+            letterSpacing: null,
+            lineHeight: null,
+            verticalAlign: null,
+            fontFallback: null,
+            strokeLinecap: null,
+            strokeLinejoin: null,
+            strokeDasharray: null,
+            strokeDashoffset: null
+          }
+        }
+      ]
+    },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { fill: null } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { center: null } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { opacity: null } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { name: 7 } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { fontStyle: null, lineHeight: 0.2 } }] }
   ]
 
   it('agrees with the compiled schema on every corpus entry', () => {

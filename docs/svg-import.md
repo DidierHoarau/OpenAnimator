@@ -27,11 +27,12 @@ fallback beats silently wrong vectors.
 | `line` | → path node. |
 | `polyline`, `polygon` | → path node (`polygon` closes). |
 | `path` | `M`, `L`, `H`, `V`, `C`, `S`, `Q`, `T`, `Z` (both cases, relative forms included). |
+| `linearGradient`, `radialGradient`, `stop` | Paint definitions: collected by id anywhere in the tree (`defs` or not) and resolved from `fill`/`stroke` `url(#id)` references; never drawn directly. |
+| `defs` | Definition container: its content never draws (shapes inside are only reachable through `<use>`, which is unsupported); gradients inside are still collected. |
 | `title`, `desc`, `metadata` | Ignored (children must be none). |
 
-Anything else (`text`, `use`, `image`, `defs`, `linearGradient`, `filter`,
-`clipPath`, `mask`, `style` blocks, …) makes the import fall back to
-rasterization.
+Anything else (`text`, `use`, `image`, `filter`, `clipPath`, `mask`, `style`
+blocks, …) makes the import fall back to rasterization.
 
 ### Attributes
 
@@ -39,7 +40,7 @@ rasterization.
 | --- | --- |
 | Geometry attributes | Per element (`x`, `y`, `width`, …); unitless numbers or `px` only. |
 | `transform` | `translate`, `scale`, `rotate(a [cx cy])`, `matrix` — baked into the geometry. `skewX`/`skewY` are unsupported. |
-| `fill`, `stroke` | `none`, `#rgb`, `#rrggbb` only (expanded to lowercase `#rrggbb`). Named colors, `rgb()`, `currentColor`, `url(#…)` paints are unsupported. |
+| `fill`, `stroke` | `none`, `#rgb`, `#rrggbb` (expanded to lowercase `#rrggbb`), or a `url(#id)` reference to a supported gradient (see below). Named colors, `rgb()`, `currentColor` are unsupported. |
 | `stroke-width` | Unitless/px, scaled by the accumulated transform. |
 | `stroke-linecap`, `stroke-linejoin` | `butt`/`round`/`square` and `miter`/`round`/`bevel` (case-insensitive; any other value fails the import). |
 | `stroke-dasharray` | `none` (≡ solid) or up to 16 unitless/px values, space- or comma-separated; scaled by the accumulated transform. An all-zero pattern imports as a solid stroke (SVG spec). |
@@ -60,6 +61,26 @@ linecap/linejoin/dash settings.
 - Lengths must be unitless or `px` (`10`, `10.5`, `.5`, `1e2`, `10px`). `mm`,
   `pt`, `%`, `em` are unsupported.
 - Colors are only the hex forms above; `#abc` shorthand is expanded.
+
+### Gradients
+
+`<linearGradient>`/`<radialGradient>` definitions are collected by id
+wherever they appear — inside `<defs>` or as direct children — and resolved
+from `fill`/`stroke` `url(#id)` references, in presentation attributes or
+`style`, inherited through groups. Only the part of SVG's gradient model the
+native gradient paints reproduce faithfully is accepted:
+
+| Aspect | Accepted | Falls back to rasterization |
+| --- | --- | --- |
+| Units | `gradientUnits` absent or `objectBoundingBox` | `userSpaceOnUse` |
+| Stops | 2–8 stops; `offset` numbers or percentages in 0..1; `stop-color` hex; `stop-opacity` in 0..1 (carried only when ≠ 1) | fewer than 2 or more than 8 stops; `stop-color="none"` or named colors |
+| Linear axis | any direction, as long as the axis is unit-length and centered on the box along it (0.02 tolerance): `(0,0)→(1,0)` (default, 0°), `(50%,0)→(50%,100%)` (90°), canonical diagonals like `(14.64%,14.64%)→(85.36%,85.36%)` (45°) | off-center or shortened axes such as `(0,0)→(1,1)` or `(0,0)→(0.9,0)` |
+| Radial | `cx`/`cy`/`r` as bounding-box fractions (defaults 0.5/0.5/0.5; radius > 0); a focal point (`fx`/`fy`) within 0.01 of the center | a plainly off-center focal point; a non-positive radius |
+| References | exactly one definition per id; `fill="url(#g)"`, `url( #g )` and quoted forms | missing or duplicate ids; `href`/`xlink:href` inheritance; `gradientTransform`; `spreadMethod` other than `pad` |
+
+Accepted gradients round-trip: a shape filled with a native gradient paint
+re-imports to the same paint, and duplicate gradient-filled shapes collapse
+into symbol assets like any other repeated shape.
 
 ## Transform flattening
 
@@ -102,6 +123,9 @@ The status bar reports why a file was rasterized instead, e.g.:
 - `path data uses unsupported or malformed commands (arcs cannot be converted)`;
 - `unsupported transform "skewX(10)"`;
 - `unsupported color "rgb(255, 0, 0)" (supported: none, #rgb, #rrggbb)`;
+- `unsupported linear gradient "g" (only centered full-span axes can be represented natively)`;
+- `radial gradient "g" has a focal point, which is not supported`;
+- `unsupported gradientUnits "userSpaceOnUse" on <linearGradient> (only objectBoundingBox is supported)`;
 - `no supported drawable shapes were found`;
 - `the file is not valid UTF-8 text`.
 
@@ -109,5 +133,7 @@ The status bar reports why a file was rasterized instead, e.g.:
 
 The converter (`src/shared/svgImport.ts`) is pure — a handwritten XML parser
 plus the subset transformer — so the whole pipeline is unit-tested without a
-DOM. The renderer integration (`src/renderer/src/imageImport.ts`) only decides
-between the vector path and the raster fallback.
+DOM. Gradient definitions are collected in a first pass (by id, anywhere in
+the tree) and resolved lazily per paint, at most once per import. The
+renderer integration (`src/renderer/src/imageImport.ts`) only decides between
+the vector path and the raster fallback.
