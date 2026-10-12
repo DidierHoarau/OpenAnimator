@@ -6,6 +6,7 @@ import type { MenuItemConstructorOptions } from 'electron'
 import { APP_API_CHANNEL, APP_MENU_COMMAND_CHANNEL } from '../shared/api'
 import type { AppVersions, MenuCommand } from '../shared/api'
 import { registerExportHandlers } from './exports'
+import { registerFontHandlers } from './fonts'
 import { registerLibraryHandlers } from './library'
 import { registerPaletteHandlers } from './palette'
 import { registerProjectHandlers } from './projects'
@@ -94,6 +95,7 @@ app.whenReady().then(() => {
   registerLibraryHandlers()
   registerExportHandlers()
   registerPaletteHandlers()
+  registerFontHandlers()
   installApplicationMenu()
 
   ipcMain.handle(APP_API_CHANNEL, (): AppVersions => ({

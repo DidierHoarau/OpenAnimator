@@ -7,6 +7,7 @@ import type { ExportPathRequest, ExportWriteResult, SaveAsResult } from '@shared
 
 import { FrameRasterizer, createDefaultFrameRasterDeps } from './frameRaster'
 import type { FrameRasterDeps } from './frameRaster'
+import { reconcileEmbeddedFonts } from '../fontEmbedding'
 import { createResourceDataUrlResolver } from './resourceDataUrl'
 import { CanceledError, canEncodeVideo, encodeVideo } from './videoEncoder'
 
@@ -21,6 +22,9 @@ export interface ExportRunnerDeps extends FrameRasterDeps {
   /** Status-bar feedback (progress milestones, results, errors). */
   showMessage(message: string): void
   onProgress?(progress: ExportProgress): void
+  /** Embeds the font subsets the document renders (optional; harnesses that
+   * rasterize fixtures directly may omit it). */
+  reconcileFonts?(): Promise<unknown>
 }
 
 export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps {
@@ -29,7 +33,8 @@ export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps 
     resolveResourceDataUrl: createResourceDataUrlResolver(editor.resources),
     pickExportPath: (request) => window.api.pickExportPath(request),
     writeExportFile: (path, bytes) => window.api.writeExportFile(path, bytes),
-    showMessage: (message) => editor.showMessage(message)
+    showMessage: (message) => editor.showMessage(message),
+    reconcileFonts: () => reconcileEmbeddedFonts(editor)
   }
 }
 
@@ -63,6 +68,9 @@ export async function runExport(
   const rasterizer = new FrameRasterizer(document, options, deps)
   const { width, height } = exportPixelSize(document, options)
   try {
+    // Embed the font subsets the document renders before rasterizing, so the
+    // exported frames keep their typography everywhere.
+    await deps.reconcileFonts?.()
     let bytes: Uint8Array
     if (options.format === 'png-sequence') {
       const pngs: Uint8Array[] = []

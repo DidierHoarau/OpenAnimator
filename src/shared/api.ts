@@ -5,6 +5,7 @@ export const APP_API_CHANNEL = 'openanimator:app-info'
 export const APP_MENU_COMMAND_CHANNEL = 'openanimator:menu-command'
 
 import type { AnimatorDocument, Asset } from './model'
+import type { FontEmbeddingPolicy } from './fontPolicy'
 
 export const DOCUMENT_SAVE_AS_CHANNEL = 'openanimator:document-save-as'
 export const DOCUMENT_SAVE_TO_CHANNEL = 'openanimator:document-save-to'
@@ -24,6 +25,9 @@ export const EXPORT_PICK_PATH_CHANNEL = 'openanimator:export-pick-path'
 export const EXPORT_WRITE_CHANNEL = 'openanimator:export-write'
 export const PALETTE_GET_CHANNEL = 'openanimator:palette-get'
 export const PALETTE_SET_CHANNEL = 'openanimator:palette-set'
+export const FONT_LIST_CHANNEL = 'openanimator:font-list'
+export const FONT_READ_CHANNEL = 'openanimator:font-read'
+export const FONT_POLICY_CHANNEL = 'openanimator:font-policy'
 
 export interface AppVersions {
   app: string
@@ -87,6 +91,15 @@ export interface ExportPathRequest {
 
 export type ExportWriteResult = { ok: true } | { ok: false; error: string }
 
+/** One installed system font family, with its upright weights. */
+export interface SystemFont {
+  family: string
+  /** Available CSS weights, ascending, deduplicated. */
+  weights: number[]
+}
+
+export type FontReadResult = { ok: true; bytes: Uint8Array } | { ok: false; error: string }
+
 /** Commands the application menu dispatches into the renderer. */
 export type MenuCommand = 'undo' | 'redo'
 
@@ -115,6 +128,12 @@ export interface OpenAnimatorApi {
   loadGlobalPalette(): Promise<string[]>
   /** Replaces the persistent global color palette. */
   saveGlobalPalette(colors: string[]): Promise<boolean>
+  /** Lists installed system font families and their available weights. */
+  listSystemFonts(): Promise<SystemFont[]>
+  /** Reads the installed face nearest to (family, weight) as raw font bytes. */
+  readSystemFont(family: string, weight: number): Promise<FontReadResult>
+  /** Reads the effective font embedding policy (built-ins plus user rules). */
+  getFontEmbeddingPolicy(): Promise<FontEmbeddingPolicy>
   /** Listens for application-menu commands; returns an unsubscribe function. */
   onMenuCommand(listener: (command: MenuCommand) => void): () => void
 }

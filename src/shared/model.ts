@@ -85,6 +85,20 @@ export interface TextNode extends NodeBase {
   fontWeight: number
   fill: Paint
   align: 'left' | 'center' | 'right'
+  /** Extra advance between characters in stage pixels. Absent ≡ 0. */
+  letterSpacing?: number
+  /** Line advance as a multiple of `fontSize`. Absent ≡ `TEXT_LINE_HEIGHT`. */
+  lineHeight?: number
+  /** Text outline paint; drawn in addition to `fill`. Absent ≡ no outline. */
+  stroke?: Paint
+  /** Outline width in stage pixels; only meaningful with `stroke` set. */
+  strokeWidth?: number
+  /** Vertical placement of the layout box inside the node's `height`.
+   * Absent ≡ `'top'` (the legacy baseline math). */
+  verticalAlign?: 'top' | 'middle' | 'bottom'
+  /** Additional font families tried (in order) when `fontFamily` is missing.
+   * At most 8 entries. */
+  fontFallback?: string[]
 }
 
 export type SceneNode = PrimitiveNode | PathNode | TextNode | ImageNode | GroupNode | SymbolNode
@@ -103,8 +117,7 @@ export interface Asset {
   createdAt: number
 }
 
-/** Classic tween attached to a keyframe: interpolates toward the next keyframe. */
-export interface KeyframeTween {
+/** Classic tween attached to a keyframe: interpolates toward the next keyframe. */export interface KeyframeTween {
   easing: Easing
   /**
    * Spatial behavior of the tweened center. Absent ≡ `'linear'` (the center
@@ -161,9 +174,29 @@ export function isDrawingLayer(layer: Layer): layer is DrawingLayer {
   return layer.kind === 'drawing'
 }
 
+/** One embedded font subset: the glyphs actually used by the document are
+ * packed into a content-addressed TTF resource so the text renders on
+ * machines that do not have the original family installed. */
+export interface EmbeddedFont {
+  /** Synthetic family the renderer registers (`@font-face`/`FontFace`);
+   * deterministic (`oa-embed-<weight>-<hash8>`) so repeated saves of the
+   * same subset reuse one `@font-face` entry. */
+  id: string
+  /** Original family name, for display and user-facing messages. */
+  family: string
+  /** Requested weight used by text nodes of this family (100..900-ish). */
+  weight: number
+  /** Content-addressed resource id of the subset TTF. */
+  resourceId: string
+  /** Every character included in the subset, sorted by code point. */
+  glyphs: string[]
+  /** License label the embedding policy reported for this family. */
+  license: string
+}
+
 /** The authoring document. `layers[0]` is the topmost layer. */
 export interface AnimatorDocument {
-  schemaVersion: 5
+  schemaVersion: 6
   name: string
   width: number
   height: number
@@ -187,6 +220,9 @@ export interface AnimatorDocument {
   holdStep?: number
   /** Document asset library (symbols and images); empty in migrated documents. */
   assets: Asset[]
+  /** Embedded font subsets referenced by text nodes. Documents saved before
+   * this field existed get `[]` on migration. */
+  fonts: EmbeddedFont[]
 }
 
 /** Independent copy of a node, including nested objects like `center` and

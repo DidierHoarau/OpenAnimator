@@ -57,8 +57,11 @@ layer. Frames are 0-based.
 
 `primitive` (with `primitive: 'rect' | 'ellipse'` and `fill`), `path`
 (SVG path data in `d`), `text` (needs `text`, `fontFamily`, `fontSize`,
-`fontWeight`, `fill`, `align`), `image` (needs `resourceId` and natural
-sizes), `group` (with `children`), `symbol` (with `assetId`).
+`fontWeight`, `fill`, `align`; optional typography: `letterSpacing`,
+`lineHeight`, `verticalAlign` (`top`|`middle`|`bottom`), `stroke` +
+`strokeWidth` for a text outline, `fontFallback` — up to 8 extra families
+tried in order), `image` (needs `resourceId` and natural sizes), `group`
+(with `children`), `symbol` (with `assetId`).
 
 Base fields (`id`, `center`, `width`, `height`, `rotation`, `opacity`,
 `name`) are optional in scripts: omitted fields are defaulted (center =
@@ -67,8 +70,10 @@ sees exactly what was chosen. Explicit values are preferred.
 
 The `patch` of `updateNode` accepts the whitelisted node fields (`name`,
 `center`, `width`, `height`, `rotation`, `opacity`, `fill`, `stroke`,
-`strokeWidth`, `d`, and the text fields); unknown fields are rejected by the
-schema, never silently ignored.
+`strokeWidth`, `d`, and the text fields — including `letterSpacing`,
+`lineHeight`, `verticalAlign` and `fontFallback`; text patches that change
+the layout re-measure the node's box so the placed size stays correct);
+unknown fields are rejected by the schema, never silently ignored.
 
 ### Paint values (fill / stroke)
 
@@ -133,8 +138,12 @@ validate <payload.json> [--kind commands|document]
 
 - `render` evaluates frames through the same shared SVG path as the in-app
   exporter, rasterizes with resvg, and encodes with the shared GIF /
-  PNG-sequence encoders. `webm`/`mp4` require `ffmpeg` on PATH (WebCodecs is
-  browser-only). `png-sequence` writes a ZIP of per-frame PNGs.
+  PNG-sequence encoders. Embedded font subsets travel with the project:
+  they are written to a temporary directory and handed to resvg as font
+  files, so text renders with the embedded typography (see
+  [docs/font-embedding.md](font-embedding.md)). `webm`/`mp4` require
+  `ffmpeg` on PATH (WebCodecs is browser-only). `png-sequence` writes a ZIP
+  of per-frame PNGs.
 - `validate` prints schema errors and exits 1 on an invalid payload — the
   machine surface for CI checks and LLM tooling.
 

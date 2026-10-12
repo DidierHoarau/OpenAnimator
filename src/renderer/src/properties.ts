@@ -15,7 +15,8 @@ import type { ImageNode, SceneNode } from '@shared/model'
 import { isGradientPaint, paintPrimaryColor } from '@shared/paint'
 import type { Paint } from '@shared/paint'
 import { pathDataToAnchors } from '@shared/pathModel'
-import { applyTextMetrics } from '@shared/textModel'
+import { applyTextMetrics, TEXT_LINE_HEIGHT } from '@shared/textModel'
+import type { SystemFont } from '@shared/api'
 
 import type { Editor } from './editor'
 import { el } from './dom'
@@ -36,6 +37,7 @@ const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#e6edf3'
 const DEFAULT_STROKE_WIDTH = 2
 const DEFAULT_TEXT_FILL = '#e2e8f0'
+const MAX_TEXT_FALLBACKS = 8
 
 function normalizeHex(value: string, fallback: string): string {
   const parsed = parseHexColor(value)
@@ -85,7 +87,10 @@ class PanelSection {
  * node properties of the selection — the "Shape" section for primitives (fill
  * and outline rows), the "Image" section for images (source file, native-size
  * reset and replace-source) and the "Group" section for groups (ungroup and
- * the upcoming symbol action). All node sections share the same transform
+ * the upcoming symbol action). The "Text" section carries the typography
+ * controls: font (with installed-family suggestions), size, weight,
+ * alignment, letter spacing, line height, vertical placement, fallback
+ * families, fill and outline. All node sections share the same transform
  * inputs (position, size, rotation, opacity). Playback and frame controls
  * live at the top of the timeline; layers and per-object keyframes are
  * managed in the timeline tree. The node sections only appear while a
@@ -144,24 +149,35 @@ export class PropertiesView {
   private readonly pathInfoLabel: HTMLElement
   private readonly textContent: HTMLTextAreaElement
   private readonly textFont: HTMLInputElement
+  private readonly fontDatalist: HTMLDataListElement
   private readonly textSize: HTMLInputElement
   private readonly textWeight: HTMLSelectElement
   private readonly textAlign: HTMLSelectElement
+  private readonly textSpacing: HTMLInputElement
+  private readonly textLineHeight: HTMLInputElement
+  private readonly textVertical: HTMLSelectElement
+  private readonly textFallback: HTMLInputElement
   private readonly textColor: HTMLInputElement
   private readonly textHex: HTMLInputElement
+  private readonly textStrokeToggle: HTMLInputElement
+  private readonly textStrokeColor: HTMLInputElement
+  private readonly textStrokeWidth: HTMLInputElement
   private readonly outlinesButton: HTMLButtonElement
   private readonly imageImportDeps: ImageImportDeps
+  private readonly listSystemFonts: () => Promise<SystemFont[]>
 
   private readonly fillGradient: GradientEditor
   private readonly strokeGradient: GradientEditor
   private readonly pathStrokeGradient: GradientEditor
   private readonly pathFillGradient: GradientEditor
   private readonly textGradient: GradientEditor
+  private readonly textStrokeGradient: GradientEditor
   private readonly fillSwatches: SwatchStrip
   private readonly strokeSwatches: SwatchStrip
   private readonly pathStrokeSwatches: SwatchStrip
   private readonly pathFillSwatches: SwatchStrip
   private readonly textSwatches: SwatchStrip
+  private readonly textStrokeSwatches: SwatchStrip
   private readonly brushSwatches: SwatchStrip
   private readonly paletteDocStrip: SwatchStrip
   private readonly paletteGlobalStrip: SwatchStrip
@@ -173,10 +189,11 @@ export class PropertiesView {
   constructor(
     editor: Editor,
     container: HTMLElement,
-    options: { imageImportDeps?: ImageImportDeps } = {}
+    options: { imageImportDeps?: ImageImportDeps; listSystemFonts?: () => Promise<SystemFont[]> } = {}
   ) {
     this.editor = editor
     this.imageImportDeps = options.imageImportDeps ?? {}
+    this.listSystemFonts = options.listSystemFonts ?? (() => window.api.listSystemFonts())
     this.sectionState = loadSectionState(window.localStorage)
 
     const scroll = el('div', 'props-scroll')
@@ -457,6 +474,9 @@ export class PropertiesView {
     this.textFont = el('input') as HTMLInputElement
     this.textFont.type = 'text'
     this.textFont.title = 'Font family (renders with locally installed fonts)'
+    this.fontDatalist = document.createElement('datalist')
+    this.fontDatalist.id = 'oa-system-fonts'
+    this.textFont.setAttribute('list', this.fontDatalist.id)
     this.textFont.addEventListener('change', () => {
       const family = this.textFont.value.trim()
       if (!family) {
@@ -469,7 +489,7 @@ export class PropertiesView {
         applyTextMetrics(current, editor.measureText)
       })
     })
-    fontRow.appendChild(this.textFont)
+    fontRow.append(this.textFont, this.fontDatalist)
 
     const textSizeRow = this.row(fontRows, "Size")
     this.textSize = el('input') as HTMLInputElement
@@ -493,14 +513,21 @@ export class PropertiesView {
     const weightRow = this.row(fontRows, 'Weight')
     this.textWeight = el('select', 'tl-select') as HTMLSelectElement
     for (const [value, label] of [
+      ['100', 'Thin'],
+      ['200', 'ExtraLight'],
+      ['300', 'Light'],
       ['400', 'Regular'],
-      ['700', 'Bold']
+      ['500', 'Medium'],
+      ['600', 'SemiBold'],
+      ['700', 'Bold'],
+      ['800', 'ExtraBold'],
+      ['900', 'Black']
     ] as const) {
       const option = el('option', undefined, label)
       option.value = value
       this.textWeight.appendChild(option)
     }
-    this.textWeight.title = 'Font weight (outlines convert with the bundled Noto Sans weight)'
+    this.textWeight.title = 'Font weight (100–900; embedded subsets record one entry per used weight)'
     this.textWeight.addEventListener('change', () => {
       editor.updateSelectedNode((current) => {
         if (current.type !== 'text') return
@@ -524,6 +551,89 @@ export class PropertiesView {
       })
     })
     alignRow.appendChild(this.textAlign)
+
+    const spacingRow = this.row(fontRows, 'Spacing')
+    this.textSpacing = el('input') as HTMLInputElement
+    this.textSpacing.type = 'number'
+    this.textSpacing.step = '0.5'
+    this.textSpacing.title = 'Extra advance between characters in stage pixels (0 keeps the natural spacing)'
+    this.textSpacing.addEventListener('change', () => {
+      const value = Number(this.textSpacing.value)
+      if (!Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        if (value === 0) delete current.letterSpacing
+        else current.letterSpacing = value
+        applyTextMetrics(current, editor.measureText)
+      })
+    })
+    spacingRow.appendChild(this.textSpacing)
+
+    const lineHeightRow = this.row(fontRows, 'Line height')
+    this.textLineHeight = el('input') as HTMLInputElement
+    this.textLineHeight.type = 'number'
+    this.textLineHeight.min = '0.5'
+    this.textLineHeight.step = '0.05'
+    this.textLineHeight.title = `Line advance as a multiple of the font size (default ${TEXT_LINE_HEIGHT})`
+    this.textLineHeight.addEventListener('change', () => {
+      const value = Number(this.textLineHeight.value)
+      if (!Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        const height = Math.max(0.5, value)
+        if (height === TEXT_LINE_HEIGHT) delete current.lineHeight
+        else current.lineHeight = height
+        applyTextMetrics(current, editor.measureText)
+      })
+    })
+    lineHeightRow.appendChild(this.textLineHeight)
+
+    const verticalRow = this.row(fontRows, 'Vertical')
+    this.textVertical = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['top', 'Top'],
+      ['middle', 'Middle'],
+      ['bottom', 'Bottom']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.textVertical.appendChild(option)
+    }
+    this.textVertical.title = 'Vertical placement of the text inside its box'
+    this.textVertical.addEventListener('change', () => {
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        if (this.textVertical.value === 'top') delete current.verticalAlign
+        else current.verticalAlign = this.textVertical.value as 'middle' | 'bottom'
+      })
+    })
+    verticalRow.appendChild(this.textVertical)
+
+    const fallbackRow = this.row(fontRows, 'Fallbacks')
+    this.textFallback = el('input') as HTMLInputElement
+    this.textFallback.type = 'text'
+    this.textFallback.placeholder = 'Lato, Inter'
+    this.textFallback.title =
+      'Additional font families tried in order when the main font is missing (up to 8, comma-separated)'
+    this.textFallback.addEventListener('change', () => {
+      const families = this.textFallback.value
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+        .slice(0, MAX_TEXT_FALLBACKS)
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        if (families.length === 0) delete current.fontFallback
+        else current.fontFallback = families
+      })
+    })
+    fallbackRow.appendChild(this.textFallback)
 
     const textColorRow = this.row(fontRows, 'Fill')
     this.textColor = el('input', 'color-swatch') as HTMLInputElement
@@ -559,10 +669,63 @@ export class PropertiesView {
     })
     fontRows.append(this.textGradient.root, this.textSwatches.root)
 
+    const textOutlineRow = this.row(fontRows, 'Outline')
+    this.textStrokeToggle = el('input', undefined) as HTMLInputElement
+    this.textStrokeToggle.type = 'checkbox'
+    this.textStrokeToggle.title = 'Enable the text outline (drawn in addition to the fill)'
+    this.textStrokeToggle.addEventListener('change', () => {
+      const enabled = this.textStrokeToggle.checked
+      editor.updateSelectedNode((current) => {
+        if (current.type !== 'text') return
+        if (enabled) {
+          current.stroke = current.stroke ?? DEFAULT_STROKE
+          current.strokeWidth = current.strokeWidth ?? DEFAULT_STROKE_WIDTH
+        } else {
+          delete current.stroke
+          delete current.strokeWidth
+        }
+      })
+      this.render()
+    })
+    this.textStrokeColor = el('input', 'color-swatch') as HTMLInputElement
+    this.textStrokeColor.type = 'color'
+    this.textStrokeColor.title = 'Text outline color'
+    this.textStrokeColor.addEventListener('input', () => {
+      editor.beginInteraction()
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'text') current.stroke = this.textStrokeColor.value
+      })
+    })
+    this.textStrokeColor.addEventListener('change', () => editor.endInteraction())
+    this.textStrokeColor.addEventListener('cancel', () => editor.endInteraction())
+    this.textStrokeWidth = el('input') as HTMLInputElement
+    this.textStrokeWidth.type = 'number'
+    this.textStrokeWidth.min = '0'
+    this.textStrokeWidth.step = '1'
+    this.textStrokeWidth.title = 'Text outline width'
+    this.textStrokeWidth.addEventListener('change', () => {
+      const value = Number(this.textStrokeWidth.value)
+      if (!Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      editor.updateSelectedNode((current) => {
+        if (current.type === 'text') current.strokeWidth = Math.max(0, value)
+      })
+    })
+    textOutlineRow.append(this.textStrokeToggle, this.textStrokeColor, this.textStrokeWidth)
+    this.textStrokeGradient = this.createPaintEditor((node, paint) => {
+      if (node.type === 'text') node.stroke = paint
+    })
+    this.textStrokeSwatches = this.createSwatchStrip((node, color) => {
+      if (node.type === 'text') node.stroke = color
+    })
+    fontRows.append(this.textStrokeGradient.root, this.textStrokeSwatches.root)
+
     const textActions = el('div', 'panel-buttons')
     this.outlinesButton = this.button(
       'Convert to Outlines',
-      'Replace the text with vector paths (bundled Noto Sans, regular or bold)',
+      "Replace the text with vector paths (uses the node's own font, falling back to the bundled Noto Sans)",
       () => void convertSelectedTextToOutlines(editor).then(() => this.render())
     )
     textActions.appendChild(this.outlinesButton)
@@ -842,6 +1005,7 @@ export class PropertiesView {
     editor.onFrameChange(() => this.render())
     editor.onUiChange(() => this.render())
     void this.loadGlobalPalette()
+    void this.loadSystemFonts()
     this.render()
   }
 
@@ -924,6 +1088,23 @@ export class PropertiesView {
       this.render()
     } catch {
       // The global palette is optional; the panel works without it.
+    }
+  }
+
+  /** Fills the font field's datalist with the installed families; suggestions
+   * are a convenience — typing any family name still works. */
+  private async loadSystemFonts(): Promise<void> {
+    try {
+      const fonts = await this.listSystemFonts()
+      this.fontDatalist.replaceChildren(
+        ...fonts.map((font) => {
+          const option = document.createElement('option')
+          option.value = font.family
+          return option
+        })
+      )
+    } catch {
+      // Font enumeration is optional; the panel works without it.
     }
   }
 
@@ -1225,6 +1406,12 @@ export class PropertiesView {
       if (!keepFocused(this.textSize)) this.textSize.value = String(node.fontSize)
       if (!keepFocused(this.textWeight)) this.textWeight.value = String(node.fontWeight)
       if (!keepFocused(this.textAlign)) this.textAlign.value = node.align
+      if (!keepFocused(this.textSpacing)) this.textSpacing.value = String(node.letterSpacing ?? 0)
+      if (!keepFocused(this.textLineHeight)) {
+        this.textLineHeight.value = String(node.lineHeight ?? TEXT_LINE_HEIGHT)
+      }
+      if (!keepFocused(this.textVertical)) this.textVertical.value = node.verticalAlign ?? 'top'
+      if (!keepFocused(this.textFallback)) this.textFallback.value = (node.fontFallback ?? []).join(', ')
       const fill = node.fill
       const fillIsGradient = isGradientPaint(fill)
       if (!fillIsGradient && !keepFocused(this.textColor)) {
@@ -1237,6 +1424,23 @@ export class PropertiesView {
       this.textSwatches.setColors(this.combinedPalette())
       this.textSwatches.setActive(paintPrimaryColor(fill))
       this.textSwatches.setDisabled(!editable || fillIsGradient)
+
+      const stroke = node.stroke
+      const strokeIsGradient = stroke !== undefined && isGradientPaint(stroke)
+      const outlined = stroke !== undefined
+      if (!keepFocused(this.textStrokeToggle)) this.textStrokeToggle.checked = outlined
+      if (stroke !== undefined && !strokeIsGradient && !keepFocused(this.textStrokeColor)) {
+        this.textStrokeColor.value = normalizeHex(stroke, DEFAULT_STROKE)
+      }
+      if (!keepFocused(this.textStrokeWidth)) {
+        this.textStrokeWidth.value = String(node.strokeWidth ?? DEFAULT_STROKE_WIDTH)
+      }
+      this.textStrokeColor.disabled = !editable || !outlined || strokeIsGradient
+      this.textStrokeWidth.disabled = !editable || !outlined
+      this.textStrokeGradient.setValue(stroke ?? DEFAULT_STROKE, editable && outlined)
+      this.textStrokeSwatches.setColors(this.combinedPalette())
+      this.textStrokeSwatches.setActive(stroke !== undefined ? paintPrimaryColor(stroke) : null)
+      this.textStrokeSwatches.setDisabled(!editable || !outlined || strokeIsGradient)
       this.outlinesButton.disabled = !editable
     }
     this.lastNodeId = node.id

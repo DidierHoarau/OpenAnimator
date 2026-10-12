@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
-import type { Asset, DrawingLayer, ImageNode, PrimitiveNode, SymbolNode } from '@shared/model'
+import type { Asset, DrawingLayer, ImageNode, PrimitiveNode, SymbolNode, TextNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { PropertiesView } from './properties'
@@ -573,6 +573,182 @@ describe('PropertiesView — Layer move', () => {
     // One undo step restores the original timing.
     editor.undo()
     expect(frames()).toEqual([0])
+  })
+})
+
+function textNode(): TextNode {
+  return {
+    id: 't1',
+    type: 'text',
+    text: 'Hi',
+    fontFamily: 'Noto Sans',
+    fontSize: 20,
+    fontWeight: 400,
+    fill: '#ffffff',
+    align: 'left',
+    center: { x: 100, y: 80 },
+    width: 40,
+    height: 25,
+    rotation: 0,
+    opacity: 1
+  }
+}
+
+describe('PropertiesView — typography controls', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    // Deterministic measurement: every character is exactly 10px wide.
+    editor = new Editor(createDocument('test', 960, 540, 24), {
+      measureText: (line: string) => line.length * 10
+    })
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container, {
+      listSystemFonts: () =>
+        Promise.resolve([
+          { family: 'Inter', weights: [400, 700] },
+          { family: 'Lato', weights: [400] }
+        ])
+    })
+    editor.addNode(textNode())
+  })
+
+  function rowInput(label: string, selector: string): HTMLElement {
+    const section = sectionByTitle(container, 'Text')
+    const row = [...section.querySelectorAll('.panel-row')].find(
+      (candidate) => candidate.querySelector('label')?.textContent === label
+    )
+    if (!row) throw new Error(`missing row ${label}`)
+    const input = row.querySelector(selector)
+    if (!input) throw new Error(`missing ${selector} in row ${label}`)
+    return input as HTMLElement
+  }
+
+  function selectedTextNode(): TextNode {
+    const layer = editor.document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    return layer.keyframes[0].nodes[0] as TextNode
+  }
+
+  it('edits letter spacing and re-measures the text box', () => {
+    const spacing = rowInput('Spacing', 'input[type="number"]') as HTMLInputElement
+    expect(spacing.value).toBe('0')
+    spacing.value = '5'
+    spacing.dispatchEvent(new Event('change'))
+
+    const node = selectedTextNode()
+    expect(node.letterSpacing).toBe(5)
+    // 2 characters × 10px + 5px per character.
+    expect(node.width).toBe(30)
+    expect(node.height).toBe(25)
+
+    // Zero drops the field again so the spacing stays absent.
+    const again = rowInput('Spacing', 'input[type="number"]') as HTMLInputElement
+    again.value = '0'
+    again.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().letterSpacing).toBeUndefined()
+  })
+
+  it('edits the line height and re-measures the text box', () => {
+    const input = rowInput('Line height', 'input[type="number"]') as HTMLInputElement
+    expect(input.value).toBe('1.25')
+    input.value = '2'
+    input.dispatchEvent(new Event('change'))
+
+    const node = selectedTextNode()
+    expect(node.lineHeight).toBe(2)
+    // One line × 20px font size × 2.
+    expect(node.height).toBe(40)
+  })
+
+  it('edits the vertical placement and drops the field back at top', () => {
+    const select = rowInput('Vertical', 'select') as HTMLSelectElement
+    expect(select.value).toBe('top')
+    select.value = 'middle'
+    select.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().verticalAlign).toBe('middle')
+
+    const again = rowInput('Vertical', 'select') as HTMLSelectElement
+    again.value = 'top'
+    again.dispatchEvent(new Event('change'))
+    expect('verticalAlign' in selectedTextNode()).toBe(false)
+  })
+
+  it('offers the full weight range and writes the picked weight', () => {
+    const select = rowInput('Weight', 'select') as HTMLSelectElement
+    expect([...select.options].map((option) => option.value)).toEqual([
+      '100',
+      '200',
+      '300',
+      '400',
+      '500',
+      '600',
+      '700',
+      '800',
+      '900'
+    ])
+    select.value = '900'
+    select.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().fontWeight).toBe(900)
+  })
+
+  it('writes the fallback families, caps them at 8 and clears when emptied', () => {
+    const input = rowInput('Fallbacks', 'input[type="text"]') as HTMLInputElement
+    input.value = 'Lato, Inter , '
+    input.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().fontFallback).toEqual(['Lato', 'Inter'])
+
+    const capped = rowInput('Fallbacks', 'input[type="text"]') as HTMLInputElement
+    capped.value = 'a,b,c,d,e,f,g,h,i,j'
+    capped.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().fontFallback).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'])
+
+    const cleared = rowInput('Fallbacks', 'input[type="text"]') as HTMLInputElement
+    cleared.value = ''
+    cleared.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().fontFallback).toBeUndefined()
+  })
+
+  it('edits the text outline through the toggle, color and width', () => {
+    const toggle = rowInput('Outline', 'input[type="checkbox"]') as HTMLInputElement
+    expect(toggle.checked).toBe(false)
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().stroke).toBe('#e6edf3')
+    expect(selectedTextNode().strokeWidth).toBe(2)
+
+    const color = rowInput('Outline', 'input[type="color"]') as HTMLInputElement
+    color.value = '#ff0000'
+    color.dispatchEvent(new Event('input'))
+    color.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().stroke).toBe('#ff0000')
+
+    const width = rowInput('Outline', 'input[type="number"]') as HTMLInputElement
+    width.value = '4'
+    width.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().strokeWidth).toBe(4)
+
+    const off = rowInput('Outline', 'input[type="checkbox"]') as HTMLInputElement
+    off.checked = false
+    off.dispatchEvent(new Event('change'))
+    expect(selectedTextNode().stroke).toBeUndefined()
+    expect(selectedTextNode().strokeWidth).toBeUndefined()
+  })
+
+  it('suggests the installed font families in the font field datalist', async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const datalist = sectionByTitle(container, 'Text').querySelector('datalist')!
+    expect(datalist.id).toBe('oa-system-fonts')
+    expect([...datalist.querySelectorAll('option')].map((option) => option.value)).toEqual([
+      'Inter',
+      'Lato'
+    ])
+    const fontInput = rowInput('Font', 'input') as HTMLInputElement
+    expect(fontInput.getAttribute('list')).toBe('oa-system-fonts')
   })
 })
 

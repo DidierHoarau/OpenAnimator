@@ -106,7 +106,11 @@ export const COMMANDS_SCHEMA = {
         fontFamily: { type: 'string' },
         fontSize: { type: 'number', exclusiveMinimum: 0 },
         fontWeight: { type: 'number', minimum: 1, maximum: 1000 },
-        align: { enum: ['left', 'center', 'right'] }
+        align: { enum: ['left', 'center', 'right'] },
+        letterSpacing: { type: 'number' },
+        lineHeight: { type: 'number', minimum: 0.5, maximum: 5 },
+        verticalAlign: { enum: ['top', 'middle', 'bottom'] },
+        fontFallback: { type: 'array', maxItems: 8, items: { type: 'string' } }
       }
     },
     frameNumber: { type: 'integer', minimum: 0 },
@@ -263,6 +267,8 @@ interface FieldSpec {
   paint?: boolean
   /** Array items must be `#rgb`/`#rrggbb` strings. */
   hexColors?: boolean
+  /** Array items must be strings (the item shape of loose string lists). */
+  stringItems?: boolean
   maxItems?: number
 }
 
@@ -381,7 +387,13 @@ const NODE_KIND_FIELDS: Record<string, Record<string, FieldSpec>> = {
     fontSize: { type: 'number', exclusiveMin: 0, required: true },
     fontWeight: { type: 'number', min: 1, max: 1000, required: true },
     fill: { type: 'string', paint: true, required: true },
-    align: { type: 'string', enum: ['left', 'center', 'right'], required: true }
+    align: { type: 'string', enum: ['left', 'center', 'right'], required: true },
+    letterSpacing: { type: 'number' },
+    lineHeight: { type: 'number', min: 0.5, max: 5 },
+    stroke: { type: 'string', paint: true },
+    strokeWidth: { type: 'number', min: 0 },
+    verticalAlign: { type: 'string', enum: ['top', 'middle', 'bottom'] },
+    fontFallback: { type: 'array', stringItems: true, maxItems: 8 }
   },
   image: {
     resourceId: { type: 'string', required: true },
@@ -408,7 +420,11 @@ const NODE_PATCH_FIELDS: Record<string, FieldSpec> = {
   fontFamily: { type: 'string' },
   fontSize: { type: 'number', exclusiveMin: 0 },
   fontWeight: { type: 'number', min: 1, max: 1000 },
-  align: { type: 'string', enum: ['left', 'center', 'right'] }
+  align: { type: 'string', enum: ['left', 'center', 'right'] },
+  letterSpacing: { type: 'number' },
+  lineHeight: { type: 'number', min: 0.5, max: 5 },
+  verticalAlign: { type: 'string', enum: ['top', 'middle', 'bottom'] },
+  fontFallback: { type: 'array', stringItems: true, maxItems: 8 }
 }
 
 class Collector {
@@ -456,6 +472,13 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
       items.forEach((item, index) => {
         if (typeof item !== 'string' || parseHexColor(item) === null) {
           collector.at(`${path}/${index}`, 'must be a hex color (#rgb or #rrggbb)')
+        }
+      })
+    }
+    if (spec.stringItems) {
+      items.forEach((item, index) => {
+        if (typeof item !== 'string') {
+          collector.at(`${path}/${index}`, 'must be string')
         }
       })
     }

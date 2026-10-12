@@ -1,21 +1,30 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest'
 
-import { ResourceCache, sniffImageMime } from './resourceCache'
+import { ResourceCache, sniffResourceMime } from './resourceCache'
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
 const JPG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])
 const GIF_BYTES = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61])
 const WEBP_BYTES = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50])
 const UNKNOWN_BYTES = new Uint8Array([1, 2, 3])
+const TTF_BYTES = new Uint8Array([0x00, 0x01, 0x00, 0x00, 0x00, 0x10])
+const OTF_BYTES = new Uint8Array([0x4f, 0x54, 0x54, 0x4f, 0x00, 0x10])
+const TTC_BYTES = new Uint8Array([0x74, 0x74, 0x63, 0x66, 0x00, 0x01])
 
-describe('sniffImageMime', () => {
+describe('sniffResourceMime', () => {
   it('recognizes PNG, JPEG, GIF and WebP magic bytes', () => {
-    expect(sniffImageMime(PNG_BYTES)).toBe('image/png')
-    expect(sniffImageMime(JPG_BYTES)).toBe('image/jpeg')
-    expect(sniffImageMime(GIF_BYTES)).toBe('image/gif')
-    expect(sniffImageMime(WEBP_BYTES)).toBe('image/webp')
-    expect(sniffImageMime(UNKNOWN_BYTES)).toBe('application/octet-stream')
+    expect(sniffResourceMime(PNG_BYTES)).toBe('image/png')
+    expect(sniffResourceMime(JPG_BYTES)).toBe('image/jpeg')
+    expect(sniffResourceMime(GIF_BYTES)).toBe('image/gif')
+    expect(sniffResourceMime(WEBP_BYTES)).toBe('image/webp')
+    expect(sniffResourceMime(UNKNOWN_BYTES)).toBe('application/octet-stream')
+  })
+
+  it('recognizes TTF, OTF and TTC font magic bytes', () => {
+    expect(sniffResourceMime(TTF_BYTES)).toBe('font/ttf')
+    expect(sniffResourceMime(OTF_BYTES)).toBe('font/otf')
+    expect(sniffResourceMime(TTC_BYTES)).toBe('font/collection')
   })
 })
 
@@ -117,6 +126,20 @@ describe('ResourceCache', () => {
       { createUrl: () => 'blob:mock', revokeUrl: () => undefined, decode: null }
     )
     expect(cache.getUrl('hashA')).toBe('blob:mock')
+  })
+
+  it('never runs image decoding on font blobs (they would always fail)', async () => {
+    const decode = vi.fn(() => Promise.reject(new Error('not an image')))
+    const cache = new ResourceCache(
+      { fontA: TTF_BYTES, fontB: OTF_BYTES, img: PNG_BYTES },
+      { createUrl: () => 'blob:mock', revokeUrl: () => undefined, decode }
+    )
+    await vi.waitFor(() => expect(cache.isCorrupt('img')).toBe(true))
+    expect(decode).toHaveBeenCalledTimes(1)
+    expect(cache.isCorrupt('fontA')).toBe(false)
+    expect(cache.isCorrupt('fontB')).toBe(false)
+    expect(cache.getBlob('fontA')).not.toBeNull()
+    expect(cache.getBlob('fontA')!.type).toBe('font/ttf')
   })
 
   it('put() registers a new resource without touching the others', () => {

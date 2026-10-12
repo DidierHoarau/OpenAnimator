@@ -1,18 +1,28 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
+import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { unzipSync } from 'fflate'
 import { PNG } from 'pngjs'
 import { describe, expect, it } from 'vitest'
 
 import { packProject } from '../main/projectContainer'
+import { embeddedFontId } from '../shared/fontPolicy'
+import { subsetFont } from '../shared/fontSubset'
 import type { AnimatorDocument } from '../shared/model'
 import { sanitizeExportOptions } from '../shared/exportOptions'
-import { createResourceResolver, loadDocumentAndResources, renderDocument, renderFrame, renderToFile } from './render'
+import {
+  createResourceResolver,
+  loadDocumentAndResources,
+  renderDocument,
+  renderFrame,
+  renderToFile,
+  withEmbeddedFontFiles
+} from './render'
 
 const DOCUMENT: AnimatorDocument = {
-  schemaVersion: 5,
+  schemaVersion: 6,
   name: 'CLI test',
   width: 96,
   height: 64,
@@ -64,7 +74,8 @@ const DOCUMENT: AnimatorDocument = {
       ]
     }
   ],
-  assets: []
+  assets: [],
+  fonts: []
 }
 
 describe('loadDocumentAndResources', () => {
@@ -180,5 +191,111 @@ describe('renderToFile', () => {
     const written = await readFile(outPath)
     expect(written.byteLength).toBe(outcome.bytes!.byteLength)
     expect(Buffer.from(written.slice(0, 6)).toString('latin1')).toBe('GIF89a')
+  })
+})
+
+const NOTO_400 = 'node_modules/@expo-google-fonts/noto-sans/400Regular/NotoSans_400Regular.ttf'
+
+function loadSubsetBytes(chars: readonly string[]): Uint8Array {
+  const source = new Uint8Array(readFileSync(NOTO_400))
+  return subsetFont(source, chars, embeddedFontId('Lato', 400))
+}
+
+/** DOCUMENT plus one embedded Lato/400 subset and a text node using it. */
+function embeddedDocument(): AnimatorDocument {
+  const document = structuredClone(DOCUMENT)
+  document.fonts.push({
+    id: embeddedFontId('Lato', 400),
+    family: 'Lato',
+    weight: 400,
+    resourceId: 'font-res',
+    glyphs: ['I', 'o'],
+    license: 'OFL-1.1'
+  })
+  document.layers.push({
+    kind: 'object',
+    id: 'lay2',
+    name: 'Text',
+    visible: true,
+    locked: false,
+    keyframes: [
+      {
+        frame: 0,
+        nodes: [
+          {
+            type: 'text',
+            id: 'txt1',
+            text: 'Io',
+            fontFamily: 'Lato',
+            fontSize: 24,
+            fontWeight: 400,
+            fill: '#ffffff',
+            align: 'left',
+            center: { x: 48, y: 32 },
+            width: 40,
+            height: 30,
+            rotation: 0,
+            opacity: 1
+          }
+        ]
+      }
+    ]
+  })
+  return document
+}
+
+describe('withEmbeddedFontFiles', () => {
+  it('writes the referenced subsets to temp files for the run and removes them after', async () => {
+    const document = embeddedDocument()
+    const bytes = loadSubsetBytes(document.fonts[0].glyphs)
+    const resources = new Map([[document.fonts[0].resourceId, { bytes, ext: 'ttf' }]])
+    let seenDir = ''
+    let seenBytes: Uint8Array | null = null
+    const result = await withEmbeddedFontFiles(document, resources, async (fontFiles) => {
+      expect(fontFiles).toHaveLength(1)
+      expect(fontFiles[0].endsWith(`${document.fonts[0].id}.ttf`)).toBe(true)
+      seenDir = dirname(fontFiles[0])
+      seenBytes = new Uint8Array(await readFile(fontFiles[0]))
+      return 'done'
+    })
+
+    expect(result).toBe('done')
+    expect(seenBytes).toEqual(bytes)
+    await expect(access(seenDir)).rejects.toThrow()
+  })
+
+  it('runs with an empty list without touching the file system when no subset is present', async () => {
+    const received: string[][] = []
+    await withEmbeddedFontFiles(embeddedDocument(), new Map(), (fontFiles) => {
+      received.push(fontFiles)
+      return Promise.resolve()
+    })
+    await withEmbeddedFontFiles(DOCUMENT, new Map(), (fontFiles) => {
+      received.push(fontFiles)
+      return Promise.resolve()
+    })
+
+    expect(received).toEqual([[], []])
+  })
+
+  it('renders a frame whose text resolves through the embedded subset family', async () => {
+    const document = embeddedDocument()
+    const bytes = loadSubsetBytes(document.fonts[0].glyphs)
+    const resources = new Map([[document.fonts[0].resourceId, { bytes, ext: 'ttf' }]])
+    const options = sanitizeExportOptions({ format: 'gif', fromFrame: 0, toFrame: 0 }, document)
+    const frame = await withEmbeddedFontFiles(document, resources, (fontFiles) =>
+      Promise.resolve(renderFrame(document, 0, options, createResourceResolver(resources), fontFiles))
+    )
+
+    expect(frame.width).toBe(96)
+    expect(frame.height).toBe(64)
+    const png = PNG.sync.read(Buffer.from(frame.png))
+    let whitePixels = 0
+    for (let index = 0; index < png.data.length; index += 4) {
+      if (png.data[index] === 0xff && png.data[index + 1] === 0xff && png.data[index + 2] === 0xff) {
+        whitePixels += 1
+      }
+    }
+    expect(whitePixels).toBeGreaterThan(0)
   })
 })

@@ -158,8 +158,13 @@ function firstInvalidPaintInNode(value: unknown, where: string): string | null {
       return `${where}: malformed "stroke" paint`
     }
   }
-  if (node.type === 'text' && node.fill !== undefined && !isPaintValue(node.fill)) {
-    return `${where}: malformed "fill" paint`
+  if (node.type === 'text') {
+    if (node.fill !== undefined && !isPaintValue(node.fill)) {
+      return `${where}: malformed "fill" paint`
+    }
+    if (node.stroke !== undefined && !isPaintValue(node.stroke)) {
+      return `${where}: malformed "stroke" paint`
+    }
   }
   if (node.type === 'group' && Array.isArray(node.children)) {
     for (let index = 0; index < node.children.length; index++) {
@@ -224,7 +229,7 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
     throw new MigrationError('invalid document: "layers" must be an array')
   }
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     name: document.name,
     width: document.width,
     height: document.height,
@@ -233,25 +238,25 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
     layers: document.layers.map(validateLegacyLayer),
     ...(document.frames !== undefined ? { frames: document.frames as number } : {}),
     assets: [],
-    palette: []
+    palette: [],
+    fonts: []
   }
 }
 
 /**
- * Normalizes a parsed project file to the current schema (v5): v2–v4 documents
- * are deep-validated and returned detached from the parsed input (documents
- * saved before the asset library existed are normalized to `assets: []`,
- * those saved before drawing layers existed get `kind: 'object'` on every
- * layer, pre-v5 documents get the palette injected and the v5 marker), v1
- * documents are migrated (each legacy `Shape` becomes a `PrimitiveNode` with
- * `kind` → `primitive`). Malformed gradient paints and invalid palettes raise
- * `MigrationError` with a user-presentable location — reported, never
- * silently dropped. Invalid content raises `MigrationError`. The input is
- * never mutated.
+ * Normalizes a parsed project file to the current schema (v6): v2–v5
+ * documents are deep-validated and returned detached from the parsed input
+ * (documents saved before a section existed are normalized to empty defaults
+ * — `assets: []`, `palette: []`, `fonts: []`; layers saved before drawing
+ * layers existed get `kind: 'object'`), v1 documents are migrated (each
+ * legacy `Shape` becomes a `PrimitiveNode` with `kind` → `primitive`).
+ * Malformed gradient paints and invalid palettes raise `MigrationError` with
+ * a user-presentable location — reported, never silently dropped. Invalid
+ * content raises `MigrationError`. The input is never mutated.
  */
 export function migrateDocument(raw: unknown): AnimatorDocument {
   const version = (typeof raw === 'object' && raw !== null ? (raw as { schemaVersion?: unknown }).schemaVersion : undefined)
-  if (version === 2 || version === 3 || version === 4 || version === 5) {
+  if (version === 2 || version === 3 || version === 4 || version === 5 || version === 6) {
     const source = raw as Record<string, unknown>
     if (source.assets !== undefined && !Array.isArray(source.assets)) {
       throw new MigrationError('invalid document: "assets" must be an array')
@@ -261,9 +266,12 @@ export function migrateDocument(raw: unknown): AnimatorDocument {
         'invalid document: "palette" must be an array of up to 48 hex colors (#rgb or #rrggbb)'
       )
     }
-    // Additive normalization: inject the (possibly missing) assets, palette
-    // and layer kind before deep validation so pre-library / pre-palette
-    // v2–v4 files keep opening.
+    if (source.fonts !== undefined && !Array.isArray(source.fonts)) {
+      throw new MigrationError('invalid document: "fonts" must be an array')
+    }
+    // Additive normalization: inject the (possibly missing) assets, palette,
+    // fonts and layer kind before deep validation so pre-library /
+    // pre-palette / pre-font files keep opening.
     const layers = Array.isArray(source.layers)
       ? source.layers.map((layer) =>
           typeof layer === 'object' &&
@@ -275,10 +283,11 @@ export function migrateDocument(raw: unknown): AnimatorDocument {
       : source.layers
     const candidate = {
       ...source,
-      schemaVersion: 5,
+      schemaVersion: 6,
       layers,
       assets: (source.assets as unknown[] | undefined) ?? [],
-      palette: (source.palette as unknown[] | undefined) ?? []
+      palette: (source.palette as unknown[] | undefined) ?? [],
+      fonts: (source.fonts as unknown[] | undefined) ?? []
     }
     if (!isAnimatorDocument(candidate)) {
       const paintProblem = firstInvalidPaintLocation(candidate)

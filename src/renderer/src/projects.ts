@@ -2,6 +2,7 @@ import type { AnimatorDocument } from '@shared/model'
 
 import type { Editor } from './editor'
 import { el } from './dom'
+import { reconcileEmbeddedFonts, syncSessionFonts } from './fontEmbedding'
 
 function pathBasename(path: string): string {
   return path.split(/[\\/]/).pop() ?? path
@@ -39,6 +40,9 @@ async function loadProjectFromPath(
   editor.setDocument(document, resources)
   editor.dirty = false
   void window.api.rememberProject(path, document.name)
+  // The embedded subsets register as FontFaces once their bytes are in the
+  // session cache; views re-render when the faces are ready.
+  void syncSessionFonts(editor)
   return true
 }
 
@@ -51,6 +55,13 @@ export async function saveDocument(editor: Editor, options: { as: boolean }): Pr
   if (editor.editingAssetId) {
     editor.showMessage('Finish editing the symbol before saving')
     return false
+  }
+  try {
+    // Embed the font subsets the document renders so the .oanim keeps its
+    // typography off-system; failures never block the save itself.
+    await reconcileEmbeddedFonts(editor)
+  } catch (error) {
+    console.warn('OpenAnimator: font embedding failed, saving without new subsets', error)
   }
   if (!options.as && editor.filePath) {
     const result = await window.api.saveProjectTo(editor.filePath, editor.document)

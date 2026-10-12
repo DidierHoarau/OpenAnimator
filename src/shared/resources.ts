@@ -4,11 +4,12 @@ import { isObjectLayer } from './model'
 /**
  * Counts how many times each resource is referenced by the document: one walk
  * over every object layer's keyframes (recursing into group children), one
- * over every drawing layer's cells, plus one walk over the document assets
- * (image assets reference their resource; symbol assets reference the images
- * inside their content, including through nested symbol instances, guarded
- * against cycles). Used by the main process to write only referenced
- * resources into the project file and for the explicit purge-unused command.
+ * over every drawing layer's cells, one over the document assets (image
+ * assets reference their resource; symbol assets reference the images inside
+ * their content, including through nested symbol instances, guarded against
+ * cycles) and one over the embedded font subsets. Used by the main process to
+ * write only referenced resources into the project file and for the explicit
+ * purge-unused command.
  */
 export function collectResourceCounts(document: AnimatorDocument): Map<string, number> {
   const counts = new Map<string, number>()
@@ -60,5 +61,8 @@ export function collectResourceCounts(document: AnimatorDocument): Map<string, n
     }
   }
   for (const asset of document.assets) visitAsset(asset, new Set())
+  // Embedded font subsets are resources too: without this walk the packer
+  // would drop them from saved .oanim files.
+  for (const font of document.fonts) count(font.resourceId)
   return counts
 }

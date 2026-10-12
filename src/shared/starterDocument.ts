@@ -63,7 +63,7 @@ export function createStarterDocument(): AnimatorDocument {
   }
 
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     name: 'Untitled',
     width: 960,
     height: 540,
@@ -73,6 +73,7 @@ export function createStarterDocument(): AnimatorDocument {
     layers: [demoLayer, backgroundLayer],
     frames: 25,
     assets: [],
-    palette: []
+    palette: [],
+    fonts: []
   }
 }

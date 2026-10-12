@@ -1,4 +1,5 @@
 import { documentToSvgString } from '@shared/exportSvg'
+import { embeddedFamilyResolverFor } from '@shared/fontPolicy'
 import type { AnimatorDocument } from '@shared/model'
 import type { ExportOptions } from '@shared/exportOptions'
 
@@ -65,6 +66,7 @@ export function createDefaultFrameRasterDeps(): FrameRasterDeps {
 
 export class FrameRasterizer {
   private readonly dataUrls = new Map<string, string | null>()
+  private embeddedFontCache: string | undefined
 
   constructor(
     private readonly document: AnimatorDocument,
@@ -82,8 +84,14 @@ export class FrameRasterizer {
     for (const id of ids) {
       if (!this.dataUrls.has(id)) this.dataUrls.set(id, await this.deps.resolveResourceDataUrl(id))
     }
-    const svg = documentToSvgString(this.document, frame, (resourceId) =>
-      this.dataUrls.get(resourceId) ?? null
+    const svg = documentToSvgString(
+      this.document,
+      frame,
+      (resourceId) => this.dataUrls.get(resourceId) ?? null,
+      {
+        embeddedFontStyle: this.embeddedFontStyle(),
+        resolveEmbeddedFont: embeddedFamilyResolverFor(this.document.fonts)
+      }
     )
     const url = this.deps.createObjectUrl(svg)
     try {
@@ -110,6 +118,25 @@ export class FrameRasterizer {
     return this.deps.canvasToRgba(canvas)
   }
 
+  /**
+   * `@font-face` rules over the embedded subsets' data URLs — inside an SVG
+   * loaded through `<img>` this is the only way the synthetic families
+   * resolve; empty (undefined) for documents without embedded fonts so their
+   * markup stays unchanged.
+   */
+  private embeddedFontStyle(): string | undefined {
+    if (this.document.fonts.length === 0) return undefined
+    this.embeddedFontCache ??= this.document.fonts
+      .map((font) => {
+        const url = this.dataUrls.get(font.resourceId)
+        return url
+          ? `@font-face{font-family:'${font.id}';font-weight:${font.weight};src:url(${url}) format('truetype');}`
+          : ''
+      })
+      .join('')
+    return this.embeddedFontCache || undefined
+  }
+
   /** Every resource id the document can render, warmed once per export. */
   private collectResourceIds(): Set<string> {
     const ids = new Set<string>()
@@ -120,6 +147,7 @@ export class FrameRasterizer {
     for (const asset of this.document.assets) {
       if (asset.resourceId) ids.add(asset.resourceId)
     }
+    for (const font of this.document.fonts) ids.add(font.resourceId)
     return ids
   }
 }

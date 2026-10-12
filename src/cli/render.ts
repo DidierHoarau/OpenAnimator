@@ -8,6 +8,7 @@ import { Resvg } from '@resvg/resvg-js'
 import { documentToSvgString } from '../shared/exportSvg'
 import { exportFrameCount, exportPixelSize } from '../shared/exportOptions'
 import type { ExportOptions } from '../shared/exportOptions'
+import { embeddedFamilyResolverFor } from '../shared/fontPolicy'
 import { encodeGif, gifDelayMs } from '../shared/gifEncode'
 import { packPngSequence } from '../shared/pngSequence'
 import { migrateDocument } from '../shared/migrate'
@@ -69,18 +70,58 @@ export interface RenderedFrame {
   height: number
 }
 
+/**
+ * Writes the document's embedded subsets into a temp directory whose files
+ * are handed to resvg (`font.fontFiles`): resvg ignores in-SVG `@font-face`
+ * sources, it loads faces by path. Runs `run` with an empty list — and
+ * without touching the file system — when the document embeds no fonts.
+ */
+export async function withEmbeddedFontFiles<T>(
+  document: AnimatorDocument,
+  resources: ProjectResourceMap,
+  run: (fontFiles: string[]) => Promise<T>
+): Promise<T> {
+  const subsets = document.fonts.filter((font) => resources.has(font.resourceId))
+  if (subsets.length === 0) return run([])
+  const dir = await mkdtemp(join(tmpdir(), 'openanimator-fonts-'))
+  try {
+    const fontFiles: string[] = []
+    for (const font of subsets) {
+      const path = join(dir, `${font.id}.ttf`)
+      await writeFile(path, resources.get(font.resourceId)!.bytes)
+      fontFiles.push(path)
+    }
+    return await run(fontFiles)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+}
+
 /** Rasterizes one evaluated frame of the document at the options' pixel size. */
 export function renderFrame(
   document: AnimatorDocument,
   frame: number,
   options: ExportOptions,
-  resolveResource: ResourceResolver
+  resolveResource: ResourceResolver,
+  fontFiles: readonly string[] = []
 ): RenderedFrame {
   const size = exportPixelSize(document, options)
   const svg = documentToSvgString(document, frame, resolveResource, {
-    transparent: options.transparent
+    transparent: options.transparent,
+    resolveEmbeddedFont: embeddedFamilyResolverFor(document.fonts)
   })
-  const resvg = new Resvg(svg, { fitTo: { mode: 'width', value: size.width } })
+  const resvg = new Resvg(svg, {
+    fitTo: { mode: 'width', value: size.width },
+    ...(fontFiles.length > 0
+      ? {
+          font: {
+            fontFiles: [...fontFiles],
+            loadSystemFonts: true,
+            defaultFontFamily: 'sans-serif'
+          }
+        }
+      : {})
+  })
   const rendered = resvg.render()
   if (rendered.width !== size.width || rendered.height !== size.height) {
     throw new Error(
@@ -106,12 +147,13 @@ export async function renderDocument(
   document: AnimatorDocument,
   options: ExportOptions,
   resolveResource: ResourceResolver,
+  fontFiles: readonly string[] = [],
   onProgress?: (done: number, total: number) => void
 ): Promise<RenderOutcome> {
   const total = exportFrameCount(options)
   const frames: RenderedFrame[] = []
   for (let frame = options.fromFrame; frame <= options.toFrame; frame += 1) {
-    frames.push(renderFrame(document, frame, options, resolveResource))
+    frames.push(renderFrame(document, frame, options, resolveResource, fontFiles))
     onProgress?.(frames.length, total)
   }
   if (options.format === 'png-sequence') {
@@ -137,9 +179,10 @@ export async function renderToFile(
   options: ExportOptions,
   resolveResource: ResourceResolver,
   outPath: string,
+  fontFiles: readonly string[] = [],
   onProgress?: (done: number, total: number) => void
 ): Promise<RenderOutcome> {
-  const outcome = await renderDocument(document, options, resolveResource, onProgress)
+  const outcome = await renderDocument(document, options, resolveResource, fontFiles, onProgress)
   if (options.format === 'webm' || options.format === 'mp4') {
     await encodeVideoWithFfmpeg(outcome.frames, options, outPath)
   } else if (outcome.bytes) {

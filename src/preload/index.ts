@@ -10,6 +10,9 @@ import {
   DOCUMENT_SAVE_TO_CHANNEL,
   EXPORT_PICK_PATH_CHANNEL,
   EXPORT_WRITE_CHANNEL,
+  FONT_LIST_CHANNEL,
+  FONT_POLICY_CHANNEL,
+  FONT_READ_CHANNEL,
   IMAGE_PICK_CHANNEL,
   LIBRARY_ADD_CHANNEL,
   LIBRARY_LIST_CHANNEL,
@@ -46,6 +49,9 @@ const api: OpenAnimatorApi = {
   writeExportFile: (path, bytes) => ipcRenderer.invoke(EXPORT_WRITE_CHANNEL, path, bytes),
   loadGlobalPalette: () => ipcRenderer.invoke(PALETTE_GET_CHANNEL),
   saveGlobalPalette: (colors) => ipcRenderer.invoke(PALETTE_SET_CHANNEL, colors),
+  listSystemFonts: () => ipcRenderer.invoke(FONT_LIST_CHANNEL),
+  readSystemFont: (family, weight) => ipcRenderer.invoke(FONT_READ_CHANNEL, family, weight),
+  getFontEmbeddingPolicy: () => ipcRenderer.invoke(FONT_POLICY_CHANNEL),
   onMenuCommand: (listener) => {
     const handler = (_event: IpcRendererEvent, command: MenuCommand): void => listener(command)
     ipcRenderer.on(APP_MENU_COMMAND_CHANNEL, handler)

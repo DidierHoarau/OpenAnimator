@@ -55,7 +55,7 @@ import type { Rect } from '@shared/hitTesting'
 import { groupNaturalSize, groupNodes, ungroupNode } from '@shared/groups'
 import type { Vec2 } from '@shared/geometry'
 import { cloneNode, isDrawingLayer, isObjectLayer } from '@shared/model'
-import type { AnimatorDocument, Asset, DrawingLayer, GroupNode, ImageNode, KeyframeTween, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
+import type { AnimatorDocument, Asset, DrawingLayer, EmbeddedFont, GroupNode, ImageNode, KeyframeTween, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
 import { validateAssetGraph } from '@shared/symbols'
 import { createId } from '@shared/document'
 import { measureLineWidthCanvas } from '@shared/textModel'
@@ -361,6 +361,24 @@ export class Editor {
 
   newDocument(): void {
     this.setDocument(createDocument('Untitled', 960, 540, 24))
+  }
+
+  /**
+   * Replaces the document's embedded-font list after a reconciliation pass.
+   * Housekeeping, not authored content: the list mirrors the text nodes, so
+   * no undo entry is pushed.
+   */
+  applyFontEmbedding(fonts: EmbeddedFont[]): void {
+    this.document.fonts = fonts
+    this.docChanged()
+  }
+
+  /**
+   * Re-renders document views without marking the document dirty — used when
+   * async side data (registered font faces) became ready after a load.
+   */
+  refreshDocViews(): void {
+    this.notifyListeners(this.docListeners)
   }
 
   /** Records a successful save to the given file path and clears the dirty flag. */

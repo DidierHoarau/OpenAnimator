@@ -1,5 +1,5 @@
 /**
- * JSON Schema of the OpenAnimator document (schemaVersion 5) — the generation
+ * JSON Schema of the OpenAnimator document (schemaVersion 6) — the generation
  * contract for tools and LLMs that produce `document.json` payloads. The
  * schema mirrors the structural validation in `document.ts`
  * (`isAnimatorDocument`/`isSceneNode`); documents are always re-validated
@@ -105,6 +105,24 @@ export function paletteSchema(): Record<string, unknown> {
   }
 }
 
+/** Shared embedded-font definition: one subset stored as a document
+ * resource. */
+export function embeddedFontSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['id', 'family', 'weight', 'resourceId', 'glyphs', 'license'],
+    properties: {
+      id: { type: 'string', minLength: 1 },
+      family: { type: 'string', minLength: 1 },
+      weight: { type: 'number', minimum: 1, maximum: 1000 },
+      resourceId: { type: 'string', minLength: 1 },
+      glyphs: { type: 'array', items: { type: 'string' } },
+      license: { type: 'string' }
+    }
+  }
+}
+
 const NODE_BASE_FIELDS = {
   id: { type: 'string', minLength: 1 },
   name: { type: 'string' },
@@ -164,6 +182,10 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
       fontSize: { type: 'number', exclusiveMinimum: 0 },
       fontWeight: { type: 'number', minimum: 1, maximum: 1000 },
       align: { enum: ['left', 'center', 'right'] },
+      letterSpacing: { type: 'number' },
+      lineHeight: { type: 'number', minimum: 0.5, maximum: 5 },
+      verticalAlign: { enum: ['top', 'middle', 'bottom'] },
+      fontFallback: { type: 'array', maxItems: 8, items: { type: 'string' } },
       resourceId: { type: 'string' },
       naturalWidth: { type: 'number', minimum: 1 },
       naturalHeight: { type: 'number', minimum: 1 },
@@ -177,13 +199,13 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
 
 export const DOCUMENT_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v5.json',
-  title: 'OpenAnimator document (v5)',
+  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v6.json',
+  title: 'OpenAnimator document (v6)',
   type: 'object',
   additionalProperties: false,
-  required: ['schemaVersion', 'name', 'width', 'height', 'fps', 'background', 'layers', 'assets', 'palette'],
+  required: ['schemaVersion', 'name', 'width', 'height', 'fps', 'background', 'layers', 'assets', 'palette', 'fonts'],
   properties: {
-    schemaVersion: { const: 5 },
+    schemaVersion: { const: 6 },
     name: { type: 'string', minLength: 1 },
     width: { type: 'number', exclusiveMinimum: 0 },
     height: { type: 'number', exclusiveMinimum: 0 },
@@ -193,7 +215,8 @@ export const DOCUMENT_SCHEMA = {
     holdStep: { type: 'integer', minimum: 1, maximum: 16 },
     layers: { type: 'array', items: { $ref: '#/definitions/layer' } },
     assets: { type: 'array', items: { $ref: '#/definitions/asset' } },
-    palette: { $ref: '#/definitions/palette' }
+    palette: { $ref: '#/definitions/palette' },
+    fonts: { type: 'array', items: { $ref: '#/definitions/embeddedFont' } }
   },
   definitions: {
     vec2: {
@@ -205,6 +228,7 @@ export const DOCUMENT_SCHEMA = {
     easing: easingSchema(),
     paint: paintSchema(),
     palette: paletteSchema(),
+    embeddedFont: embeddedFontSchema(),
     sceneNode: sceneNodeSchema(true),
     keyframe: {
       type: 'object',

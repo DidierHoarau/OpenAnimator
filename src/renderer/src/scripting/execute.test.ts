@@ -61,6 +61,42 @@ describe('executeScriptCommands', () => {
     expect(end).toMatchObject({ opacity: 1 })
   })
 
+  it('re-measures the text box when typography patches change the layout', () => {
+    const editor = createEditor()
+    const commands = validated({
+      commands: [
+        { op: 'addLayer', kind: 'object', name: 'Caption' },
+        {
+          op: 'addNode',
+          frame: 0,
+          node: {
+            type: 'text',
+            id: 'caption',
+            text: 'AB\nCD',
+            fontFamily: 'Noto Sans',
+            fontSize: 10,
+            fontWeight: 400,
+            align: 'left',
+            fill: '#ffffff',
+            width: 20,
+            height: 25,
+            center: { x: 480, y: 270 },
+            rotation: 0,
+            opacity: 1
+          }
+        },
+        // letterSpacing widens the measured lines, lineHeight grows the box.
+        { op: 'updateNode', nodeId: 'caption', patch: { letterSpacing: 5 } },
+        { op: 'updateNode', nodeId: 'caption', frame: 0, patch: { lineHeight: 2 } }
+      ]
+    })
+    const result = executeScriptCommands(editor, commands)
+    expect(result.issues).toEqual([])
+    const layer = editor.document.layers.find((entry) => entry.name === 'Caption')
+    if (!layer || !isObjectLayer(layer)) throw new Error('expected the Caption object layer')
+    expect(layer.keyframes[0].nodes[0]).toMatchObject({ width: 30, height: 40 })
+  })
+
   it('reports per-command issues without aborting the rest of the script', () => {
     const editor = createEditor()
     const commands = validated({
