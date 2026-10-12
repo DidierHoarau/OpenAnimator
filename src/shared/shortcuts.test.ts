@@ -33,7 +33,7 @@ const ALL_IDS: ShortcutId[] = [
   'layer.addObject', 'layer.addDrawing', 'layer.addCamera',
   'view.zoomIn', 'view.zoomOut', 'view.resetZoom', 'view.toggleGrid', 'view.toggleOnion',
   'view.toggleLibrary', 'view.toggleProperties',
-  'tool.select', 'tool.hand', 'tool.brush', 'tool.eraser', 'tool.rect', 'tool.ellipse',
+  'tool.select', 'tool.direct', 'tool.hand', 'tool.brush', 'tool.eraser', 'tool.rect', 'tool.ellipse',
   'tool.line', 'tool.pen', 'tool.text', 'tool.vector', 'tool.brushDown', 'tool.brushUp',
   'stage.pan', 'edit.nudge', 'pen.finish', 'editor.escape',
   'help.shortcuts', 'help.documentation', 'help.about'
@@ -156,6 +156,7 @@ describe('matchShortcut', () => {
   it('resolves page-owned keys', () => {
     expect(matchShortcut({ ...base, key: 'v' })?.id).toBe('tool.select')
     expect(matchShortcut({ ...base, key: 'V' })?.id).toBe('tool.select')
+    expect(matchShortcut({ ...base, key: 'a' })?.id).toBe('tool.direct')
     expect(matchShortcut({ ...base, key: '[' })?.id).toBe('tool.brushDown')
     expect(matchShortcut({ ...base, key: ' ' })?.id).toBe('stage.pan')
     expect(matchShortcut({ ...base, key: 'ArrowLeft', shiftKey: true })?.id).toBe('edit.nudge')

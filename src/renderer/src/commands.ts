@@ -91,6 +91,9 @@ export function runEditorCommand(command: ShortcutId, deps: CommandDeps): void {
       editor.duplicateSelectedNodes()
       return
     case 'edit.delete':
+      // The direct tool deletes the selected path anchor when there is one;
+      // otherwise (and with any other tool) the node selection is deleted.
+      if (editor.tool === 'direct' && stageView.deleteAnchorSelection()) return
       editor.deleteSelected()
       return
     case 'edit.selectAll':
@@ -186,6 +189,9 @@ export function runEditorCommand(command: ShortcutId, deps: CommandDeps): void {
     case 'tool.select':
       editor.setTool('select')
       return
+    case 'tool.direct':
+      editor.setTool('direct')
+      return
     case 'tool.hand':
       editor.setTool('hand')
       return
@@ -230,9 +236,11 @@ export function runEditorCommand(command: ShortcutId, deps: CommandDeps): void {
       if (editor.tool === 'pen') stageView.finishPen()
       return
     case 'editor.escape':
-      // Cancel an in-progress pen path or vector stroke, otherwise playback.
+      // Cancel an in-progress pen path or vector stroke, drop the direct
+      // tool's anchor selection, otherwise stop playback.
       if (editor.tool === 'pen') stageView.cancelPen()
       else if (editor.tool === 'vector') stageView.cancelVectorStroke()
+      else if (editor.tool === 'direct' && stageView.clearAnchorSelection()) return
       else editor.stopPlayback()
       return
     case 'help.shortcuts':

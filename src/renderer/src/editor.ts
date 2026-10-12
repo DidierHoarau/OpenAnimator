@@ -80,6 +80,7 @@ import { ResourceCache } from './resourceCache'
 
 export type Tool =
   | 'select'
+  | 'direct'
   | 'hand'
   | 'brush'
   | 'eraser'
@@ -93,9 +94,9 @@ export type Tool =
 /**
  * Whether a tool may be active while `layer` is the current layer: the tool
  * availability matrix (Brush/Eraser only on drawing layers, the object tools
- * — including the vector brush, which commits `PathNode`s — only on object
- * layers, Select/Hand on the camera and audio control layers, Hand
- * everywhere).
+ * — including the vector brush, which commits `PathNode`s, and the direct
+ * selection tool, which edits them — only on object layers, Select/Hand on
+ * the camera and audio control layers, Hand everywhere).
  */
 export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): boolean {
   if (tool === 'hand') return true
@@ -103,6 +104,7 @@ export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): b
   if (isObjectLayer(layer)) {
     return (
       tool === 'select' ||
+      tool === 'direct' ||
       tool === 'rect' ||
       tool === 'ellipse' ||
       tool === 'line' ||

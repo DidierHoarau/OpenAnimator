@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
-import type { Asset, DrawingLayer, ImageNode, PrimitiveNode, SymbolNode, TextNode } from '@shared/model'
+import type { Asset, DrawingLayer, ImageNode, PathNode, PrimitiveNode, SymbolNode, TextNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { PropertiesView } from './properties'
@@ -934,5 +934,87 @@ describe('PropertiesView — stroke style controls', () => {
     expect(selectedRect().strokeDasharray).toEqual([8, 4])
     expect(capSelect.disabled).toBe(true)
     expect(row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!.disabled).toBe(true)
+  })
+})
+
+describe('PropertiesView — path anchors', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24))
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container)
+  })
+
+  function pathNode(id: string, d: string, width = 100, height = 100): PathNode {
+    return {
+      id,
+      type: 'path',
+      name: id,
+      d,
+      width,
+      height,
+      center: { x: 0, y: 0 },
+      rotation: 0,
+      opacity: 1
+    }
+  }
+
+  function livePath(): PathNode {
+    const layer = editor.currentLayer
+    if (layer?.kind !== 'object') throw new Error('expected an object layer')
+    const keyframe = layer.keyframes.find((entry) => entry.nodes.length > 0)
+    if (!keyframe) throw new Error('expected a keyframe with nodes')
+    return keyframe.nodes[0] as PathNode
+  }
+
+  const infoLabel = (): HTMLElement =>
+    sectionByTitle(container, 'Path').querySelector<HTMLElement>('.panel-file-name')!
+  const subpathButton = (): HTMLButtonElement =>
+    [...sectionByTitle(container, 'Path').querySelectorAll('button')].find((candidate) =>
+      candidate.title.startsWith('Close the path into a loop')
+    )!
+
+  it('labels the anchor count and toggles a single subpath open/closed', () => {
+    editor.addNode(pathNode('p', 'M-50 -20L0 20L50 -20'))
+    expect(infoLabel().textContent).toBe('3 anchors')
+    expect(subpathButton().textContent).toBe('Close subpath')
+    expect(subpathButton().disabled).toBe(false)
+
+    // Closing emits the explicit closing segment and flips label and button.
+    subpathButton().click()
+    expect(livePath().d).toBe('M-50 -20L0 20L50 -20L-50 -20Z')
+    expect(infoLabel().textContent).toBe('3 anchors · closed')
+    expect(subpathButton().textContent).toBe('Open subpath')
+
+    // Re-opening restores the open form.
+    subpathButton().click()
+    expect(livePath().d).toBe('M-50 -20L0 20L50 -20')
+    expect(infoLabel().textContent).toBe('3 anchors')
+
+    // Each toggle is its own undo step.
+    editor.undo()
+    expect(livePath().d).toBe('M-50 -20L0 20L50 -20L-50 -20Z')
+  })
+
+  it('reports subpath counts and disables the toggle for multi and degenerate paths', () => {
+    editor.addNode(pathNode('multi', 'M-50 -50L-10 -50L-10 -10Z M10 10L50 10L50 50Z'))
+    expect(infoLabel().textContent).toBe('6 anchors · 2 subpaths')
+    expect(subpathButton().textContent).toBe('Close subpath')
+    expect(subpathButton().disabled).toBe(true)
+
+    // Two anchors cannot close into a loop.
+    editor.addNode(pathNode('pair', 'M-50 0L50 0', 100, 2))
+    expect(infoLabel().textContent).toBe('2 anchors')
+    expect(subpathButton().disabled).toBe(true)
+
+    // Unparseable data (an arc) falls back to the compound label.
+    editor.addNode(pathNode('arc', 'M0 0A5 5 0 0 1 10 10'))
+    expect(infoLabel().textContent).toBe('compound path')
+    expect(subpathButton().disabled).toBe(true)
   })
 })

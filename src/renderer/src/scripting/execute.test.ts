@@ -998,6 +998,131 @@ describe('executeScriptCommands', () => {
     expect(warnings.issues.every((entry) => entry.severity === 'warning')).toBe(true)
   })
 
+  it('replaces a path geometry with setPathAnchors through the shared commit point', async () => {
+    const editor = createEditor()
+    const result = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'addLayer', kind: 'object', name: 'Shape' },
+          {
+            op: 'addNode',
+            frame: 0,
+            node: {
+              type: 'path',
+              id: 'stroke',
+              d: 'M-50 -20L0 20L50 -20',
+              width: 100,
+              height: 40,
+              center: { x: 480, y: 270 },
+              rotation: 0,
+              opacity: 1,
+              stroke: '#e6edf3',
+              strokeWidth: 4
+            }
+          },
+          {
+            op: 'setPathAnchors',
+            nodeId: 'stroke',
+            subpaths: [
+              {
+                closed: false,
+                anchors: [
+                  { x: -50, y: -25 },
+                  { x: 10, y: 35 },
+                  { x: 50, y: -25 }
+                ]
+              }
+            ]
+          }
+        ]
+      })
+    )
+    expect(result.issues).toEqual([])
+    expect(result.applied).toBe(3)
+
+    const layer = namedLayer(editor, 'Shape')
+    const node = layer.keyframes[0].nodes.find((entry) => entry.id === 'stroke')
+    // The anchor change re-normalizes `d` and shifts the center by the bbox
+    // offset (raw center (0,5) → center (480,275)); the size follows.
+    expect(node).toMatchObject({
+      type: 'path',
+      d: 'M-50 -30L10 30L50 -30',
+      center: { x: 480, y: 275 },
+      width: 100,
+      height: 60
+    })
+
+    // One undo entry per command. Undo installs a fresh document clone, so
+    // the layer has to be re-fetched from the editor.
+    editor.undo()
+    const restored = namedLayer(editor, 'Shape')
+    expect(restored.keyframes[0].nodes.find((entry) => entry.id === 'stroke')).toMatchObject({
+      d: 'M-50 -20L0 20L50 -20',
+      center: { x: 480, y: 270 }
+    })
+  })
+
+  it('reports setPathAnchors on non-paths, missing nodes and degenerate geometry', async () => {
+    const editor = createEditor()
+    const subpaths = [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }]
+    const result = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'addLayer', kind: 'object', name: 'Shape' },
+          { op: 'addNode', frame: 0, node: rectNode('box') },
+          { op: 'setPathAnchors', nodeId: 'box', subpaths },
+          { op: 'setPathAnchors', nodeId: 'ghost', subpaths }
+        ]
+      })
+    )
+    expect(result.applied).toBe(2)
+    expect(result.issues).toHaveLength(2)
+    expect(result.issues[0].message).toContain('is not a path node')
+    expect(result.issues[1].message).toContain('not found on any object layer')
+
+    // Degenerate geometry (all anchors coincident) warns and changes nothing.
+    await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          {
+            op: 'addNode',
+            frame: 0,
+            node: {
+              type: 'path',
+              id: 'curve',
+              d: 'M0 0L10 10',
+              width: 10,
+              height: 10,
+              center: { x: 0, y: 0 },
+              rotation: 0,
+              opacity: 1,
+              stroke: '#e6edf3',
+              strokeWidth: 2
+            }
+          }
+        ]
+      })
+    )
+    const degenerate = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          {
+            op: 'setPathAnchors',
+            nodeId: 'curve',
+            subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 0, y: 0 }] }]
+          }
+        ]
+      })
+    )
+    expect(degenerate.applied).toBe(0)
+    expect(degenerate.issues[0].severity).toBe('warning')
+    expect(degenerate.issues[0].message).toContain('degenerate')
+  })
+
   it('duplicateNodes, align and distribute act on the current selection', async () => {
     const editor = createEditor()
     const setup = await executeScriptCommands(

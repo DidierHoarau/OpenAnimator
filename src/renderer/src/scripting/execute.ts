@@ -5,6 +5,7 @@ import type { Asset, Layer, SceneNode, NodeBase } from '@shared/model'
 import { MAX_PALETTE_COLORS, createId, extractKeyframeChunk } from '@shared/document'
 import { collectAssetResourceIds } from '@shared/assets'
 import { isAudioLayer, isCameraLayer, isObjectLayer } from '@shared/model'
+import { applyAnchorEdit } from '@shared/pathEdit'
 
 import type { Editor } from '../editor'
 import { applyTextMetrics } from '@shared/textModel'
@@ -709,6 +710,51 @@ async function applyCommand(
         return false
       }
       issue(issues, index, `setPreferences: ${changed.map((key) => `${key}=${String(after[key])}`).join(', ')}`, 'warning')
+      return true
+    }
+    case 'setPathAnchors': {
+      const layerId = command.layerId ?? findLayerOfNode(editor, command.nodeId)
+      const layer = layerId ? findLayer(editor, layerId) : undefined
+      if (!layerId || !layer || !isObjectLayer(layer)) {
+        issue(issues, index, `setPathAnchors: node ${command.nodeId} not found on any object layer`)
+        return false
+      }
+      const isPath = layer.keyframes.some((keyframe) =>
+        keyframe.nodes.some((node) => node.id === command.nodeId && node.type === 'path')
+      )
+      if (!isPath) {
+        issue(issues, index, `setPathAnchors: node ${command.nodeId} is not a path node`)
+        return false
+      }
+      selectAndSeek(editor, layerId, command.nodeId, command.frame ?? editor.currentFrame)
+      let appliedGeometry = false
+      const changed = editor.updateSelectedNode((current) => {
+        if (current.type !== 'path') return
+        const updated = applyAnchorEdit(current, command.subpaths)
+        if (updated === current) return
+        appliedGeometry = true
+        current.d = updated.d
+        current.center = updated.center
+        current.width = updated.width
+        current.height = updated.height
+      })
+      if (!changed) {
+        issue(
+          issues,
+          index,
+          `setPathAnchors: ${command.nodeId} has no pose at frame ${editor.currentFrame} (or the layer is locked)`
+        )
+        return false
+      }
+      if (!appliedGeometry) {
+        issue(
+          issues,
+          index,
+          `setPathAnchors: ${command.nodeId} geometry is degenerate (no drawable subpath) — nothing applied`,
+          'warning'
+        )
+        return false
+      }
       return true
     }
   }

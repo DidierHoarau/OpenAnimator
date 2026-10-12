@@ -21,6 +21,16 @@ const TOOL_GROUPS: ToolEntry[][] = [
       icon: '<path d="M4 4l7.07 17 2.51-7.39L21 11.07Z"/>'
     },
     {
+      tool: 'direct',
+      label: 'Direct selection',
+      title:
+        'Edit path anchors: drag anchors and handles, double-click an anchor for corner/smooth, double-click a segment to insert (A)',
+      icon:
+        '<path d="m5 3 5.6 13.4 1.8-5.2 5.2-1.8Z"/>' +
+        '<circle cx="17.6" cy="17.6" r="2.4"/>' +
+        '<path d="M11.4 11.4 15.2 15.2"/>'
+    },
+    {
       tool: 'hand',
       label: 'Hand',
       title: 'Pan the stage view (H, or hold Space and drag)',

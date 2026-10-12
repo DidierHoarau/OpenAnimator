@@ -12,6 +12,23 @@ import type { AnimatorDocument, CameraPose, PathAnchor, PathNode, PrimitiveNode,
 import { motionPathForNode } from '@shared/motionPath'
 import type { MotionPath } from '@shared/motionPath'
 import { buildPathData, normalizePathData, pathDataBounds } from '@shared/pathModel'
+import {
+  applyAnchorEdit,
+  cloneSubpaths,
+  insertAnchor,
+  localToStagePoint,
+  nearestSubpathSegment,
+  parseSubpaths,
+  pathPlacement,
+  removeAnchor,
+  segmentPointAt,
+  setSubpathClosed,
+  stageAnchorPoints,
+  stageDeltaToLocal,
+  stageToLocalPoint,
+  toggleSmooth
+} from '@shared/pathEdit'
+import type { PathPlacement, Subpath } from '@shared/pathEdit'
 import { RenderScheduler } from '@shared/renderScheduler'
 import { snapPoint, snappedDelta } from '@shared/snapping'
 import { applyTextMetrics } from '@shared/textModel'
@@ -42,9 +59,22 @@ const GRID_MIN_SCREEN_STEP = 4
 /** Grid overlay: hard cap on grid lines per axis (dense grids draw every
  * n-th line instead of thousands of paths). */
 const GRID_MAX_LINES = 500
+/** Direct tool: screen-pixel hit radii for anchors, handles and segments. */
+const ANCHOR_HIT_RADIUS = 7
+const HANDLE_HIT_RADIUS = 7
+const SEGMENT_HIT_RADIUS = 7
+/** Direct tool: stage-pixel distance at which dragging an open endpoint onto
+ * the subpath's other endpoint closes it. */
+const ENDPOINT_CLOSE_RADIUS = 8
+/** Direct tool: a dragged handle closer than this onto its anchor collapses
+ * the whole handle pair (back to a corner). */
+const HANDLE_COLLAPSE = 4
+/** Direct tool: drawn anchor square half-size / handle dot radius (screen px). */
+const ANCHOR_MARKER_HALF = 3.5
+const HANDLE_MARKER_RADIUS = 3.5
 
 interface DragState {
-  mode: 'create' | 'move' | 'marquee' | 'pan' | 'pen'
+  mode: 'create' | 'move' | 'marquee' | 'pan' | 'pen' | 'anchor' | 'handle'
   kind: 'rect' | 'ellipse' | 'line'
   start: Vec2
   last: Vec2
@@ -61,6 +91,23 @@ interface DragState {
   preview: SVGElement | null
   /** Pen: index of the anchor whose handles are being dragged. */
   penIndex: number
+  /** Direct tool: the path node under edit (id frozen at pointer-down). */
+  anchorNodeId: string
+  /** Direct tool: the anchor under the pointer. */
+  anchor: { subpathIndex: number; anchorIndex: number } | null
+  /** Direct tool: which handle of the anchor is being dragged. */
+  handle: 'in' | 'out' | null
+  /** Direct tool: subpath snapshot captured at pointer-down; every move
+   * recomputes the edit from this snapshot plus the total pointer delta, so
+   * the renormalization in `applyAnchorEdit` cannot drift. */
+  subpaths: Subpath[] | null
+  /** Direct tool: the placement frozen at pointer-down (edit math base). */
+  placement: PathPlacement | null
+  /** Direct tool: the node pose frozen at pointer-down. Commits resolve
+   * against this copy instead of the live node: chaining `applyAnchorEdit`
+   * on the already-renormalized live node would re-apply its bbox shift and
+   * slide the whole path on every extra pointer move. */
+  frozenNode: PathNode | null
 }
 
 /** Injectable stage dependencies (tests run with a synchronous scheduler). */
@@ -118,6 +165,8 @@ export class StageView {
   /** Vector brush: sampled centerline of the stroke being drawn (stage coords). */
   private vectorPoints: StrokePoint[] | null = null
   private vectorPreview: SVGPathElement | null = null
+  /** Direct tool: the anchor selected for handle editing (`A` / arrow tools). */
+  private anchorSelection: { nodeId: string; subpathIndex: number; anchorIndex: number } | null = null
   private view: ViewTransform = identityView()
   private spaceDown = false
   private spaceUsedForPan = false
@@ -166,8 +215,9 @@ export class StageView {
     this.svg.addEventListener('pointercancel', () => {
       this.cancelDrag()
     })
-    this.svg.addEventListener('dblclick', () => {
+    this.svg.addEventListener('dblclick', (event) => {
       if (this.editor.tool === 'pen') this.commitPen(false)
+      else if (this.editor.tool === 'direct') this.onDirectDoubleClick(event)
     })
     this.svg.addEventListener('wheel', (event) => this.onWheel(event), { passive: false })
 
@@ -311,6 +361,11 @@ export class StageView {
       return
     }
 
+    if (editor.tool === 'direct') {
+      this.onDirectPointerDown(event, point)
+      return
+    }
+
     if (editor.tool === 'select') {
       const content =
         layer && isObjectLayer(layer) ? evaluateLayerAtFrame(layer, editor.currentFrame) : []
@@ -421,7 +476,13 @@ export class StageView {
       grabbedId: null,
       startView: { ...this.view },
       preview: null,
-      penIndex: -1
+      penIndex: -1,
+      anchorNodeId: '',
+      anchor: null,
+      handle: null,
+      subpaths: null,
+      placement: null,
+      frozenNode: null
     }
   }
 
@@ -453,6 +514,10 @@ export class StageView {
       this.updatePreview(drag)
     } else if (drag.mode === 'pen') {
       this.updatePenHandles(drag)
+    } else if (drag.mode === 'anchor') {
+      this.updateAnchorDrag(drag)
+    } else if (drag.mode === 'handle') {
+      this.updateHandleDrag(drag)
     } else if (drag.mode === 'move') {
       this.updateMove(drag)
     } else if (drag.mode === 'marquee') {
@@ -529,6 +594,15 @@ export class StageView {
       // double-click, closing click, Enter or layer/tool change.
       this.drawPenPreview()
     } else if (drag.mode === 'move') {
+      if (drag.moveStarted) this.editor.endInteraction()
+    } else if (drag.mode === 'anchor') {
+      if (drag.moveStarted) {
+        // An endpoint released near its subpath's other end closes the loop;
+        // either way this is the single history commit of the drag.
+        this.tryCloseEndpoint(drag)
+        this.editor.endInteraction()
+      }
+    } else if (drag.mode === 'handle') {
       if (drag.moveStarted) this.editor.endInteraction()
     } else if (drag.mode === 'marquee') {
       drag.preview?.remove()
@@ -770,6 +844,316 @@ export class StageView {
     this.editor.addNode(node)
   }
 
+  /**
+   * The single selected path of the current layer, parsed for anchor editing
+   * (evaluated pose + `d`), or null when the selection is not exactly one
+   * editable path. Called live on every interaction step; the parser also
+   * merges the canonical closed-subpath duplicate anchor.
+   */
+  private directTarget(): { node: PathNode; subpaths: Subpath[]; placement: PathPlacement } | null {
+    const editor = this.editor
+    if (editor.selectedNodeIds.length !== 1) return null
+    const layer = editor.currentLayer
+    if (!layer || !layer.visible || !isObjectLayer(layer)) return null
+    const nodeId = editor.selectedNodeIds[0]
+    const node = evaluateLayerAtFrame(layer, editor.currentFrame).find(
+      (entry): entry is PathNode => entry.id === nodeId && entry.type === 'path'
+    )
+    if (!node) return null
+    const subpaths = parseSubpaths(node.d)
+    if (!subpaths) return null
+    return { node, subpaths, placement: pathPlacement(node) }
+  }
+
+  private hitAnchor(
+    target: { subpaths: Subpath[]; placement: PathPlacement },
+    point: Vec2,
+    radius: number
+  ): { subpathIndex: number; anchorIndex: number } | null {
+    let best: { subpathIndex: number; anchorIndex: number; distance: number } | null = null
+    for (const entry of stageAnchorPoints(target.placement, target.subpaths)) {
+      const distance = Math.hypot(point.x - entry.point.x, point.y - entry.point.y)
+      if (distance > radius) continue
+      if (!best || distance < best.distance) {
+        best = { subpathIndex: entry.subpathIndex, anchorIndex: entry.anchorIndex, distance }
+      }
+    }
+    return best ? { subpathIndex: best.subpathIndex, anchorIndex: best.anchorIndex } : null
+  }
+
+  private setAnchorSelection(
+    selection: { nodeId: string; subpathIndex: number; anchorIndex: number } | null
+  ): void {
+    this.anchorSelection = selection
+    this.scheduler.request(() => this.render())
+  }
+
+  /** Escape with the direct tool: drops the anchor selection (returns true)
+   * or hands the key back for the default handling. */
+  clearAnchorSelection(): boolean {
+    if (!this.anchorSelection) return false
+    this.setAnchorSelection(null)
+    return true
+  }
+
+  /**
+   * Delete/Backspace with the direct tool: removes the selected anchor in one
+   * undo step. Refused (with a status message) when the subpath would drop
+   * below two anchors. Returns false when no anchor is selected, so the
+   * router falls through to the node-level delete.
+   */
+  deleteAnchorSelection(): boolean {
+    const selection = this.anchorSelection
+    if (!selection) return false
+    const editor = this.editor
+    const layer = editor.currentLayer
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
+    const node = evaluateLayerAtFrame(layer, editor.currentFrame).find(
+      (entry): entry is PathNode => entry.id === selection.nodeId && entry.type === 'path'
+    )
+    if (!node) return false
+    const subpaths = parseSubpaths(node.d)
+    if (!subpaths) return false
+    const subpath = subpaths[selection.subpathIndex]
+    if (subpath && subpath.anchors.length <= 2) {
+      editor.showMessage('A subpath keeps at least two anchors')
+      return true
+    }
+    if (!removeAnchor(subpaths, selection.subpathIndex, selection.anchorIndex)) return false
+    this.commitAnchorEdit(selection.nodeId, subpaths, 'Delete anchor')
+    this.setAnchorSelection(null)
+    return true
+  }
+
+  /**
+   * Direct-selection pointer-down, in hit order: the selected anchor's
+   * handles, any anchor of the selected path (arming it for editing), the
+   * node itself (select, then arm a nearby anchor and start a move drag), or
+   * empty space (clear everything).
+   */
+  private onDirectPointerDown(event: PointerEvent, point: Vec2): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    if (!layer || !layer.visible || !isObjectLayer(layer)) return
+    // Locked layers still select (like Select); they never mutate.
+    const canDrag = !layer.locked
+    const target = this.directTarget()
+    const selection = this.anchorSelection
+
+    // Handles are shown (and hit) for the selected anchor only.
+    if (canDrag && target && selection && selection.nodeId === target.node.id) {
+      const entry = stageAnchorPoints(target.placement, target.subpaths).find(
+        (candidate) =>
+          candidate.subpathIndex === selection.subpathIndex &&
+          candidate.anchorIndex === selection.anchorIndex
+      )
+      const radius = HANDLE_HIT_RADIUS / this.view.scale
+      for (const key of ['in', 'out'] as const) {
+        const tip = entry?.[key]
+        if (!tip || Math.hypot(point.x - tip.x, point.y - tip.y) > radius) continue
+        const drag = this.newDrag('handle', point)
+        drag.anchorNodeId = target.node.id
+        drag.anchor = { subpathIndex: selection.subpathIndex, anchorIndex: selection.anchorIndex }
+        drag.handle = key
+        drag.subpaths = cloneSubpaths(target.subpaths)
+        drag.placement = target.placement
+        drag.frozenNode = { ...target.node, center: { ...target.node.center } }
+        this.drag = drag
+        this.svg.setPointerCapture(event.pointerId)
+        event.preventDefault()
+        return
+      }
+    }
+
+    // An anchor of the selected path: select and start dragging it.
+    if (target) {
+      const anchorHit = this.hitAnchor(target, point, ANCHOR_HIT_RADIUS / this.view.scale)
+      if (anchorHit) {
+        this.setAnchorSelection({ nodeId: target.node.id, ...anchorHit })
+        if (canDrag) {
+          const drag = this.newDrag('anchor', point)
+          drag.anchorNodeId = target.node.id
+          drag.anchor = anchorHit
+          drag.subpaths = cloneSubpaths(target.subpaths)
+          drag.placement = target.placement
+          drag.frozenNode = { ...target.node, center: { ...target.node.center } }
+          this.drag = drag
+          this.svg.setPointerCapture(event.pointerId)
+        }
+        event.preventDefault()
+        return
+      }
+    }
+
+    const content = evaluateLayerAtFrame(layer, editor.currentFrame)
+    const hit = hitTestNodes(content, point)
+    if (!hit) {
+      editor.selectNodes([], 'replace')
+      this.setAnchorSelection(null)
+      event.preventDefault()
+      return
+    }
+    if (!editor.selectedNodeIds.includes(hit.id)) editor.selectNodes([hit.id], 'replace')
+    const selected = this.directTarget()
+    const anchorHit =
+      selected && selected.node.id === hit.id
+        ? this.hitAnchor(selected, point, ANCHOR_HIT_RADIUS / this.view.scale)
+        : null
+    this.setAnchorSelection(anchorHit ? { nodeId: hit.id, ...anchorHit } : null)
+    if (canDrag && editor.selectedNodeIds.includes(hit.id)) {
+      // Dragging the path body moves the selected nodes, exactly like Select.
+      const drag = this.newDrag('move', point)
+      drag.grabbedId = hit.id
+      for (const node of content) {
+        if (editor.selectedNodeIds.includes(node.id)) drag.origins.set(node.id, { ...node.center })
+      }
+      this.drag = drag
+      this.svg.setPointerCapture(event.pointerId)
+    }
+    event.preventDefault()
+  }
+
+  /** Drags one anchor: each move re-applies the total pointer delta to the
+   * pointer-down snapshot, so the edit stays exact. One undo step. */
+  private updateAnchorDrag(drag: DragState): void {
+    const anchor = drag.anchor
+    const snapshot = drag.subpaths
+    const placement = drag.placement
+    if (!anchor || !snapshot || !placement) return
+    if (!drag.moveStarted) {
+      if (this.dragDistance(drag) < MIN_DRAG / this.view.scale) return
+      drag.moveStarted = true
+      this.editor.beginInteraction('Edit anchors')
+    }
+    const delta = stageDeltaToLocal(placement, {
+      x: drag.last.x - drag.start.x,
+      y: drag.last.y - drag.start.y
+    })
+    const edited = cloneSubpaths(snapshot)
+    const moved = edited[anchor.subpathIndex]?.anchors[anchor.anchorIndex]
+    if (!moved) return
+    moved.x += delta.x
+    moved.y += delta.y
+    this.commitAnchorEdit(drag.anchorNodeId, edited, 'Edit anchors', drag.frozenNode)
+  }
+
+  /** Drags one handle of the selected anchor; dragging it onto the anchor
+   * collapses the handle pair back to a corner. One undo step. */
+  private updateHandleDrag(drag: DragState): void {
+    const anchor = drag.anchor
+    const handle = drag.handle
+    const snapshot = drag.subpaths
+    const placement = drag.placement
+    if (!anchor || !handle || !snapshot || !placement) return
+    if (!drag.moveStarted) {
+      if (this.dragDistance(drag) < MIN_DRAG / this.view.scale) return
+      drag.moveStarted = true
+      this.editor.beginInteraction('Edit anchors')
+    }
+    const edited = cloneSubpaths(snapshot)
+    const target = edited[anchor.subpathIndex]?.anchors[anchor.anchorIndex]
+    const base = snapshot[anchor.subpathIndex]?.anchors[anchor.anchorIndex]?.[handle]
+    if (!target) return
+    const delta = stageDeltaToLocal(placement, {
+      x: drag.last.x - drag.start.x,
+      y: drag.last.y - drag.start.y
+    })
+    const offset = { x: (base?.x ?? 0) + delta.x, y: (base?.y ?? 0) + delta.y }
+    const tipDistance = Math.hypot(placement.scaleX * offset.x, placement.scaleY * offset.y)
+    if (tipDistance < HANDLE_COLLAPSE / this.view.scale) {
+      delete target.in
+      delete target.out
+    } else {
+      target[handle] = offset
+    }
+    this.commitAnchorEdit(drag.anchorNodeId, edited, 'Edit anchors', drag.frozenNode)
+  }
+
+  /** Releasing a dragged open-subpath endpoint onto the other endpoint (within
+   * the close radius on screen) closes the subpath, inside the same undo step. */
+  private tryCloseEndpoint(drag: DragState): void {
+    const anchor = drag.anchor
+    const snapshot = drag.subpaths
+    const placement = drag.placement
+    if (!anchor || !snapshot || !placement) return
+    const subpath = snapshot[anchor.subpathIndex]
+    if (!subpath || subpath.closed) return
+    const count = subpath.anchors.length
+    if (count <= 2) return
+    if (anchor.anchorIndex !== 0 && anchor.anchorIndex !== count - 1) return
+    const delta = stageDeltaToLocal(placement, {
+      x: drag.last.x - drag.start.x,
+      y: drag.last.y - drag.start.y
+    })
+    const edited = cloneSubpaths(snapshot)
+    const moved = edited[anchor.subpathIndex].anchors[anchor.anchorIndex]
+    moved.x += delta.x
+    moved.y += delta.y
+    const other = edited[anchor.subpathIndex].anchors[anchor.anchorIndex === 0 ? count - 1 : 0]
+    const from = localToStagePoint(placement, moved)
+    const to = localToStagePoint(placement, other)
+    if (Math.hypot(from.x - to.x, from.y - to.y) > ENDPOINT_CLOSE_RADIUS / this.view.scale) return
+    if (!setSubpathClosed(edited, anchor.subpathIndex, true)) return
+    this.commitAnchorEdit(drag.anchorNodeId, edited, 'Edit anchors', drag.frozenNode)
+  }
+
+  /** Applies edited subpaths to the live node through the single geometry
+   * commit point (updates `d`, `center`, `width`, `height` in place). Drags
+   * pass their frozen pointer-down node as `base` so every move resolves
+   * against the same placement and repeated commits cannot drift. */
+  private commitAnchorEdit(
+    nodeId: string,
+    subpaths: Subpath[],
+    label = 'Edit anchors',
+    base: PathNode | null = null
+  ): void {
+    this.editor.updateSelectedNodes((current) => {
+      if (current.type !== 'path' || current.id !== nodeId) return
+      const updated = applyAnchorEdit(base ?? current, subpaths)
+      current.d = updated.d
+      current.center = updated.center
+      current.width = updated.width
+      current.height = updated.height
+    }, label)
+  }
+
+  /** Double-click with the direct tool: on an anchor it toggles corner/smooth,
+   * on a segment it inserts an anchor (both one undo step). */
+  private onDirectDoubleClick(event: MouseEvent): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    if (!layer || !layer.visible || layer.locked || !isObjectLayer(layer)) return
+    const target = this.directTarget()
+    if (!target) return
+    const point = this.toStagePoint(event)
+
+    const anchorHit = this.hitAnchor(target, point, ANCHOR_HIT_RADIUS / this.view.scale)
+    if (anchorHit) {
+      const edited = cloneSubpaths(target.subpaths)
+      if (!toggleSmooth(edited, anchorHit.subpathIndex, anchorHit.anchorIndex)) return
+      this.commitAnchorEdit(target.node.id, edited)
+      this.setAnchorSelection({ nodeId: target.node.id, ...anchorHit })
+      return
+    }
+
+    const local = stageToLocalPoint(target.placement, point)
+    const hit = nearestSubpathSegment(target.subpaths, local, 8)
+    if (!hit) return
+    const at = segmentPointAt(target.subpaths[hit.subpathIndex], hit.segmentIndex, hit.t)
+    if (!at) return
+    const tip = localToStagePoint(target.placement, at)
+    if (Math.hypot(tip.x - point.x, tip.y - point.y) > SEGMENT_HIT_RADIUS / this.view.scale) return
+    const edited = cloneSubpaths(target.subpaths)
+    if (!insertAnchor(edited, hit.subpathIndex, hit.segmentIndex, hit.t)) return
+    this.commitAnchorEdit(target.node.id, edited)
+    // insertAnchor splices after the segment's start anchor.
+    this.setAnchorSelection({
+      nodeId: target.node.id,
+      subpathIndex: hit.subpathIndex,
+      anchorIndex: hit.segmentIndex + 1
+    })
+  }
+
   private applyMarquee(drag: DragState): void {
     const width = Math.abs(drag.last.x - drag.start.x)
     const height = Math.abs(drag.last.y - drag.start.y)
@@ -817,6 +1201,9 @@ export class StageView {
       return
     }
     if (drag.mode === 'move' && drag.moveStarted) this.editor.endInteraction()
+    else if ((drag.mode === 'anchor' || drag.mode === 'handle') && drag.moveStarted) {
+      this.editor.endInteraction()
+    }
     drag.preview?.remove()
     this.updateCursor()
   }
@@ -974,6 +1361,7 @@ export class StageView {
     // camera looks — W/zoom × H/zoom around the pose center, rotated with it.
     if (evaluated.camera) this.appendCameraFrame(doc, evaluated.camera)
     this.appendSelectionOverlays(evaluatedFrameOf(doc, editor.currentFrame))
+    this.appendDirectOverlay()
 
     this.updateCursor()
     // A pen path is abandoned when the tool changes; otherwise it previews.
@@ -1254,6 +1642,66 @@ export class StageView {
       const motionPath = motionPathForNode(layer, node.id)
       if (motionPath) this.appendMotionPath(motionPath)
     }
+  }
+
+  /**
+   * Direct tool: one square marker per anchor of the selected path (the
+   * selected anchor highlighted) plus its two handles. Stale selections are
+   * dropped here — this pass is the single place the anchor selection is
+   * validated against the live node and the active tool.
+   */
+  private appendDirectOverlay(): void {
+    const editor = this.editor
+    if (editor.tool !== 'direct') {
+      this.anchorSelection = null
+      return
+    }
+    const target = this.directTarget()
+    const selection = this.anchorSelection
+    if (selection) {
+      const subpath = target?.subpaths[selection.subpathIndex]
+      if (
+        !target ||
+        target.node.id !== selection.nodeId ||
+        !subpath ||
+        selection.anchorIndex >= subpath.anchors.length
+      ) {
+        this.anchorSelection = null
+      }
+    }
+    if (!target) return
+    const current = this.anchorSelection
+    const half = ANCHOR_MARKER_HALF / this.view.scale
+    for (const entry of stageAnchorPoints(target.placement, target.subpaths)) {
+      const selected =
+        current !== null &&
+        current.subpathIndex === entry.subpathIndex &&
+        current.anchorIndex === entry.anchorIndex
+      const marker = this.appendOverlay(document.createElementNS(SVG_NS, 'rect'))
+      marker.classList.add('stage__anchor-marker')
+      if (selected) marker.classList.add('stage__anchor-marker--selected')
+      marker.setAttribute('x', String(entry.point.x - half))
+      marker.setAttribute('y', String(entry.point.y - half))
+      marker.setAttribute('width', String(half * 2))
+      marker.setAttribute('height', String(half * 2))
+      marker.setAttribute('vector-effect', 'non-scaling-stroke')
+      if (!selected) continue
+      if (entry.in) this.appendAnchorHandle(entry.point, entry.in)
+      if (entry.out) this.appendAnchorHandle(entry.point, entry.out)
+    }
+  }
+
+  /** One handle of the selected anchor: a connector line plus a round tip. */
+  private appendAnchorHandle(anchor: Vec2, tip: Vec2): void {
+    const line = this.appendOverlay(document.createElementNS(SVG_NS, 'path'))
+    line.classList.add('stage__anchor-handle-line')
+    line.setAttribute('d', `M ${anchor.x} ${anchor.y} L ${tip.x} ${tip.y}`)
+    line.setAttribute('vector-effect', 'non-scaling-stroke')
+    const dot = this.appendOverlay(document.createElementNS(SVG_NS, 'circle'))
+    dot.classList.add('stage__anchor-handle')
+    dot.setAttribute('cx', String(tip.x))
+    dot.setAttribute('cy', String(tip.y))
+    dot.setAttribute('r', String(HANDLE_MARKER_RADIUS / this.view.scale))
   }
 
   /**

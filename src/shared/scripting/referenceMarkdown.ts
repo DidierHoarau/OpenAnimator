@@ -53,7 +53,8 @@ const OP_SUMMARIES: Record<Op, string> = {
   duplicateNodes: 'Duplicate the currently selected nodes at +10/+10 (one undo entry).',
   align: 'Align the selected objects to their union bounds (`left`, `centerH`, `right`, `top`, `middle`, `bottom`; needs at least two objects).',
   distribute: 'Space the selected objects evenly along `h` or `v` (outermost two fixed; needs at least three objects).',
-  setPreferences: 'Merge a partial preferences patch (sanitized and persisted) into the application settings.'
+  setPreferences: 'Merge a partial preferences patch (sanitized and persisted) into the application settings.',
+  setPathAnchors: 'Replace the full anchor/subpath geometry of a path node (one undo entry; covers add, move, remove and corner/smooth toggles).'
 }
 
 const FIELD_TYPES: Record<FieldSpec['type'], string> = {

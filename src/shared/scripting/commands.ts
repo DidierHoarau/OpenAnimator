@@ -109,6 +109,30 @@ export type ScriptCommand =
   | { op: 'align'; mode: AlignMode }
   | { op: 'distribute'; axis: DistributeAxis }
   | { op: 'setPreferences'; preferences: Partial<AppPreferences> }
+  | {
+      op: 'setPathAnchors'
+      nodeId: string
+      layerId?: string
+      frame?: number
+      /** Full replacement subpath/anchor list (covers add, move, remove and
+       * corner/smooth toggles in one undo step). */
+      subpaths: ScriptSubpath[]
+    }
+
+/** One editable subpath of a `setPathAnchors` command. */
+export interface ScriptSubpath {
+  closed: boolean
+  anchors: ScriptPathAnchor[]
+}
+
+/** One anchor of a `setPathAnchors` command; handles are offsets from the
+ * anchor point, exactly like the model's `PathAnchor`. */
+export interface ScriptPathAnchor {
+  x: number
+  y: number
+  in?: { x: number; y: number }
+  out?: { x: number; y: number }
+}
 
 /** One validation or application outcome, designed to be fed back to a model. */
 export interface ScriptIssue {
@@ -145,6 +169,33 @@ export const COMMANDS_SCHEMA = {
       additionalProperties: false,
       required: ['x', 'y'],
       properties: { x: { type: 'number' }, y: { type: 'number' } }
+    },
+    /** One editable path anchor (setPathAnchors). */
+    pathAnchor: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['x', 'y'],
+      properties: {
+        x: { type: 'number' },
+        y: { type: 'number' },
+        in: { $ref: '#/definitions/vec2' },
+        out: { $ref: '#/definitions/vec2' }
+      }
+    },
+    /** One editable subpath (setPathAnchors). */
+    anchorSubpath: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['anchors', 'closed'],
+      properties: {
+        closed: { type: 'boolean' },
+        anchors: { type: 'array', minItems: 2, items: { $ref: '#/definitions/pathAnchor' } }
+      }
+    },
+    anchorSubpaths: {
+      type: 'array',
+      minItems: 1,
+      items: { $ref: '#/definitions/anchorSubpath' }
     },
     easing: easingSchema(),
     /** setTween's easing also accepts null, which turns the tween off. */
@@ -243,7 +294,8 @@ export const COMMANDS_SCHEMA = {
             'duplicateNodes',
             'align',
             'distribute',
-            'setPreferences'
+            'setPreferences',
+            'setPathAnchors'
           ]
         },
         kind: { enum: ['object', 'drawing', 'camera', 'audio'] },
@@ -281,6 +333,7 @@ export const COMMANDS_SCHEMA = {
         easing: { $ref: '#/definitions/tweenEasing' },
         mode: { enum: ALIGN_MODES },
         axis: { enum: DISTRIBUTE_AXES },
+        subpaths: { $ref: '#/definitions/anchorSubpaths' },
         preferences: { $ref: '#/definitions/preferencesPatch' }
       },
       allOf: [
@@ -552,6 +605,14 @@ export const COMMANDS_SCHEMA = {
             additionalProperties: false,
             properties: { op: {}, preferences: {} }
           }
+        },
+        {
+          if: { properties: { op: { const: 'setPathAnchors' } }, required: ['op'] },
+          then: {
+            required: ['nodeId', 'subpaths'],
+            additionalProperties: false,
+            properties: { op: {}, nodeId: {}, layerId: {}, frame: {}, subpaths: {} }
+          }
         }
       ]
     }
@@ -578,6 +639,8 @@ export interface FieldSpec {
   /** Array items must be finite numbers ≥ 0 with at least one > 0 (stroke
    * dash patterns). */
   numberItems?: boolean
+  /** Array items are editable subpath objects (setPathAnchors). */
+  pathSubpaths?: boolean
   minItems?: number
   maxItems?: number
 }
@@ -622,7 +685,8 @@ export const OPS = [
   'duplicateNodes',
   'align',
   'distribute',
-  'setPreferences'
+  'setPreferences',
+  'setPathAnchors'
 ] as const
 
 /** One scripting op name. */
@@ -778,6 +842,12 @@ export const OP_FIELDS: Record<Op, Record<string, FieldSpec>> = {
   },
   setPreferences: {
     preferences: { type: 'object', required: true }
+  },
+  setPathAnchors: {
+    nodeId: { type: 'string', required: true },
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 },
+    subpaths: { type: 'array', pathSubpaths: true, minItems: 1, required: true }
   }
 }
 
@@ -941,6 +1011,9 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
         collector.at(path, 'must not be all zeros')
       }
     }
+    if (spec.pathSubpaths) {
+      checkPathSubpaths(collector, path, items)
+    }
     return
   }
   if (spec.type === 'boolean') {
@@ -1095,6 +1168,64 @@ function checkGradientPaint(collector: Collector, path: string, value: unknown):
     )
   }
   stops.forEach((stop, index) => checkGradientStop(collector, `${path}/stops/${index}`, stop))
+}
+
+/** Strict `setPathAnchors` subpath list: each subpath carries a closed flag
+ * and at least two anchors with finite `x`/`y` and optional `in`/`out`
+ * handle offsets. */
+function checkPathSubpaths(collector: Collector, path: string, items: unknown[]): void {
+  items.forEach((entry, index) => {
+    const subpathPath = `${path}/${index}`
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      collector.at(subpathPath, 'must be object')
+      return
+    }
+    const subpath = entry as Record<string, unknown>
+    if (typeof subpath.closed !== 'boolean') collector.at(`${subpathPath}/closed`, 'must be boolean')
+    const anchors = subpath.anchors
+    if (!Array.isArray(anchors)) {
+      collector.at(`${subpathPath}/anchors`, 'must be array')
+    } else {
+      if (anchors.length < 2) collector.at(`${subpathPath}/anchors`, 'must have at least 2 items')
+      anchors.forEach((anchor, anchorIndex) => {
+        checkPathAnchor(collector, `${subpathPath}/anchors/${anchorIndex}`, anchor)
+      })
+    }
+    for (const key of Object.keys(subpath)) {
+      if (key !== 'closed' && key !== 'anchors') {
+        collector.at(`${subpathPath}/${key}`, 'must not have additional properties')
+      }
+    }
+  })
+}
+
+function checkPathAnchor(collector: Collector, path: string, value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    collector.at(path, 'must be object')
+    return
+  }
+  const anchor = value as Record<string, unknown>
+  for (const key of ['x', 'y'] as const) {
+    const entry = anchor[key]
+    if (entry === undefined) collector.at(`${path}/${key}`, 'is required')
+    else if (typeof entry !== 'number' || !Number.isFinite(entry)) {
+      collector.at(`${path}/${key}`, 'must be number')
+    }
+  }
+  for (const key of ['in', 'out'] as const) {
+    const entry = anchor[key]
+    if (entry === undefined) continue
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      collector.at(`${path}/${key}`, 'must be object')
+      continue
+    }
+    checkVec2(collector, `${path}/${key}`, entry)
+  }
+  for (const key of Object.keys(anchor)) {
+    if (key !== 'x' && key !== 'y' && key !== 'in' && key !== 'out') {
+      collector.at(`${path}/${key}`, 'must not have additional properties')
+    }
+  }
 }
 
 function validateSceneNodes(collector: Collector, path: string, value: unknown): void {

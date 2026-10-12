@@ -57,6 +57,7 @@ export type ShortcutId =
   | 'view.toggleLibrary'
   | 'view.toggleProperties'
   | 'tool.select'
+  | 'tool.direct'
   | 'tool.hand'
   | 'tool.brush'
   | 'tool.eraser'
@@ -158,6 +159,7 @@ export const SHORTCUTS: readonly ShortcutRow[] = [
 
   // Tools
   { id: 'tool.select', label: 'Select Tool', keys: 'V', category: 'Tools', owner: 'page', bindings: ['v'] },
+  { id: 'tool.direct', label: 'Direct Selection Tool', keys: 'A', category: 'Tools', owner: 'page', bindings: ['a'] },
   { id: 'tool.hand', label: 'Hand Tool', keys: 'H', category: 'Tools', owner: 'page', bindings: ['h'] },
   { id: 'tool.brush', label: 'Brush Tool', keys: 'B', category: 'Tools', owner: 'page', bindings: ['b'] },
   { id: 'tool.eraser', label: 'Eraser Tool', keys: 'E', category: 'Tools', owner: 'page', bindings: ['e'] },

@@ -52,6 +52,7 @@ Machine-readable schema: `commands-v1.json` (export it with `npm run cli -- sche
 - [`align`](#align) — Align the selected objects to their union bounds (`left`, `centerH`, `right`, `top`, `middle`, `bottom`; needs at least two objects).
 - [`distribute`](#distribute) — Space the selected objects evenly along `h` or `v` (outermost two fixed; needs at least three objects).
 - [`setPreferences`](#setpreferences) — Merge a partial preferences patch (sanitized and persisted) into the application settings.
+- [`setPathAnchors`](#setpathanchors) — Replace the full anchor/subpath geometry of a path node (one undo entry; covers add, move, remove and corner/smooth toggles).
 
 ## Conventions
 
@@ -441,6 +442,17 @@ Merge a partial preferences patch (sanitized and persisted) into the application
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `preferences` | object | yes | — |
+
+### setPathAnchors
+
+Replace the full anchor/subpath geometry of a path node (one undo entry; covers add, move, remove and corner/smooth toggles).
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `nodeId` | string | yes | — |
+| `layerId` | string | no | — |
+| `frame` | integer | no | min 0 |
+| `subpaths` | array | yes | at least 1 item |
 
 ## Examples
 

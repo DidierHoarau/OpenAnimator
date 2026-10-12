@@ -17,7 +17,7 @@ import { MAX_STROKE_DASH_VALUES, isAudioLayer, isCameraLayer, isDrawingLayer, is
 import type { ImageNode, SceneNode, StrokeLinecap, StrokeLinejoin, StrokeStyle } from '@shared/model'
 import { isGradientPaint, paintPrimaryColor } from '@shared/paint'
 import type { Paint } from '@shared/paint'
-import { pathDataToAnchors } from '@shared/pathModel'
+import { applyAnchorEdit, parseSubpaths, setSubpathClosed } from '@shared/pathEdit'
 import { applyTextMetrics, TEXT_LINE_HEIGHT } from '@shared/textModel'
 import type { SystemFont } from '@shared/api'
 
@@ -311,6 +311,7 @@ export class PropertiesView {
   private readonly pathFillToggle: HTMLInputElement
   private readonly pathFillColor: HTMLInputElement
   private readonly pathInfoLabel: HTMLElement
+  private readonly pathSubpathButton: HTMLButtonElement
   private readonly textContent: HTMLTextAreaElement
   private readonly textFont: HTMLInputElement
   private readonly fontDatalist: HTMLDataListElement
@@ -633,8 +634,28 @@ export class PropertiesView {
 
     const pathInfoRow = this.row(path.content, 'Geometry')
     this.pathInfoLabel = el('span', 'panel-file-name')
-    this.pathInfoLabel.title = 'Anchor count of the path (compound paths cannot be anchor-edited)'
+    this.pathInfoLabel.title = 'Anchor and subpath count of the path'
     pathInfoRow.appendChild(this.pathInfoLabel)
+    pathInfoRow.appendChild(el('span', 'panel-suffix', 'Edit anchors: A'))
+    this.pathSubpathButton = this.button(
+      'Close subpath',
+      'Close the path into a loop, or open it again (single subpaths only)',
+      () => {
+        editor.updateSelectedNode((current) => {
+          if (current.type !== 'path') return
+          const subpaths = parseSubpaths(current.d)
+          if (!subpaths || subpaths.length !== 1) return
+          if (!setSubpathClosed(subpaths, 0, !subpaths[0].closed)) return
+          const updated = applyAnchorEdit(current, subpaths)
+          current.d = updated.d
+          current.center = updated.center
+          current.width = updated.width
+          current.height = updated.height
+        })
+        this.render()
+      }
+    )
+    pathInfoRow.appendChild(this.pathSubpathButton)
     path.content.append(this.transformRows, pathStrokeRows)
 
     // Text properties, visible only while a text node is selected.
@@ -1807,10 +1828,20 @@ export class PropertiesView {
       this.pathFillSwatches.setActive(fill !== undefined ? paintPrimaryColor(fill) : null)
       this.pathFillSwatches.setDisabled(!editable || !filled || fillIsGradient)
       this.pathStrokeStyle.sync(node, { editable, outlined, keepFocused })
-      const parsed = pathDataToAnchors(node.d)
-      this.pathInfoLabel.textContent = parsed
-        ? `${parsed.anchors.length} anchors${parsed.closed ? ' · closed' : ''}`
-        : 'compound path'
+      const subpaths = parseSubpaths(node.d)
+      if (subpaths) {
+        const anchorCount = subpaths.reduce((sum, subpath) => sum + subpath.anchors.length, 0)
+        const parts = [`${anchorCount} anchors`]
+        if (subpaths.length > 1) parts.push(`${subpaths.length} subpaths`)
+        else if (subpaths[0].closed) parts.push('closed')
+        this.pathInfoLabel.textContent = parts.join(' · ')
+      } else {
+        this.pathInfoLabel.textContent = 'compound path'
+      }
+      const single = subpaths && subpaths.length === 1 ? subpaths[0] : null
+      this.pathSubpathButton.textContent = single?.closed ? 'Open subpath' : 'Close subpath'
+      this.pathSubpathButton.disabled =
+        !editable || !single || (!single.closed && single.anchors.length <= 2)
     }
     if (node.type === 'text') {
       if (!keepFocused(this.textContent)) this.textContent.value = node.text

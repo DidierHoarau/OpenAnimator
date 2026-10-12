@@ -730,6 +730,111 @@ describe('hand-rolled validator vs JSON Schema', () => {
       commands: [
         { op: 'addNode', node: { type: 'path', d: 'M0 0L1 1', strokeLinecap: 'round', strokeDasharray: [0] } }
       ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          frame: 3,
+          layerId: 'l1',
+          subpaths: [
+            {
+              closed: true,
+              anchors: [
+                { x: 0, y: 0, in: { x: -1, y: 0 }, out: { x: 1, y: 0 } },
+                { x: 10, y: 10 },
+                { x: 20, y: 0 }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    { commands: [{ op: 'setPathAnchors', nodeId: 'x' }] },
+    {
+      commands: [
+        { op: 'setPathAnchors', subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }] }
+      ]
+    },
+    { commands: [{ op: 'setPathAnchors', nodeId: 'x', subpaths: [] }] },
+    {
+      commands: [
+        { op: 'setPathAnchors', nodeId: 'x', subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }] }] }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: 'yes', anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 'a', y: 0 }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0, in: { x: 1 } }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0, in: null }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0, extra: 1 }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }], extra: 1 }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }],
+          extra: 1
+        }
+      ]
     }
   ]
 

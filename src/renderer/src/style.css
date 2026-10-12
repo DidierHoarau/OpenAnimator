@@ -351,6 +351,34 @@ input:disabled {
   pointer-events: none;
 }
 
+/* Direct-selection anchors: squares per anchor, filled when selected, with
+   round handle tips on connector lines. */
+.stage__anchor-marker {
+  fill: var(--panel-deep);
+  stroke: var(--accent-blue);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.stage__anchor-marker--selected {
+  fill: var(--accent);
+  stroke: var(--accent);
+}
+
+.stage__anchor-handle {
+  fill: var(--accent);
+  stroke: var(--panel-deep);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.stage__anchor-handle-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
 /* Timeline (bottom panel) */
 
 .timeline {
