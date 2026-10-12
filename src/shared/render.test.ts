@@ -33,7 +33,7 @@ function layer(id: string, overrides: Partial<ObjectLayer> = {}): ObjectLayer {
 describe('evaluateDocumentAtFrame', () => {
   it('returns layers in paint order (bottom of the stack first)', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -41,6 +41,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [],
+      fonts: [],
       layers: [
         layer('top', { keyframes: [{ frame: 0, nodes: [rect('a', 0)] }] }),
         layer('mid', { keyframes: [{ frame: 0, nodes: [rect('b', 1)] }] }),
@@ -62,7 +63,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('skips hidden layers but keeps empty visible ones', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -70,6 +71,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [],
+      fonts: [],
       layers: [
         layer('visible-empty', {}),
         layer('hidden', { visible: false, keyframes: [{ frame: 0, nodes: [rect('a', 0)] }] })
@@ -84,7 +86,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('hides a node after its last keyframe (per-object span)', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -92,6 +94,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [],
+      fonts: [],
       layers: [
         layer('l', {
           keyframes: [
@@ -110,7 +113,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('interpolates a tweened node toward the next keyframe containing it', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -118,6 +121,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [],
+      fonts: [],
       layers: [
         layer('l', {
           keyframes: [
@@ -138,7 +142,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('returns an empty tree for a document without layers', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -146,6 +150,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [],
+      fonts: [],
       layers: []
     }
     expect(evaluateDocumentAtFrame(doc, 0)).toEqual([])
@@ -179,7 +184,7 @@ describe('evaluateDocumentAtFrame', () => {
       opacity: 0.75
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -187,6 +192,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [asset],
+      fonts: [],
       layers: [layer('l', { keyframes: [{ frame: 0, nodes: [instance] }] })]
     }
     const nodes = evaluateDocumentAtFrame(doc, 0)[0].nodes
@@ -212,7 +218,7 @@ describe('evaluateDocumentAtFrame', () => {
       opacity: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -220,6 +226,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [],
+      fonts: [],
       layers: [layer('l', { keyframes: [{ frame: 0, nodes: [instance] }] })]
     }
     expect(evaluateDocumentAtFrame(doc, 0)[0].nodes).toEqual([instance])
@@ -259,7 +266,7 @@ describe('evaluateDocumentAtFrame', () => {
       createdAt: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -267,6 +274,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [inner, outer],
+      fonts: [],
       layers: [
         layer('l', {
           keyframes: [
@@ -302,7 +310,7 @@ describe('evaluateDocumentAtFrame', () => {
       createdAt: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -310,6 +318,7 @@ describe('evaluateDocumentAtFrame', () => {
       fps: 24,
       background: '#000',
       assets: [asset],
+      fonts: [],
       layers: [
         layer('l', {
           keyframes: [
@@ -331,7 +340,7 @@ describe('evaluateDocumentAtFrame', () => {
 describe('evaluateDocumentAtFrame — drawing layers', () => {
   const docWithDrawing = (): { doc: AnimatorDocument; drawingId: string } => {
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -339,6 +348,7 @@ describe('evaluateDocumentAtFrame — drawing layers', () => {
       fps: 24,
       background: '#000',
       assets: [],
+      fonts: [],
       layers: [
         layer('obj', { keyframes: [{ frame: 0, nodes: [rect('a', 5)] }] }),
         {
@@ -395,7 +405,7 @@ describe('evaluateDocumentAtFrame — drawing layers', () => {
 
 describe('evaluateDocumentAtFrame — hold step', () => {
   const movingDoc = (holdStep?: number): AnimatorDocument => ({
-    schemaVersion: 5,
+    schemaVersion: 6,
     name: 't',
     width: 100,
     height: 100,
@@ -403,6 +413,7 @@ describe('evaluateDocumentAtFrame — hold step', () => {
     background: '#000',
     palette: [],
     assets: [],
+    fonts: [],
     ...(holdStep !== undefined ? { holdStep } : {}),
     layers: [
       layer('l', {
@@ -450,7 +461,7 @@ describe('evaluateDocumentAtFrame — hold step', () => {
 
   it('steps drawing cells through the same evaluation', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 't',
       palette: [],
       width: 100,
@@ -458,6 +469,7 @@ describe('evaluateDocumentAtFrame — hold step', () => {
       fps: 24,
       background: '#000',
       assets: [],
+      fonts: [],
       holdStep: 3,
       layers: [
         {

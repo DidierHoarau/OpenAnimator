@@ -29,7 +29,7 @@ function primitive(id: string, overrides: Partial<PrimitiveNode> & { primitive: 
 /** Hand-written current-schema equivalent of `fixtures/v1/tweened-strokes.json`. */
 function expectedTweenedStrokesDocument(): AnimatorDocument {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     name: 'Tween demo',
     width: 960,
     height: 540,
@@ -37,6 +37,7 @@ function expectedTweenedStrokesDocument(): AnimatorDocument {
     background: '#10151b',
     assets: [],
     palette: [],
+    fonts: [],
     layers: [
       {
         kind: 'object',
@@ -111,7 +112,7 @@ describe('migrateDocument — v1 fixtures', () => {
   it('migrates the multi-layer fixture including hidden/locked flags', () => {
     const raw = loadFixture('multi-layer')
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(5)
+    expect(migrated.schemaVersion).toBe(6)
     expect(migrated.layers).toHaveLength(2)
     expect(migrated.layers[0]).toMatchObject({
       id: 'layer-fx',
@@ -142,7 +143,7 @@ describe('migrateDocument — v1 fixtures', () => {
     const raw = loadFixture('minimal')
     const migrated = migrateDocument(raw)
     expect(migrated).toEqual({
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 'Untitled',
       width: 960,
       height: 540,
@@ -150,6 +151,7 @@ describe('migrateDocument — v1 fixtures', () => {
       background: '#10151b',
       assets: [],
       palette: [],
+      fonts: [],
       layers: [
         {
           kind: 'object',
@@ -430,7 +432,7 @@ describe('migrateDocument — v4 documents', () => {
       ]
     }
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(5)
+    expect(migrated.schemaVersion).toBe(6)
     expect(migrated.palette).toEqual([])
     expect(migrated.holdStep).toBe(3)
     expect((migrated.layers[0] as ObjectLayer).keyframes[0].tween).toEqual({
@@ -473,10 +475,10 @@ describe('migrateDocument — v4 documents', () => {
     expect(() => migrateDocument(badBezier)).toThrow(MigrationError)
   })
 
-  it('restamps a v3 document to v5', () => {
+  it('restamps a v3 document to v6', () => {
     const raw = { ...v4Base(), schemaVersion: 3 }
     const migrated = migrateDocument(JSON.parse(JSON.stringify(raw)))
-    expect(migrated.schemaVersion).toBe(5)
+    expect(migrated.schemaVersion).toBe(6)
     expect(migrated.palette).toEqual([])
     expect(isAnimatorDocument(migrated)).toBe(true)
   })
@@ -575,6 +577,40 @@ describe('migrateDocument — v4 documents', () => {
       ]
     }
     expect(() => migrateDocument(badGradient)).toThrow(/malformed "fill" paint/)
+  })
+
+  it('injects fonts: [] into pre-v6 documents and keeps valid font lists through migration', () => {
+    const injected = migrateDocument({ ...v4Base(), schemaVersion: 5 })
+    expect(injected.schemaVersion).toBe(6)
+    expect(injected.fonts).toEqual([])
+    expect(isAnimatorDocument(injected)).toBe(true)
+
+    const fonts = [
+      {
+        id: 'oa-embed-400-ab12cd34',
+        family: 'Noto Sans',
+        weight: 400,
+        resourceId: 'a'.repeat(64),
+        glyphs: ['H', 'i'],
+        license: 'OFL-1.1'
+      }
+    ]
+    const kept = migrateDocument({ ...v4Base(), schemaVersion: 6, fonts })
+    expect(kept.fonts).toEqual(fonts)
+    expect(isAnimatorDocument(kept)).toBe(true)
+  })
+
+  it('rejects a non-array fonts field with a user-presentable message', () => {
+    expect(() => migrateDocument({ ...v4Base(), schemaVersion: 5, fonts: 'nope' })).toThrow(
+      /"fonts" must be an array/
+    )
+    expect(() =>
+      migrateDocument({
+        ...v4Base(),
+        schemaVersion: 5,
+        fonts: [{ id: 'x', family: 'F', weight: 400, resourceId: 'r', glyphs: 'ab', license: 'L' }]
+      })
+    ).toThrow(MigrationError)
   })
 })
 

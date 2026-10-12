@@ -5,6 +5,7 @@ import type { Rect } from '@shared/hitTesting'
 import { evaluateDocumentAtFrame } from '@shared/render'
 import { renderLayersToSvgMarkup } from '@shared/renderSvg'
 import type { SvgRenderOptions } from '@shared/renderSvg'
+import { embeddedFamilyResolverFor } from '@shared/fontPolicy'
 import { isObjectLayer } from '@shared/model'
 import type { AnimatorDocument, PathAnchor, PathNode, PrimitiveNode, TextNode } from '@shared/model'
 import { motionPathForNode } from '@shared/motionPath'
@@ -882,7 +883,8 @@ export class StageView {
     const stageContent = document.createElementNS(SVG_NS, 'g')
     stageContent.innerHTML = renderLayersToSvgMarkup(
       evaluateDocumentAtFrame(doc, editor.currentFrame),
-      (id) => editor.resources.getUrl(id)
+      (id) => editor.resources.getUrl(id),
+      { resolveEmbeddedFont: embeddedFamilyResolverFor(doc.fonts) }
     )
     this.svg.appendChild(stageContent)
 
@@ -960,7 +962,7 @@ export class StageView {
     group.innerHTML = renderLayersToSvgMarkup(
       evaluateDocumentAtFrame(doc, frame),
       (id) => this.editor.resources.getUrl(id),
-      outline
+      { ...outline, resolveEmbeddedFont: embeddedFamilyResolverFor(doc.fonts) }
     )
     return group
   }

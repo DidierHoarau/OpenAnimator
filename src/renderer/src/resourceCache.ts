@@ -1,5 +1,5 @@
-/** Sniffs the MIME type of an encoded raster from its magic bytes. */
-export function sniffImageMime(bytes: Uint8Array): string {
+/** Sniffs the MIME type of an encoded resource from its magic bytes. */
+export function sniffResourceMime(bytes: Uint8Array): string {
   if (
     bytes.length >= 8 &&
     bytes[0] === 0x89 &&
@@ -27,6 +27,20 @@ export function sniffImageMime(bytes: Uint8Array): string {
     bytes[11] === 0x50
   ) {
     return 'image/webp'
+  }
+  // Embedded font subsets live in the resource store too; they are Blobs the
+  // stage font registration reads, never images for `<image href>`.
+  if (bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) {
+    return 'font/ttf'
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x4f && bytes[1] === 0x54 && bytes[2] === 0x54 && bytes[3] === 0x4f) {
+    return 'font/otf'
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x74 && bytes[1] === 0x72 && bytes[2] === 0x75 && bytes[3] === 0x65) {
+    return 'font/ttf'
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x74 && bytes[1] === 0x74 && bytes[2] === 0x63 && bytes[3] === 0x66) {
+    return 'font/collection'
   }
   return 'application/octet-stream'
 }
@@ -71,12 +85,13 @@ interface ResourceEntry {
 
 /**
  * In-memory cache of the document's binary resources: every blob is wrapped
- * as an object URL the DOM renderer injects into `<image href>`. Registration
- * runs an async decode validation — bytes that fail to decode are marked
- * corrupt, dropped from the cache and reported through the listener so the
- * stage re-renders them as placeholders. Resources missing from the
- * document's set never get a URL; the evaluator stays pure by referring to
- * resource ids only.
+ * as an object URL the DOM renderer injects into `<image href>` (embedded
+ * font subsets are stored alongside and read as Blobs for font registration).
+ * Registration runs an async decode validation — bytes that fail to decode
+ * are marked corrupt, dropped from the cache and reported through the
+ * listener so the stage re-renders them as placeholders. Resources missing
+ * from the document's set never get a URL; the evaluator stays pure by
+ * referring to resource ids only.
  */
 export class ResourceCache {
   private readonly entries = new Map<string, ResourceEntry>()
@@ -138,7 +153,7 @@ export class ResourceCache {
   }
 
   private store(resourceId: string, bytes: Uint8Array): void {
-    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: sniffImageMime(bytes) })
+    const blob = new Blob([bytes.slice().buffer as ArrayBuffer], { type: sniffResourceMime(bytes) })
     this.entries.set(resourceId, { url: this.createUrl(blob), blob })
   }
 
@@ -146,6 +161,9 @@ export class ResourceCache {
     if (!this.decode) return
     for (const [resourceId, entry] of [...this.entries]) {
       if (only !== undefined && resourceId !== only) continue
+      // Font blobs are not images: the image decoder can never accept them,
+      // so validating them would wrongly flag and drop every embedded subset.
+      if (entry.blob.type.startsWith('font/')) continue
       void this.decode(entry.blob)
         .then(() => {
           if (this.corrupt.delete(resourceId)) this.notify()

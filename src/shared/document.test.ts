@@ -37,7 +37,7 @@ import {
 } from './document'
 import { createStarterDocument } from './starterDocument'
 import { cloneNode, isObjectLayer } from './model'
-import type { AnimatorDocument, GroupNode, ObjectLayer, PrimitiveNode, SceneNode } from './model'
+import type { AnimatorDocument, EmbeddedFont, GroupNode, ObjectLayer, PrimitiveNode, SceneNode } from './model'
 
 function rect(id: string, x: number, y: number, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
   return {
@@ -60,11 +60,23 @@ function firstLayer(doc: AnimatorDocument): ObjectLayer {
   return layer
 }
 
+function embeddedFont(): EmbeddedFont {
+  return {
+    id: 'oa-embed-400-ab12cd34',
+    family: 'Noto Sans',
+    weight: 400,
+    resourceId: 'f'.repeat(64),
+    glyphs: ['H', 'e', 'l', 'o'],
+    license: 'OFL-1.1'
+  }
+}
+
 describe('document operations', () => {
   it('creates a document with one empty layer and keyframe at 0', () => {
     const doc = createDocument('test', 960, 540, 24)
-    expect(doc.schemaVersion).toBe(5)
+    expect(doc.schemaVersion).toBe(6)
     expect(doc.palette).toEqual([])
+    expect(doc.fonts).toEqual([])
     expect(doc.layers).toHaveLength(1)
     expect(firstLayer(doc).keyframes).toEqual([{ frame: 0, nodes: [] }])
     expect(documentDuration(doc)).toBe(1)
@@ -220,14 +232,14 @@ describe('document operations', () => {
     expect(documentDuration(doc)).toBe(41)
   })
 
-  it('isAnimatorDocument requires schemaVersion 4 and validates deeply', () => {
+  it('isAnimatorDocument requires the current schemaVersion and validates deeply', () => {
     const valid = createDocument('test', 960, 540, 24)
     firstLayer(valid).keyframes[0].nodes.push(rect('a', 0, 0))
     expect(isAnimatorDocument(valid)).toBe(true)
     expect(isAnimatorDocument(cloneDocument(valid))).toBe(true)
 
-    // Anything without schemaVersion 4 (e.g. a v1 document) is rejected here;
-    // those go through migrateDocument instead.
+    // Anything without the current schemaVersion (e.g. a v1 document) is
+    // rejected here; those go through migrateDocument instead.
     const v1 = { ...valid } as Record<string, unknown>
     delete v1.schemaVersion
     expect(isAnimatorDocument(v1)).toBe(false)
@@ -252,6 +264,14 @@ describe('document operations', () => {
     expect(isAnimatorDocument({ ...valid, holdStep: 17 })).toBe(false)
     expect(isAnimatorDocument({ ...valid, holdStep: 1.5 })).toBe(false)
     expect(isAnimatorDocument({ ...valid, holdStep: '2' })).toBe(false)
+
+    // Embedded fonts are required and strictly shaped.
+    expect(isAnimatorDocument({ ...valid, fonts: undefined })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, fonts: 'nope' })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, fonts: [embeddedFont()] })).toBe(true)
+    expect(isAnimatorDocument({ ...valid, fonts: [{ ...embeddedFont(), weight: 0 }] })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, fonts: [{ ...embeddedFont(), glyphs: 'ab' }] })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, fonts: [{ ...embeddedFont(), license: 5 }] })).toBe(false)
   })
 
   it('isAnimatorDocument rejects malformed layers, keyframes and nodes', () => {
@@ -427,6 +447,26 @@ describe('isSceneNode', () => {
     expect(isSceneNode({ ...text, fontSize: 'big' })).toBe(false)
     expect(isSceneNode({ ...text, align: 'justified' })).toBe(false)
     expect(isSceneNode({ ...text, fill: null })).toBe(false)
+
+    // Typography fields: optional, but strictly shaped when present.
+    expect(isSceneNode({ ...text, letterSpacing: -2.5 })).toBe(true)
+    expect(isSceneNode({ ...text, letterSpacing: 'wide' })).toBe(false)
+    expect(isSceneNode({ ...text, lineHeight: 1.5 })).toBe(true)
+    expect(isSceneNode({ ...text, lineHeight: 0.5 })).toBe(true)
+    expect(isSceneNode({ ...text, lineHeight: 5 })).toBe(true)
+    expect(isSceneNode({ ...text, lineHeight: 0.4 })).toBe(false)
+    expect(isSceneNode({ ...text, lineHeight: 5.1 })).toBe(false)
+    expect(isSceneNode({ ...text, stroke: '#000000', strokeWidth: 3 })).toBe(true)
+    expect(isSceneNode({ ...text, stroke: 5 })).toBe(false)
+    expect(isSceneNode({ ...text, strokeWidth: '3' })).toBe(false)
+    expect(isSceneNode({ ...text, verticalAlign: 'middle' })).toBe(true)
+    expect(isSceneNode({ ...text, verticalAlign: 'bottom' })).toBe(true)
+    expect(isSceneNode({ ...text, verticalAlign: 'center' })).toBe(false)
+    expect(isSceneNode({ ...text, fontFallback: ['Lato', 'Inter'] })).toBe(true)
+    expect(isSceneNode({ ...text, fontFallback: [] })).toBe(true)
+    expect(isSceneNode({ ...text, fontFallback: 'Lato' })).toBe(false)
+    expect(isSceneNode({ ...text, fontFallback: [1, 2] })).toBe(false)
+    expect(isSceneNode({ ...text, fontFallback: Array.from({ length: 9 }, (_, i) => `f${i}`) })).toBe(false)
 
     expect(isSceneNode({ type: 'alien', id: 'x' })).toBe(false)
     expect(isSceneNode({ ...rect('a', 0, 0), type: 'nope' })).toBe(false)

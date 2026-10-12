@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
-import type { PathNode } from '@shared/model'
+import type { PathNode, TextNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { convertSelectedTextToOutlines } from './textOutlines'
@@ -36,7 +36,7 @@ function stubFontFetch(): void {
   })
 }
 
-function textEditor(): Editor {
+function textEditor(fontFamily = 'Noto Sans'): Editor {
   const editor = new Editor(createDocument('outlines', 320, 180, 12), {
     measureText: (line: string) => line.length * 10
   })
@@ -49,13 +49,19 @@ function textEditor(): Editor {
     rotation: 0,
     opacity: 1,
     text: 'Hi',
-    fontFamily: 'Noto Sans',
+    fontFamily,
     fontSize: 48,
     fontWeight: 400,
     fill: '#ffcc00',
     align: 'left'
   })
   return editor
+}
+
+function selectedPathNode(editor: Editor): PathNode {
+  const layer = editor.currentLayer
+  if (layer?.kind !== 'object') throw new Error('expected an object layer')
+  return layer.keyframes[0].nodes[0] as PathNode
 }
 
 describe('convertSelectedTextToOutlines', () => {
@@ -102,5 +108,72 @@ describe('convertSelectedTextToOutlines', () => {
     const layer = editor.currentLayer
     if (layer?.kind !== 'object') throw new Error('expected an object layer')
     expect(layer.keyframes[0].nodes[0].type).toBe('text')
+  })
+
+  it('converts through the system font when the family resolves through window.api', async () => {
+    const calls: Array<{ family: string; weight: number }> = []
+    const fontBytes = new Uint8Array(readFileSync(NOTO_700))
+    const previous = window.api
+    window.api = {
+      readSystemFont: (family: string, weight: number) => {
+        calls.push({ family, weight })
+        return Promise.resolve({ ok: true, bytes: fontBytes })
+      }
+    } as unknown as typeof window.api
+    try {
+      const editor = textEditor('Lato')
+      const messages: string[] = []
+      editor.onMessage((message) => messages.push(message))
+      expect(await convertSelectedTextToOutlines(editor)).toBe(true)
+      expect(calls).toEqual([{ family: 'Lato', weight: 400 }])
+      const node = selectedPathNode(editor)
+      expect(node.type).toBe('path')
+      expect(node.d.match(/M/g)?.length).toBeGreaterThanOrEqual(2)
+      expect(messages).toEqual(['Converted the text to vector outlines'])
+    } finally {
+      window.api = previous
+    }
+  })
+
+  it('falls back to the bundled font and reports it when the system font is missing', async () => {
+    const previous = window.api
+    window.api = {
+      readSystemFont: () => Promise.resolve({ ok: false, error: 'no face near that weight' })
+    } as unknown as typeof window.api
+    try {
+      const editor = textEditor('Georgia')
+      const messages: string[] = []
+      editor.onMessage((message) => messages.push(message))
+      expect(await convertSelectedTextToOutlines(editor)).toBe(true)
+      expect(selectedPathNode(editor).type).toBe('path')
+      expect(messages).toEqual([
+        'Converted the text to vector outlines using the bundled Noto Sans font'
+      ])
+    } finally {
+      window.api = previous
+    }
+  })
+
+  it('converts with the bundled font when no main-process API is reachable', async () => {
+    const editor = textEditor('Verdana')
+    expect(await convertSelectedTextToOutlines(editor)).toBe(true)
+    expect(selectedPathNode(editor).type).toBe('path')
+  })
+
+  it('re-lays the glyphs with letter spacing during conversion', async () => {
+    const plain = textEditor()
+    const spaced = textEditor()
+    const layer = spaced.currentLayer
+    if (layer?.kind !== 'object') throw new Error('expected an object layer')
+    ;(layer.keyframes[0].nodes[0] as TextNode).letterSpacing = 5
+
+    expect(await convertSelectedTextToOutlines(plain)).toBe(true)
+    expect(await convertSelectedTextToOutlines(spaced)).toBe(true)
+
+    const plainNode = selectedPathNode(plain)
+    const spacedNode = selectedPathNode(spaced)
+    // Two glyphs: one extra advance between them widens the ink bounds by 5.
+    expect(spacedNode.width).toBeCloseTo(plainNode.width + 5, 1)
+    expect(spacedNode.height).toBeCloseTo(plainNode.height, 1)
   })
 })

@@ -380,7 +380,10 @@ function applyPatchFields(
     }
     target[key] = value
   }
-  if (node.type === 'text' && ('text' in patch || 'fontSize' in patch || 'align' in patch)) {
+  if (
+    node.type === 'text' &&
+    ('text' in patch || 'fontSize' in patch || 'align' in patch || 'letterSpacing' in patch || 'lineHeight' in patch)
+  ) {
     applyTextMetrics(node, measureLineWidth)
   }
 }

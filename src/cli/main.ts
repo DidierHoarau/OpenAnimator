@@ -9,7 +9,7 @@ import {
 } from '../shared/exportOptions'
 import type { ExportFormat } from '../shared/exportOptions'
 import { validateDocumentPayload, validateScriptPayload } from '../shared/scripting/commands'
-import { createResourceResolver, loadDocumentAndResources, renderToFile } from './render'
+import { createResourceResolver, loadDocumentAndResources, renderToFile, withEmbeddedFontFiles } from './render'
 
 /**
  * OpenAnimator headless CLI. Run via `npm run cli -- <command>` (or the
@@ -99,7 +99,9 @@ async function runRender(args: CliArgs): Promise<string> {
     },
     document
   )
-  await renderToFile(document, options, createResourceResolver(resources), outPath)
+  await withEmbeddedFontFiles(document, resources, (fontFiles) =>
+    renderToFile(document, options, createResourceResolver(resources), outPath, fontFiles)
+  )
   const size = exportPixelSize(document, options)
   return `Wrote ${outPath} — ${exportFrameCount(options)} frame(s) ${size.width}x${size.height} at ${options.fps} fps`
 }
@@ -113,7 +115,7 @@ async function runValidate(args: CliArgs): Promise<string> {
   if (args.flags.get('kind') === 'document') {
     const { valid, errors } = validateDocumentPayload(raw)
     if (!valid) throw new Error(`Schema errors (${errors.length}):\n${errors.join('\n')}`)
-    return 'Document payload is valid against the v3 schema.'
+    return 'Document payload is valid against the v6 schema.'
   }
   const { commands, errors } = validateScriptPayload(raw)
   if (errors.length > 0) throw new Error(`Schema errors (${errors.length}):\n${errors.join('\n')}`)

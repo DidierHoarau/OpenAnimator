@@ -9,37 +9,113 @@ import noto400Url from '@expo-google-fonts/noto-sans/400Regular/NotoSans_400Regu
 import noto700Url from '@expo-google-fonts/noto-sans/700Bold/NotoSans_700Bold.ttf?url'
 
 /**
- * Converts a selected text node into vector outlines: the bundled Noto Sans
- * TTFs (regular/bold) are parsed with opentype.js, every line's glyph paths
- * are laid out with the shared text metrics and merged into one multi-subpath
- * `PathNode` that keeps the text node's id, transform and fill.
+ * Converts a selected text node into vector outlines. The node's own family
+ * is used when it can be loaded — a system font through the main process, or
+ * the bundled Noto Sans for the fallback family — and every line's glyph
+ * paths are laid out with the shared text metrics (baselines, anchors and
+ * letter spacing) and merged into one multi-subpath `PathNode` that keeps the
+ * text node's id, transform and fill. Fonts that cannot be loaded fall back
+ * to the bundled Noto Sans so the conversion always yields deterministic
+ * outlines.
  */
 
 const FONT_URLS: Record<number, string> = { 400: noto400Url, 700: noto700Url }
-const fontCache = new Map<number, Promise<Font | null>>()
+const fontBytesCache = new Map<number, Promise<Uint8Array | null>>()
+const parsedFontCache = new Map<string, Promise<LoadedFont | null>>()
 
-function loadFont(weight: number): Promise<Font | null> {
-  const cached = fontCache.get(weight)
+interface LoadedFont {
+  font: Font
+  /** True when the bundled Noto Sans stands in for the requested family. */
+  bundled: boolean
+}
+
+function isBundledFamily(family: string): boolean {
+  return family.trim().toLowerCase() === 'noto sans'
+}
+
+/** Bundled Noto Sans bytes nearest to `weight` (the bundle ships 400/700). */
+export function loadBundledFontBytes(weight: number): Promise<Uint8Array | null> {
+  const bucket = weight >= 600 ? 700 : 400
+  const cached = fontBytesCache.get(bucket)
   if (cached) return cached
-  const url = FONT_URLS[weight] ?? FONT_URLS[400]
-  const promise = fetch(url)
+  const promise = fetch(FONT_URLS[bucket])
     .then((response) => {
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       return response.arrayBuffer()
     })
-    .then((buffer) => parse(buffer))
+    .then((buffer) => new Uint8Array(buffer))
     .catch((error: unknown) => {
       console.warn('OpenAnimator: failed to load the bundled font', error)
       return null
     })
-  fontCache.set(weight, promise)
+  fontBytesCache.set(bucket, promise)
   return promise
+}
+
+async function parseFontBytes(bytes: Uint8Array): Promise<Font | null> {
+  try {
+    return parse(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer)
+  } catch (error: unknown) {
+    console.warn('OpenAnimator: failed to parse the font', error)
+    return null
+  }
+}
+
+async function readSystemFontBytes(family: string, weight: number): Promise<Uint8Array | null> {
+  try {
+    const result = await window.api.readSystemFont(family, weight)
+    return result.ok ? new Uint8Array(result.bytes) : null
+  } catch (error: unknown) {
+    console.warn('OpenAnimator: failed to read the system font', error)
+    return null
+  }
+}
+
+function loadFontFor(node: TextNode): Promise<LoadedFont | null> {
+  const family = node.fontFamily.trim()
+  const key = `${family.toLowerCase()}|${node.fontWeight}`
+  const cached = parsedFontCache.get(key)
+  if (cached) return cached
+  const promise = (async (): Promise<LoadedFont | null> => {
+    if (family && !isBundledFamily(family)) {
+      const bytes = await readSystemFontBytes(family, node.fontWeight)
+      const font = bytes ? await parseFontBytes(bytes) : null
+      if (font) return { font, bundled: false }
+    }
+    const bytes = await loadBundledFontBytes(node.fontWeight)
+    const font = bytes ? await parseFontBytes(bytes) : null
+    return font ? { font, bundled: true } : null
+  })()
+  parsedFontCache.set(key, promise)
+  return promise
+}
+
+/** Glyph path data for one line; letter spacing widens the advance after
+ * every character (including spaces) like the rendered text does. */
+function linePathData(
+  font: Font,
+  line: string,
+  startX: number,
+  baseline: number,
+  fontSize: number,
+  letterSpacing: number
+): string {
+  if (letterSpacing === 0) return font.getPath(line, startX, baseline, fontSize).toPathData(2)
+  let d = ''
+  let x = startX
+  const scale = fontSize / font.unitsPerEm
+  for (const char of line) {
+    const glyph = font.charToGlyph(char)
+    d += glyph.getPath(x, baseline, fontSize).toPathData(2)
+    x += (glyph.advanceWidth ?? 0) * scale + letterSpacing
+  }
+  return d
 }
 
 /**
  * Replaces the selected text node with its vector outlines. Returns false
- * (with a status message) when nothing text-like is selected or the font
- * cannot be loaded.
+ * (with a status message) when nothing text-like is selected or no font can
+ * be loaded for it.
  */
 export async function convertSelectedTextToOutlines(editor: Editor): Promise<boolean> {
   const layer = editor.currentLayer
@@ -58,9 +134,9 @@ export async function convertSelectedTextToOutlines(editor: Editor): Promise<boo
     editor.showMessage('Select a text object to convert to outlines')
     return false
   }
-  const font = await loadFont(node.fontWeight >= 600 ? 700 : 400)
-  if (!font) {
-    editor.showMessage('The bundled font could not be loaded')
+  const loaded = await loadFontFor(node)
+  if (!loaded) {
+    editor.showMessage(`No font could be loaded for "${node.fontFamily}"`)
     return false
   }
   const layout = layoutText(node)
@@ -68,7 +144,7 @@ export async function convertSelectedTextToOutlines(editor: Editor): Promise<boo
   for (let i = 0; i < layout.lines.length; i++) {
     const line = layout.lines[i]
     if (line.length === 0) continue
-    d += font.getPath(line, layout.anchorX, layout.baselines[i], node.fontSize).toPathData(2)
+    d += linePathData(loaded.font, line, layout.anchorX, layout.baselines[i], node.fontSize, layout.letterSpacing)
   }
   const bounds = pathDataBounds(d)
   if (!bounds) {
@@ -92,9 +168,9 @@ export async function convertSelectedTextToOutlines(editor: Editor): Promise<boo
   )
   if (replaced) {
     editor.showMessage(
-      node.fontFamily === 'Noto Sans'
-        ? 'Converted the text to vector outlines'
-        : 'Converted the text to vector outlines using the bundled Noto Sans font'
+      loaded.bundled && !isBundledFamily(node.fontFamily)
+        ? 'Converted the text to vector outlines using the bundled Noto Sans font'
+        : 'Converted the text to vector outlines'
     )
   }
   return replaced

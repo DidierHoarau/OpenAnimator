@@ -43,12 +43,37 @@ export interface TextLayout {
   baselines: number[]
   anchor: 'start' | 'middle' | 'end'
   anchorX: number
+  /** Extra advance between characters, in local units. */
+  letterSpacing: number
+  /** Vertical placement of the layout box (absent ≡ `'top'`). */
+  verticalAlign: 'top' | 'middle' | 'bottom'
 }
 
-export function layoutText(node: Pick<TextNode, 'text' | 'fontSize' | 'align' | 'width' | 'height'>): TextLayout {
+type TextLayoutInput = Pick<
+  TextNode,
+  | 'text'
+  | 'fontSize'
+  | 'align'
+  | 'width'
+  | 'height'
+  | 'lineHeight'
+  | 'letterSpacing'
+  | 'verticalAlign'
+>
+
+export function layoutText(node: TextLayoutInput): TextLayout {
   const lines = node.text.split('\n')
-  const lineHeight = node.fontSize * TEXT_LINE_HEIGHT
-  const firstBaseline = -node.height / 2 + node.fontSize * TEXT_ASCENT
+  const lineHeight = node.fontSize * (node.lineHeight ?? TEXT_LINE_HEIGHT)
+  const ascent = node.fontSize * TEXT_ASCENT
+  const verticalAlign = node.verticalAlign ?? 'top'
+  // 'top' keeps the historical first-baseline math byte-for-byte; 'middle'
+  // centers the text block on the box, 'bottom' sits it on the box floor.
+  const firstBaseline =
+    verticalAlign === 'middle'
+      ? -(lines.length * lineHeight) / 2 + ascent
+      : verticalAlign === 'bottom'
+        ? node.height / 2 - lines.length * lineHeight + ascent
+        : -node.height / 2 + ascent
   // Round to 2 decimals so accumulated float noise never leaks into markup.
   const round = (value: number): number => Number(value.toFixed(2))
   return {
@@ -56,28 +81,44 @@ export function layoutText(node: Pick<TextNode, 'text' | 'fontSize' | 'align' | 
     lineHeight,
     baselines: lines.map((_, index) => round(firstBaseline + index * lineHeight)),
     anchor: node.align === 'left' ? 'start' : node.align === 'right' ? 'end' : 'middle',
-    anchorX: node.align === 'left' ? -node.width / 2 : node.align === 'right' ? node.width / 2 : 0
+    anchorX: node.align === 'left' ? -node.width / 2 : node.align === 'right' ? node.width / 2 : 0,
+    letterSpacing: node.letterSpacing ?? 0,
+    verticalAlign
   }
 }
 
 /** Measures the layout box of a text node's content: widest line for the
- * width, `lines × lineHeight` for the height (minimum one line). */
+ * width, `lines × lineHeight` for the height (minimum one line). Letter
+ * spacing widens every line by one extra advance per character. */
 export function measureTextLayout(
   text: string,
   fontSize: number,
   measure: MeasureLineWidth,
   fontFamily = '',
-  fontWeight = 400
+  fontWeight = 400,
+  letterSpacing = 0,
+  lineHeight = TEXT_LINE_HEIGHT
 ): { width: number; height: number } {
   const lines = text.length === 0 ? [''] : text.split('\n')
-  const width = Math.max(1, ...lines.map((line) => measure(line, fontFamily, fontSize, fontWeight)))
-  const height = Math.max(fontSize, lines.length * fontSize * TEXT_LINE_HEIGHT)
+  const width = Math.max(
+    1,
+    ...lines.map((line) => measure(line, fontFamily, fontSize, fontWeight) + letterSpacing * line.length)
+  )
+  const height = Math.max(fontSize, lines.length * fontSize * lineHeight)
   return { width, height }
 }
 
 /** Refreshes a text node's placed size from its content; keeps the center. */
 export function applyTextMetrics(node: TextNode, measure: MeasureLineWidth): void {
-  const { width, height } = measureTextLayout(node.text, node.fontSize, measure, node.fontFamily, node.fontWeight)
+  const { width, height } = measureTextLayout(
+    node.text,
+    node.fontSize,
+    measure,
+    node.fontFamily,
+    node.fontWeight,
+    node.letterSpacing ?? 0,
+    node.lineHeight ?? TEXT_LINE_HEIGHT
+  )
   node.width = width
   node.height = height
 }

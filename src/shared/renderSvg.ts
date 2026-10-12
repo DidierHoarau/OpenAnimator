@@ -1,3 +1,4 @@
+import { fontFamilyListFor } from './fontPolicy'
 import { groupNaturalSize } from './groups'
 import type { GroupNode, ImageNode, PathNode, PrimitiveNode, SceneNode, SymbolNode, TextNode } from './model'
 import { paintGradientId } from './paint'
@@ -17,11 +18,15 @@ export type ResourceResolver = (resourceId: string) => string | null
  * Optional render style. `outline` draws primitives and paths stroke-only in
  * one flat color (the onion-skin outline approximation); groups keep their
  * normal wrapper markup so their primitive/path children still outline, while
- * symbols, images and text keep their normal markup. Absent ⇒ byte-identical
- * markup to the historical renderer.
+ * symbols, images and text keep their normal markup. `resolveEmbeddedFont`
+ * yields the synthetic family of an embedded subset for a (family, weight)
+ * pair; text then renders through the full CSS family list (subset first,
+ * `'Noto Sans', sans-serif` last). Absent options ⇒ byte-identical markup to
+ * the historical renderer.
  */
 export interface SvgRenderOptions {
   outline?: { color: string }
+  resolveEmbeddedFont?: (family: string, weight: number) => string | null
 }
 
 /** Escapes a string for safe use inside a double- or single-quoted XML attribute. */
@@ -195,13 +200,26 @@ function pathToSvgMarkup(node: PathNode, outline: { color: string } | undefined,
 
 /** SVG markup for a text node: one `<tspan>` per explicit line, positioned
  * by the shared layout math. Text content is XML-escaped. */
-function textToSvgMarkup(node: TextNode, defs: GradientDefs): string {
+function textToSvgMarkup(node: TextNode, options: SvgRenderOptions | undefined, defs: GradientDefs): string {
   const layout = layoutText(node)
+  const embeddedId = options?.resolveEmbeddedFont?.(node.fontFamily, node.fontWeight) ?? null
+  // The extended family list (subset first, Noto Sans/sans-serif fallback
+  // last) only engages when the node actually has something to extend the
+  // plain family with; documents without embedding/fallbacks keep their
+  // historical byte-for-byte markup.
+  const family =
+    embeddedId !== null || node.fontFallback !== undefined
+      ? fontFamilyListFor(node, embeddedId)
+      : node.fontFamily
   let markup =
-    `<text${attr('font-family', node.fontFamily)}` +
+    `<text${attr('font-family', family)}` +
     `${attr('font-size', node.fontSize)}` +
-    `${attr('font-weight', node.fontWeight)}` +
-    `${attr('fill', paintAttribute(node.fill, defs))}` +
+    `${attr('font-weight', node.fontWeight)}`
+  if (layout.letterSpacing !== 0) markup += attr('letter-spacing', layout.letterSpacing)
+  markup += attr('fill', paintAttribute(node.fill, defs))
+  if (node.stroke !== undefined) markup += attr('stroke', paintAttribute(node.stroke, defs))
+  if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
+  markup +=
     `${attr('text-anchor', layout.anchor)}` +
     placementAttrs(node.center, node.rotation, node.opacity) +
     '>'
@@ -242,7 +260,7 @@ function nodeMarkup(
     case 'path':
       return pathToSvgMarkup(node, options?.outline, defs)
     case 'text':
-      return textToSvgMarkup(node, defs)
+      return textToSvgMarkup(node, options, defs)
   }
 }
 

@@ -583,7 +583,7 @@ describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
-      schemaVersion: 5,
+      schemaVersion: 6,
       name: 'test',
       width: 100,
       height: 100,
@@ -591,7 +591,8 @@ describe('document validation', () => {
       background: '#000000',
       layers: [{ kind: 'object', id: 'l', name: 'L', visible: true, locked: false, keyframes: [] as never[] }],
       assets: [],
-      palette: ['#ff0000']
+      palette: ['#ff0000'],
+      fonts: []
     }
     expect(isAnimatorDocument(valid)).toBe(true)
     expect(isAnimatorDocument({})).toBe(false)
@@ -599,7 +600,7 @@ describe('document validation', () => {
     expect(isAnimatorDocument({ ...valid, fps: 0 })).toBe(false)
     expect(isAnimatorDocument({ ...valid, layers: 'nope' })).toBe(false)
     expect(isAnimatorDocument({ ...valid, assets: 'nope' })).toBe(false)
-    // v5 requires a well-formed palette of hex colors.
+    // The current schema requires a well-formed palette of hex colors.
     expect(isAnimatorDocument({ ...valid, palette: undefined })).toBe(false)
     expect(isAnimatorDocument({ ...valid, palette: ['red'] })).toBe(false)
     expect(isAnimatorDocument({ ...valid, palette: ['#ff0000', '#ff0000'] })).toBe(true)

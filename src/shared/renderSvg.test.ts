@@ -330,6 +330,87 @@ describe('renderSvg', () => {
     expect(markup).not.toContain('<script>')
     expect(markup).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
   })
+
+  it('adds letter-spacing and text stroke only when set', () => {
+    const node: TextNode = {
+      type: 'text',
+      id: 't4',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    const plain = nodeToSvgMarkup(node)
+    expect(plain).not.toContain('letter-spacing')
+    expect(plain).not.toContain('stroke')
+
+    const styled = nodeToSvgMarkup({ ...node, letterSpacing: 2.5, stroke: '#111111', strokeWidth: 3 })
+    expect(styled).toContain('letter-spacing="2.5"')
+    expect(styled).toContain('stroke="#111111"')
+    expect(styled).toContain('stroke-width="3"')
+    // Attribute order keeps the legacy defaults byte-identical.
+    expect(styled.startsWith('<text font-family="Noto Sans" font-size="24" font-weight="400" letter-spacing="2.5" fill="#ffffff" stroke="#111111" stroke-width="3" text-anchor="start"')).toBe(true)
+  })
+
+  it('extends the family list only for embedded fonts or explicit fallbacks', () => {
+    const node: TextNode = {
+      type: 'text',
+      id: 't5',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'My Font',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    expect(nodeToSvgMarkup(node)).toContain('font-family="My Font"')
+
+    const withFallback = nodeToSvgMarkup({ ...node, fontFallback: ['Lato'] })
+    // Single quotes inside the family list are XML-escaped like every other
+    // attribute value.
+    expect(withFallback).toContain('font-family="&apos;My Font&apos;, Lato, &apos;Noto Sans&apos;, sans-serif"')
+
+    const withEmbedded = nodeToSvgMarkup(node, undefined, {
+      resolveEmbeddedFont: (family, weight) => (family === 'My Font' && weight === 400 ? 'oa-embed-400-ab12cd34' : null)
+    })
+    expect(withEmbedded).toContain('font-family="oa-embed-400-ab12cd34, &apos;My Font&apos;, &apos;Noto Sans&apos;, sans-serif"')
+
+    const resolverMiss = nodeToSvgMarkup(node, undefined, { resolveEmbeddedFont: () => null })
+    expect(resolverMiss).toContain('font-family="My Font"')
+  })
+
+  it('re-places baselines for bottom vertical alignment', () => {
+    const node: TextNode = {
+      type: 'text',
+      id: 't6',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 60,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left',
+      verticalAlign: 'bottom'
+    }
+    // 30 - 1 × 30 + 19.2 = 19.2
+    expect(nodeToSvgMarkup(node)).toContain('<tspan x="-50" y="19.2">Hi</tspan>')
+  })
 })
 
 describe('renderSvg — gradients', () => {

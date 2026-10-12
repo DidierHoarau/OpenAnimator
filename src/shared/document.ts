@@ -1,5 +1,5 @@
 import { evaluateEasing, isEasing } from './easing'
-import type { AnimatorDocument, Asset, DrawingCell, DrawingLayer, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode } from './model'
+import type { AnimatorDocument, Asset, DrawingCell, DrawingLayer, EmbeddedFont, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode } from './model'
 import { cloneNode, isObjectLayer } from './model'
 import { segmentControls } from './motionPath'
 import { isPaintValue } from './paint'
@@ -47,7 +47,7 @@ export function createDocument(name: string, width: number, height: number, fps:
   const layer = createLayer('Layer 1')
   layer.keyframes.push({ frame: 0, nodes: [] })
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     name,
     width,
     height,
@@ -56,7 +56,8 @@ export function createDocument(name: string, width: number, height: number, fps:
     layers: [layer],
     frames: 1,
     assets: [],
-    palette: []
+    palette: [],
+    fonts: []
   }
 }
 
@@ -832,7 +833,17 @@ export function isSceneNode(value: unknown): value is SceneNode {
         isFiniteNumber(node.fontSize) &&
         isFiniteNumber(node.fontWeight) &&
         isPaintValue(node.fill) &&
-        (node.align === 'left' || node.align === 'center' || node.align === 'right')
+        (node.align === 'left' || node.align === 'center' || node.align === 'right') &&
+        (node.letterSpacing === undefined || isFiniteNumber(node.letterSpacing)) &&
+        (node.lineHeight === undefined ||
+          (isFiniteNumber(node.lineHeight) && node.lineHeight >= 0.5 && node.lineHeight <= 5)) &&
+        (node.stroke === undefined || isPaintValue(node.stroke)) &&
+        (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth)) &&
+        (node.verticalAlign === undefined ||
+          node.verticalAlign === 'top' ||
+          node.verticalAlign === 'middle' ||
+          node.verticalAlign === 'bottom') &&
+        (node.fontFallback === undefined || isFontFallback(node.fontFallback))
       )
     default:
       return false
@@ -906,6 +917,34 @@ export function isAsset(value: unknown): value is Asset {
   return false
 }
 
+/** True when `value` is a valid text-node fallback list: up to 8 family
+ * names. */
+export function isFontFallback(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 8 &&
+    value.every((family) => typeof family === 'string')
+  )
+}
+
+/** Structural validation for one embedded font subset. */
+export function isEmbeddedFont(value: unknown): value is EmbeddedFont {
+  if (typeof value !== 'object' || value === null) return false
+  const font = value as Record<string, unknown> & Partial<EmbeddedFont>
+  return (
+    typeof font.id === 'string' &&
+    typeof font.family === 'string' &&
+    typeof font.weight === 'number' &&
+    Number.isFinite(font.weight) &&
+    font.weight >= 1 &&
+    font.weight <= 1000 &&
+    typeof font.resourceId === 'string' &&
+    Array.isArray(font.glyphs) &&
+    font.glyphs.every((glyph) => typeof glyph === 'string') &&
+    typeof font.license === 'string'
+  )
+}
+
 /** True when `value` is a valid document palette: up to `MAX_PALETTE_COLORS`
  * `#rgb`/`#rrggbb` color strings. */
 export function isPalette(value: unknown): value is string[] {
@@ -936,7 +975,7 @@ export function normalizePaletteColors(colors: readonly string[]): string[] {
 }
 
 /** Deep structural validation for documents restored from persistence.
- * Requires `schemaVersion: 5` and fully typed content; older documents go
+ * Requires `schemaVersion: 6` and fully typed content; older documents go
  * through `migrateDocument` first. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
@@ -951,7 +990,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
       candidate.holdStep >= 1 &&
       candidate.holdStep <= 16)
   return (
-    candidate.schemaVersion === 5 &&
+    candidate.schemaVersion === 6 &&
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
     typeof candidate.height === 'number' &&
@@ -964,6 +1003,8 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     Array.isArray(candidate.layers) &&
     candidate.layers.every(isLayer) &&
     Array.isArray(candidate.assets) &&
-    candidate.assets.every(isAsset)
+    candidate.assets.every(isAsset) &&
+    Array.isArray(candidate.fonts) &&
+    candidate.fonts.every(isEmbeddedFont)
   )
 }

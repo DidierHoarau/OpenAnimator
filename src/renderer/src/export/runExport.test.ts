@@ -159,4 +159,26 @@ describe('runExport', () => {
     expect(result).toBe(false)
     expect(deps.messages).toEqual(['Export failed: disk full'])
   })
+
+  it('reconciles embedded fonts before rasterizing when the dep is provided', async () => {
+    const editor = drawingEditor()
+    const order: string[] = []
+    const deps = fakeDeps({
+      reconcileFonts: () => {
+        order.push('reconcile')
+        return Promise.resolve()
+      }
+    })
+    const originalLoad = deps.loadImage
+    deps.loadImage = (...args) => {
+      order.push('raster')
+      return originalLoad(...(args as []))
+    }
+    const result = await runExport(editor, options(), deps, { canceled: false })
+
+    expect(result).toBe(true)
+    expect(order[0]).toBe('reconcile')
+    expect(order).toContain('raster')
+    expect(deps.messages).toEqual(['Exported to /tmp/out'])
+  })
 })

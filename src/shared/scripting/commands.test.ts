@@ -99,6 +99,43 @@ describe('validateScriptPayload', () => {
     expect(bad.errors.join('\n')).toContain('/commands/2/step')
     expect(bad.errors.join('\n')).toContain('/commands/3/path')
   })
+
+  it('accepts typography patch fields and rejects their bad shapes', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        {
+          op: 'updateNode',
+          nodeId: 'title',
+          patch: {
+            letterSpacing: 2,
+            lineHeight: 1.5,
+            verticalAlign: 'middle',
+            fontFallback: ['Lato', 'Inter'],
+            stroke: '#000000',
+            strokeWidth: 3
+          }
+        },
+        {
+          op: 'addNode',
+          frame: 0,
+          node: { type: 'text', text: 'Hi', fontFamily: 'Noto Sans', fontSize: 24, fontWeight: 400, fill: '#fff', align: 'left', lineHeight: 1.2, verticalAlign: 'bottom', fontFallback: [] }
+        }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+    const bad = validateScriptPayload({
+      commands: [
+        { op: 'updateNode', nodeId: 'title', patch: { lineHeight: 0.2 } },
+        { op: 'updateNode', nodeId: 'title', patch: { verticalAlign: 'center' } },
+        { op: 'updateNode', nodeId: 'title', patch: { fontFallback: [1, 2] } },
+        { op: 'updateNode', nodeId: 'title', patch: { letterSpacing: 'wide' } }
+      ]
+    })
+    expect(bad.errors.join('\n')).toContain('/commands/0/patch/lineHeight')
+    expect(bad.errors.join('\n')).toContain('/commands/1/patch/verticalAlign')
+    expect(bad.errors.join('\n')).toContain('/commands/2/patch/fontFallback/0')
+    expect(bad.errors.join('\n')).toContain('/commands/3/patch/letterSpacing')
+  })
 })
 
 describe('validateDocumentPayload', () => {
@@ -250,6 +287,42 @@ describe('hand-rolled validator vs JSON Schema', () => {
     },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { stroke: 'none' } }] },
     { commands: [{ op: 'addNode', node: { type: 'primitive', primitive: 'rect', fill: '' } }] },
+    {
+      commands: [
+        {
+          op: 'updateNode',
+          nodeId: 'x',
+          patch: { letterSpacing: 2, lineHeight: 1.5, verticalAlign: 'middle', fontFallback: ['Lato'] }
+        }
+      ]
+    },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { lineHeight: 0.2 } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { lineHeight: 5.5 } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { verticalAlign: 'left' } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { fontFallback: ['ok', 3] } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { letterSpacing: 'wide' } }] },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'text',
+            text: 'Hi',
+            fontFamily: 'Noto Sans',
+            fontSize: 24,
+            fontWeight: 400,
+            fill: '#fff',
+            align: 'center',
+            letterSpacing: 1,
+            lineHeight: 1.2,
+            stroke: '#000',
+            strokeWidth: 2,
+            verticalAlign: 'bottom',
+            fontFallback: []
+          }
+        }
+      ]
+    },
     {
       commands: [
         {
