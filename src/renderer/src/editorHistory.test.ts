@@ -591,6 +591,41 @@ describe('Editor undo/redo — keyframe retiming, clipboard and hold step', () =
     expect(tweenAt(0)?.easing).toEqual({ x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4 })
   })
 
+  it('setTweenChannelEasingHere sets, preserves and clears channel overrides', () => {
+    editor.addNode(rect('a', 0))
+    extend(4)
+    editor.seekToFrame(0)
+    editor.toggleTweenHere()
+    editor.setTweenPathHere('smooth')
+
+    editor.setTweenChannelEasingHere('opacity', 'ease-in')
+    expect(tweenAt(0)).toEqual({ easing: 'ease-in-out', path: 'smooth', easings: { opacity: 'ease-in' } })
+
+    // The identical pick stacks no history.
+    editor.setTweenChannelEasingHere('opacity', 'ease-in')
+    editor.undo()
+    expect(tweenAt(0)).toEqual({ easing: 'ease-in-out', path: 'smooth' })
+    editor.redo()
+
+    // Base easing and motion-path edits preserve the channel overrides.
+    editor.setTweenEasingHere('linear')
+    editor.setTweenPathHere('linear')
+    expect(tweenAt(0)).toEqual({ easing: 'linear', easings: { opacity: 'ease-in' } })
+
+    // A second channel joins, then `null` clears one channel at a time.
+    editor.setTweenChannelEasingHere('fill', { x1: 0.1, y1: 0, x2: 0.9, y2: 1 })
+    expect(tweenAt(0)?.easings).toEqual({ opacity: 'ease-in', fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } })
+    editor.setTweenChannelEasingHere('opacity', null)
+    expect(tweenAt(0)?.easings).toEqual({ fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } })
+    editor.undo()
+    expect(tweenAt(0)?.easings).toEqual({ opacity: 'ease-in', fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } })
+    editor.redo()
+
+    // Clearing the last override removes the container field.
+    editor.setTweenChannelEasingHere('fill', null)
+    expect(tweenAt(0)).toEqual({ easing: 'linear' })
+  })
+
   it('setHoldStep is one undo step, removes the field at 1 and clamps', () => {
     const messages: string[] = []
     editor.onMessage((message) => messages.push(message))
@@ -644,6 +679,7 @@ describe('Editor undo/redo — keyframe retiming, clipboard and hold step', () =
     ).toBe(false)
     editor.setTweenPathHere('smooth')
     editor.setTweenEasingHere({ x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4 })
+    editor.setTweenChannelEasingHere('opacity', 'ease-in')
     expect(tweenAt(0)).toEqual({ easing: 'ease-in-out' })
     expect(nodeFrames(editor, 'a')).toEqual([0])
   })

@@ -66,7 +66,7 @@ export function createStarterDocument(width = 960, height = 540, fps = 24): Anim
   }
 
   return {
-    schemaVersion: 8,
+    schemaVersion: 9,
     name: 'Untitled',
     width,
     height,

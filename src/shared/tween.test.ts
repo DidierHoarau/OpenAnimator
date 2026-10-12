@@ -1,8 +1,36 @@
 import { describe, expect, it } from 'vitest'
 
 import { evaluateLayerAtFrame } from './document'
-import type { AnimatorDocument, GroupNode, ImageNode, ObjectLayer, PathNode, PrimitiveNode, SceneNode, SymbolNode, TextNode } from './model'
-import { tweenNode, tweenNodes } from './tween'
+import type { AnimatorDocument, GroupNode, ImageNode, ObjectLayer, PathAnchor, PathNode, PrimitiveNode, SceneNode, SymbolNode, TextNode } from './model'
+import { pathDataToSubpathAnchors } from './pathModel'
+import { morphPathData, tweenNode, tweenNodes } from './tween'
+
+/** Parses path data into subpath anchors for tolerant geometry comparison. */
+function anchorsOf(d: string): Array<{ anchors: PathAnchor[]; closed: boolean }> {
+  const subpaths = pathDataToSubpathAnchors(d)
+  if (!subpaths) throw new Error(`unparsable path data: ${d}`)
+  return subpaths
+}
+
+function expectAnchorsCloseTo(actual: string, expected: Array<{ anchors: PathAnchor[]; closed: boolean }>): void {
+  const parsed = anchorsOf(actual)
+  expect(parsed.length).toBe(expected.length)
+  parsed.forEach((subpath, index) => {
+    expect(subpath.closed).toBe(expected[index].closed)
+    expect(subpath.anchors.length).toBe(expected[index].anchors.length)
+    subpath.anchors.forEach((anchor, anchorIndex) => {
+      const other = expected[index].anchors[anchorIndex]
+      expect(anchor.x).toBeCloseTo(other.x, 2)
+      expect(anchor.y).toBeCloseTo(other.y, 2)
+      for (const handle of ['in', 'out'] as const) {
+        const value = anchor[handle] ?? { x: 0, y: 0 }
+        const target = other[handle] ?? { x: 0, y: 0 }
+        expect(value.x).toBeCloseTo(target.x, 2)
+        expect(value.y).toBeCloseTo(target.y, 2)
+      }
+    })
+  })
+}
 
 function shape(id: string, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
   return {
@@ -72,6 +100,34 @@ describe('tweenNode', () => {
     expect(result.center).toEqual({ x: 50, y: 100 })
     expect(result.rotation).toBe(45)
     expect(result.opacity).toBe(0.5)
+  })
+
+  it('applies channel progress overrides per property', () => {
+    const from = shape('a', { center: { x: 0, y: 0 }, opacity: 1, fill: '#000000' })
+    const to = shape('a', { center: { x: 100, y: 0 }, opacity: 0, fill: '#ffffff' })
+    const result = tweenNode(from, to, 0.5, undefined, { opacity: 0.25 }) as PrimitiveNode
+    // The transform channel keeps the base progress; opacity uses its own.
+    expect(result.center.x).toBe(50)
+    expect(result.opacity).toBe(0.75)
+    // Absent channels default to the base progress.
+    expect(result.fill).toBe('#808080')
+  })
+
+  it('applies the fill override to the fill and leaves the stroke on the base progress', () => {
+    const from = shape('a', { fill: '#000000', stroke: '#000000', strokeWidth: 1 })
+    const to = shape('a', { fill: '#ffffff', stroke: '#ffffff', strokeWidth: 3 })
+    const result = tweenNode(from, to, 0.5, undefined, { fill: 0.25 }) as PrimitiveNode
+    expect(result.fill).toBe('#404040')
+    expect(result.stroke).toBe('#808080')
+    expect(result.strokeWidth).toBe(2)
+  })
+
+  it('defaults every channel to the base progress when no overrides are given', () => {
+    const from = shape('a', { opacity: 1, fill: '#000000' })
+    const to = shape('a', { opacity: 0, fill: '#ffffff' })
+    const result = tweenNode(from, to, 0.5, undefined, {}) as PrimitiveNode
+    expect(result.opacity).toBe(0.5)
+    expect(result.fill).toBe('#808080')
   })
 
   it('follows a center bezier path when given one', () => {
@@ -258,7 +314,7 @@ describe('tweenNode', () => {
     expect((tweenNode(groupNode, shapeNode, 1) as PrimitiveNode).type).toBe('primitive')
   })
 
-  it('tweens a path: transform, stroke width and paints lerp, geometry snaps from `from`', () => {
+  it('tweens a path: transform, stroke width and paints lerp, mismatched geometry snaps from `from`', () => {
     const from: PathNode = {
       type: 'path',
       id: 'p',
@@ -292,6 +348,27 @@ describe('tweenNode', () => {
     expect(result.d).toBe('M0 0L10 10')
     expect(result.stroke).toBe('#1a1a1a')
     expect(result.fill).toBeUndefined()
+  })
+
+  it('morphs a compatible path pair through `morphPathData`, keeping the ends exact', () => {
+    const from: PathNode = {
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 20,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d: 'M0 0 L20 0 L20 10 Z',
+      fill: '#0000ff'
+    }
+    const to: PathNode = { ...from, center: { x: 50, y: 50 }, d: 'M0 0 L30 0 L30 10 Z' }
+    const mid = tweenNode(from, to, 0.5) as PathNode
+    expect(mid.d).toBe('M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z')
+    // The evaluator tweens at keyframe frames too (progress 0/1), so the
+    // ends must stay byte-identical to the authored data.
+    expect((tweenNode(from, to, 0) as PathNode).d).toBe('M0 0 L20 0 L20 10 Z')
+    expect((tweenNode(from, to, 1) as PathNode).d).toBe('M0 0 L30 0 L30 10 Z')
   })
 
   it('keeps a path stroke width when only one side defines it', () => {
@@ -519,6 +596,70 @@ describe('tweenNode', () => {
   })
 })
 
+describe('morphPathData', () => {
+  it('lerps matching outlines anchor by anchor (re-centered on their bounding boxes)', () => {
+    expect(morphPathData('M0 0 L20 0 L20 10 Z', 'M0 0 L30 0 L30 10 Z', 0.5)).toBe(
+      'M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z'
+    )
+    // Different sizes and offsets: both start re-centered, so only shape
+    // interpolates — the centers of the two boxes do not drag the geometry.
+    const mid = morphPathData('M0 0 L20 0 L20 10 Z', 'M100 100 L130 100 L130 110 Z', 0.5)
+    expect(mid).toBe('M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z')
+  })
+
+  it('round-trips the parsed end geometries at t=0 and t=1', () => {
+    const from = 'M-10 -10 L10 -10 L0 10'
+    const to = 'M-20 -5 L20 -5 L0 5'
+    const fromAnchors = anchorsOf(from)
+    const toAnchors = anchorsOf(to)
+    expectAnchorsCloseTo(morphPathData(from, to, 0)!, fromAnchors)
+    expectAnchorsCloseTo(morphPathData(from, to, 1)!, toAnchors)
+    // Closed outlines keep their closing segment and flag.
+    const closed = morphPathData('M0 0 L20 0 L20 10 Z', 'M0 0 L30 0 L30 10 Z', 1)
+    expect(closed).toBe('M-15 -5L15 -5L15 5L-15 -5Z')
+  })
+
+  it('treats a corner pose’s missing handle as a zero-length handle', () => {
+    // from is straight, to is curved: the midpoint is a shallower curve.
+    expect(morphPathData('M-15 0 L15 0', 'M-15 0 C-5 0 5 0 15 0', 0.5)).toBe(
+      'M-15 0C-10 0 10 0 15 0'
+    )
+    // And curving back the other way.
+    expect(morphPathData('M-15 0 C-5 0 5 0 15 0', 'M-15 0 L15 0', 0.5)).toBe(
+      'M-15 0C-10 0 10 0 15 0'
+    )
+    // Two curves average their handles (both boxes already centered).
+    expect(morphPathData('M-15 -5 C-5 -5 5 5 15 5', 'M-15 -5 C-15 5 0 5 15 5', 0.5)).toBe(
+      'M-15 -5C-10 0 2.5 5 15 5'
+    )
+  })
+
+  it('morphs every subpath of a multi-subpath outline', () => {
+    const from = 'M0 0 L10 0 L10 10 Z M20 0 L30 0 L30 10 Z'
+    const to = 'M0 0 L20 0 L20 10 Z M40 0 L60 0 L60 10 Z'
+    const mid = morphPathData(from, to, 0.5)!
+    const subpaths = anchorsOf(mid)
+    expect(subpaths).toHaveLength(2)
+    // One global bounding-box center re-centers both subpaths together.
+    expect(subpaths[0].anchors[0]).toMatchObject({ x: -22.5, y: -5 })
+    expect(subpaths[1].anchors[0]).toMatchObject({ x: 7.5, y: -5 })
+    expect(subpaths[1].anchors[2]).toMatchObject({ x: 22.5, y: 5 })
+  })
+
+  it('returns null for incompatible or unparseable outlines (the snap fallback)', () => {
+    // Anchor-count mismatch.
+    expect(morphPathData('M0 0 L20 0 L20 10 Z', 'M0 0 L30 0 Z', 0.5)).toBeNull()
+    // Subpath-count mismatch.
+    expect(
+      morphPathData('M0 0 L20 0 L20 10 Z', 'M0 0 L30 0 L30 10 Z M40 0 L50 0 L50 10 Z', 0.5)
+    ).toBeNull()
+    // Open vs closed.
+    expect(morphPathData('M0 0 L20 0 L20 10', 'M0 0 L20 0 L20 10 Z', 0.5)).toBeNull()
+    // Arcs are rejected by the parser.
+    expect(morphPathData('M0 0 A5 5 0 0 1 10 10', 'M0 0 L10 10', 0.5)).toBeNull()
+  })
+})
+
 describe('tweenNodes', () => {
   it('tweens matching nodes and holds static the others', () => {
     const from: SceneNode[] = [shape('a', { center: { x: 0, y: 0 } }), shape('static')]
@@ -563,6 +704,26 @@ describe('evaluateLayerAtFrame', () => {
 
   it('interpolates inside a tweened span with easing', () => {
     expect(evaluateLayerAtFrame(layer, 5)[0].center.x).toBe(50)
+  })
+
+  it('applies per-channel easing overrides through the evaluator', () => {
+    const channelLayer: ObjectLayer = {
+      ...layer,
+      keyframes: [
+        {
+          frame: 0,
+          nodes: [shape('a', { center: { x: 0, y: 0 }, opacity: 1, fill: '#000000' })],
+          tween: { easing: 'linear', easings: { opacity: 'ease-in', fill: 'ease-out' } }
+        },
+        { frame: 10, nodes: [shape('a', { center: { x: 100, y: 0 }, opacity: 0, fill: '#ffffff' })] }
+      ]
+    }
+    const result = evaluateLayerAtFrame(channelLayer, 5)[0] as PrimitiveNode
+    // The transform channel keeps the linear base; ease-in at 0.5 is 0.125
+    // and ease-out 0.875.
+    expect(result.center.x).toBe(50)
+    expect(result.opacity).toBe(0.875)
+    expect(result.fill).toBe('#dfdfdf')
   })
 
   it('evaluates gradient fill interpolation through the tween pipeline', () => {
@@ -747,13 +908,42 @@ describe('evaluateLayerAtFrame', () => {
     expect(evaluateLayerAtFrame(trailing, 20)[0].center.x).toBe(999)
     expect(evaluateLayerAtFrame(trailing, 25)).toEqual([])
   })
+
+  it('morphs a compatible path through a tweened span, endpoints exact', () => {
+    const path = (d: string): PathNode => ({
+      type: 'path',
+      id: 'p',
+      center: { x: 0, y: 0 },
+      width: 20,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      d,
+      fill: '#0000ff'
+    })
+    const morphLayer: ObjectLayer = {
+      ...layer,
+      keyframes: [
+        { frame: 0, nodes: [path('M0 0 L20 0 L20 10 Z')], tween: { easing: 'linear' } },
+        { frame: 10, nodes: [path('M0 0 L30 0 L30 10 Z')] }
+      ]
+    }
+    // Keyframe frames evaluate the tween at progress 0/1 — the ends must
+    // stay byte-identical to the authored data.
+    expect((evaluateLayerAtFrame(morphLayer, 0)[0] as PathNode).d).toBe('M0 0 L20 0 L20 10 Z')
+    expect((evaluateLayerAtFrame(morphLayer, 10)[0] as PathNode).d).toBe('M0 0 L30 0 L30 10 Z')
+    const mid = evaluateLayerAtFrame(morphLayer, 5)[0] as PathNode
+    expect(mid.d).not.toBe('M0 0 L20 0 L20 10 Z')
+    expect(mid.d).not.toBe('M0 0 L30 0 L30 10 Z')
+    expect(mid.d).toBe('M-12.5 -5L12.5 -5L12.5 5L-12.5 -5Z')
+  })
 })
 
 describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
-      schemaVersion: 8,
+      schemaVersion: 9,
       name: 'test',
       width: 100,
       height: 100,

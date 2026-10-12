@@ -41,6 +41,46 @@ describe('documentToSvgString', () => {
     expect(svg).toContain('fill="#ff0000"')
   })
 
+  it('carries italic and ligature styles into the standalone SVG', () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected object layer')
+    for (const [id, overrides] of [
+      ['italic', { fontStyle: 'italic' as const }],
+      ['strict', { ligatures: false }]
+    ] as const) {
+      layer.keyframes[0].nodes.push({
+        id,
+        type: 'text',
+        center: { x: 40, y: 40 },
+        width: 60,
+        height: 20,
+        rotation: 0,
+        opacity: 1,
+        text: 'Hi',
+        fontFamily: 'Lato',
+        fontSize: 16,
+        fontWeight: 400,
+        fill: '#ffffff',
+        align: 'left',
+        ...overrides
+      })
+    }
+    const calls: Array<[string, number, boolean | undefined]> = []
+    const svg = documentToSvgString(document, 0, undefined, {
+      resolveEmbeddedFont: (family, weight, italic) => {
+        calls.push([family, weight, italic])
+        return null
+      }
+    })
+    expect(svg).toContain('style="font-style: italic"')
+    expect(svg).toContain('style="font-variant-ligatures: none"')
+    expect(calls).toEqual([
+      ['Lato', 400, true],
+      ['Lato', 400, false]
+    ])
+  })
+
   it('resolves drawing cells through the injected resource resolver', () => {
     const document = createDocument('demo', 320, 180, 12)
     const drawing = createDrawingLayer('paint')

@@ -135,6 +135,51 @@ describe('convertSelectedTextToOutlines', () => {
     }
   })
 
+  it('loads the italic face when converting italic text', async () => {
+    const calls: Array<{ family: string; weight: number; italic: boolean | undefined }> = []
+    const fontBytes = new Uint8Array(readFileSync(NOTO_700))
+    const previous = window.api
+    window.api = {
+      readSystemFont: (family: string, weight: number, italic?: boolean) => {
+        calls.push({ family, weight, italic })
+        return Promise.resolve({ ok: true, bytes: fontBytes })
+      }
+    } as unknown as typeof window.api
+    try {
+      const editor = textEditor('Lato')
+      const layer = editor.currentLayer
+      if (layer?.kind !== 'object') throw new Error('expected an object layer')
+      ;(layer.keyframes[0].nodes[0] as TextNode).fontStyle = 'italic'
+      expect(await convertSelectedTextToOutlines(editor)).toBe(true)
+      expect(calls).toEqual([{ family: 'Lato', weight: 400, italic: true }])
+      expect(selectedPathNode(editor).type).toBe('path')
+    } finally {
+      window.api = previous
+    }
+  })
+
+  it('does not fall back to the bundled upright font for italic text', async () => {
+    const previous = window.api
+    window.api = {
+      readSystemFont: () => Promise.resolve({ ok: false, error: 'no italic face installed' })
+    } as unknown as typeof window.api
+    try {
+      const editor = textEditor('Noto Sans')
+      const layer = editor.currentLayer
+      if (layer?.kind !== 'object') throw new Error('expected an object layer')
+      ;(layer.keyframes[0].nodes[0] as TextNode).fontStyle = 'italic'
+      const messages: string[] = []
+      editor.onMessage((message) => messages.push(message))
+      expect(await convertSelectedTextToOutlines(editor)).toBe(false)
+      expect(messages).toEqual(['No font could be loaded for "Noto Sans"'])
+      expect((editor.currentLayer as { keyframes: { nodes: { type: string }[] }[] }).keyframes[0].nodes[0].type).toBe(
+        'text'
+      )
+    } finally {
+      window.api = previous
+    }
+  })
+
   it('falls back to the bundled font and reports it when the system font is missing', async () => {
     const previous = window.api
     window.api = {

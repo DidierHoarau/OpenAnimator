@@ -31,7 +31,7 @@ const APP_VERSION = (
 ).version
 
 const DOCUMENT: AnimatorDocument = {
-  schemaVersion: 8,
+  schemaVersion: 9,
   name: 'CLI test',
   width: 96,
   height: 64,

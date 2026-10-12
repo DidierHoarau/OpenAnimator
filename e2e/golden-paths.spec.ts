@@ -226,6 +226,147 @@ test('draws a pen path and edits its anchors', async () => {
   expect(Math.abs(visualY - expected.y)).toBeLessThanOrEqual(2)
 })
 
+test('morphs a path between matching-anchor poses and exports mid-morph frames', async () => {
+  const dir = await tempDir()
+  const exportPath = join(dir, 'morph.zip')
+  const page = await start({ savePath: exportPath })
+  await dismissStartup(page)
+  await page.getByRole('button', { name: 'New', exact: true }).click()
+  await expect(page.locator('footer.statusbar')).toContainText('file: unsaved')
+
+  // The console script builds one path whose two poses share the anchor
+  // structure (four corners, closed), so the linear tween between them
+  // morphs. Both poses are (0,0)-centered, which keeps the midpoint
+  // arithmetic exact.
+  const startPose = 'M -100 -60 L 100 -60 L 100 60 L -100 60 Z'
+  const endPose = 'M -80 -100 L 120 -20 L 60 100 L -120 40 Z'
+  // The duration comes first: a fresh project is one frame long and seeks
+  // clamp to it, so the frame-12 pose needs the timeline extended already.
+  const payload = {
+    commands: [
+      { op: 'addLayer', kind: 'object', name: 'Morph' },
+      { op: 'setDuration', frames: 13 },
+      {
+        op: 'addNode',
+        frame: 0,
+        node: {
+          type: 'path',
+          id: 'morph',
+          name: 'Morph',
+          d: startPose,
+          width: 200,
+          height: 120,
+          center: { x: 480, y: 270 },
+          rotation: 0,
+          opacity: 1,
+          fill: '#38bdf8'
+        }
+      },
+      { op: 'setTween', frame: 0, easing: 'linear' },
+      { op: 'updateNode', nodeId: 'morph', frame: 12, patch: { d: endPose } }
+    ]
+  }
+  await page.getByRole('button', { name: 'Script…', exact: true }).click()
+  const scriptModal = page.locator('.script-modal')
+  await expect(scriptModal).toBeVisible()
+  await scriptModal.locator('.script-input').fill(JSON.stringify(payload))
+  await scriptModal.getByRole('button', { name: 'Run script' }).click()
+  await expect(scriptModal.locator('.script-output')).toContainText('with no issues')
+  await scriptModal.locator('.modal-close').click()
+  await expect(scriptModal).toHaveCount(0)
+
+  // Reveal the object row (layers start collapsed) and its two keyframes.
+  const shapeRow = page.locator('.tl-shape-row', { hasText: 'Morph' })
+  if ((await shapeRow.count()) === 0) {
+    await page.locator('.tl-row', { hasText: 'Morph' }).locator('.tl-toggle').first().click()
+  }
+  await expect(shapeRow.locator('.tl-key')).toHaveCount(2)
+
+  // The stage path's own `d`, parsed back to anchors (the grid is a separate
+  // group, so `.stage__content` scopes the selector to scene content).
+  const stagePath = page.locator('svg.stage .stage__content path').first()
+  // The serialized closed path carries an explicit closing segment whose
+  // endpoint duplicates the first anchor; collapse it so both the raw poses
+  // and the serialized morph compare on the same anchor list.
+  const anchorsOf = (d: string): Array<{ x: number; y: number }> => {
+    const subpaths = pathDataToSubpathAnchors(d)
+    if (!subpaths || subpaths.length !== 1) throw new Error(`unexpected path data: ${d}`)
+    const anchors = subpaths[0].anchors.slice()
+    if (subpaths[0].closed && anchors.length > 2) {
+      const first = anchors[0]
+      const last = anchors[anchors.length - 1]
+      if (Math.abs(first.x - last.x) < 1e-6 && Math.abs(first.y - last.y) < 1e-6) anchors.pop()
+    }
+    return anchors.map((anchor) => ({ x: anchor.x, y: anchor.y }))
+  }
+  const readAnchors = async (): Promise<Array<{ x: number; y: number }>> =>
+    anchorsOf((await stagePath.getAttribute('d')) ?? '')
+  const closeTo = (
+    a: Array<{ x: number; y: number }>,
+    b: Array<{ x: number; y: number }>
+  ): boolean =>
+    a.length === b.length &&
+    a.every((point, index) => Math.abs(point.x - b[index].x) < 0.01 && Math.abs(point.y - b[index].y) < 0.01)
+
+  const startAnchors = anchorsOf(startPose)
+  const endAnchors = anchorsOf(endPose)
+  const midAnchors = startAnchors.map((point, index) => ({
+    x: (point.x + endAnchors[index].x) / 2,
+    y: (point.y + endAnchors[index].y) / 2
+  }))
+
+  await seekTrack(page, shapeRow.locator('.tl-track'), 0)
+  await expect.poll(async () => closeTo(await readAnchors(), startAnchors)).toBe(true)
+
+  await seekTrack(page, shapeRow.locator('.tl-track'), 12)
+  await expect.poll(async () => closeTo(await readAnchors(), endAnchors)).toBe(true)
+
+  // Frame 7 (index 6) is halfway through the linear tween: the anchors sit
+  // exactly between the two poses — the stage `d` differs from both.
+  await seekTrack(page, shapeRow.locator('.tl-track'), 6)
+  await expect(page.locator('footer.statusbar')).toContainText('frame 7 / 13')
+  await expect
+    .poll(async () => {
+      const mid = await readAnchors()
+      return !closeTo(mid, startAnchors) && !closeTo(mid, endAnchors) && closeTo(mid, midAnchors)
+    })
+    .toBe(true)
+
+  // The raster pipeline samples the same morph: two adjacent mid-morph
+  // frames export as distinct PNGs (a frozen or snapped `d` would yield
+  // identical bytes).
+  await page.locator('header.toolbar').getByRole('button', { name: 'Export…', exact: true }).click()
+  const exportModal = page.locator('.export-modal')
+  await expect(exportModal).toBeVisible()
+  await exportModal.locator('.export-format').selectOption('png-sequence')
+  const range = exportModal.locator('.export-field', { hasText: 'Frame range' }).locator('input')
+  await range.nth(0).fill('7')
+  await range.nth(1).fill('8')
+  await exportModal.locator('button.primary').click()
+
+  await expect
+    .poll(
+      async () => {
+        try {
+          return (await readFile(exportPath)).length
+        } catch {
+          return 0
+        }
+      },
+      { timeout: 45_000, message: 'the PNG sequence should be written' }
+    )
+    .toBeGreaterThan(0)
+  await expect(exportModal).toHaveCount(0)
+
+  const archive = unzipSync(new Uint8Array(await readFile(exportPath)))
+  expect(Object.keys(archive).sort()).toEqual(['frame_0000.png', 'frame_0001.png'])
+  const pngMagic = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  for (const name of ['frame_0000.png', 'frame_0001.png']) {
+    expect(Array.from(archive[name].slice(0, 8))).toEqual(pngMagic)
+  }
+  expect(Buffer.compare(archive['frame_0000.png'], archive['frame_0001.png'])).not.toBe(0)
+})
+
 test('picks a stage color with the eyedropper', async () => {
   const page = await start()
   await dismissStartup(page)

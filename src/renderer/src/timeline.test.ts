@@ -875,6 +875,7 @@ describe('TimelineView — camera and audio layers', () => {
     stop: () => {},
     sync: () => {},
     scrub: () => {},
+    endScrub: () => {},
     durationSeconds: () => 2,
     peaks: (_resourceId: string, buckets: number) =>
       Array.from({ length: buckets }, () => ({ min: -1, max: 1 }))

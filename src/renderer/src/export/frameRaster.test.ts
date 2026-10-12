@@ -167,6 +167,50 @@ describe('FrameRasterizer', () => {
     expect(plainFake.calls.svgs[0]).not.toContain('@font-face')
   })
 
+  it('marks italic subsets with font-style in the @font-face rule', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    document.fonts = [
+      {
+        id: 'oa-embed-400-ab12cd34i',
+        family: 'Lato',
+        weight: 400,
+        italic: true,
+        resourceId: 'font-italic',
+        glyphs: ['A'],
+        license: 'OFL-1.1'
+      }
+    ]
+    const layer = document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    layer.keyframes[0].nodes.push({
+      type: 'text',
+      id: 't',
+      center: { x: 100, y: 90 },
+      width: 40,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'A',
+      fontFamily: 'Lato',
+      fontSize: 24,
+      fontWeight: 400,
+      fontStyle: 'italic',
+      fill: '#ffffff',
+      align: 'left'
+    })
+    const { deps, calls } = fakeDeps()
+    const rasterizer = new FrameRasterizer(document, options(), deps)
+
+    await rasterizer.rasterizeToCanvas(0)
+
+    expect(calls.svgs[0]).toContain(
+      "<style>@font-face{font-family:'oa-embed-400-ab12cd34i';font-weight:400;" +
+        "font-style:italic;src:url(data:image/png;base64,font-italic) format('truetype');}</style>"
+    )
+    expect(calls.svgs[0]).toContain('font-family="oa-embed-400-ab12cd34i, Lato,')
+    expect(calls.svgs[0]).toContain('style="font-style: italic"')
+  })
+
   it('revokes the SVG object URL even when the image fails to load', async () => {
     const document = createDocument('demo', 320, 180, 12)
     const { deps, calls } = fakeDeps()

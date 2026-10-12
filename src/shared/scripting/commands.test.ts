@@ -76,6 +76,33 @@ describe('validateScriptPayload', () => {
     expect(badBezier.errors.join('\n')).toContain('/x1')
   })
 
+  it('restricts setTween channel easings to the channel keys and easing values', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        {
+          op: 'setTween',
+          easings: { transform: 'ease-in', opacity: null, fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } }
+        }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+
+    const unknownChannel = validateScriptPayload({
+      commands: [{ op: 'setTween', easings: { rotation: 'ease-in' } }]
+    })
+    expect(unknownChannel.errors.join('\n')).toContain('/commands/0/easings/rotation')
+
+    const badEasing = validateScriptPayload({
+      commands: [{ op: 'setTween', easings: { opacity: 'wobbly' } }]
+    })
+    expect(badEasing.errors.join('\n')).toContain('/commands/0/easings/opacity')
+
+    const badShape = validateScriptPayload({
+      commands: [{ op: 'setTween', easings: 'ease-in' }]
+    })
+    expect(badShape.errors.join('\n')).toContain('/commands/0/easings')
+  })
+
   it('accepts the new keyframe-move and hold-step ops and rejects their bad shapes', () => {
     const ok = validateScriptPayload({
       commands: [
@@ -111,6 +138,8 @@ describe('validateScriptPayload', () => {
             lineHeight: 1.5,
             verticalAlign: 'middle',
             fontFallback: ['Lato', 'Inter'],
+            fontStyle: 'italic',
+            ligatures: false,
             stroke: '#000000',
             strokeWidth: 3
           }
@@ -118,7 +147,7 @@ describe('validateScriptPayload', () => {
         {
           op: 'addNode',
           frame: 0,
-          node: { type: 'text', text: 'Hi', fontFamily: 'Noto Sans', fontSize: 24, fontWeight: 400, fill: '#fff', align: 'left', lineHeight: 1.2, verticalAlign: 'bottom', fontFallback: [] }
+          node: { type: 'text', text: 'Hi', fontFamily: 'Noto Sans', fontSize: 24, fontWeight: 400, fill: '#fff', align: 'left', lineHeight: 1.2, verticalAlign: 'bottom', fontFallback: [], fontStyle: 'normal', ligatures: true }
         }
       ]
     })
@@ -128,13 +157,17 @@ describe('validateScriptPayload', () => {
         { op: 'updateNode', nodeId: 'title', patch: { lineHeight: 0.2 } },
         { op: 'updateNode', nodeId: 'title', patch: { verticalAlign: 'center' } },
         { op: 'updateNode', nodeId: 'title', patch: { fontFallback: [1, 2] } },
-        { op: 'updateNode', nodeId: 'title', patch: { letterSpacing: 'wide' } }
+        { op: 'updateNode', nodeId: 'title', patch: { letterSpacing: 'wide' } },
+        { op: 'updateNode', nodeId: 'title', patch: { fontStyle: 'oblique' } },
+        { op: 'updateNode', nodeId: 'title', patch: { ligatures: 'off' } }
       ]
     })
     expect(bad.errors.join('\n')).toContain('/commands/0/patch/lineHeight')
     expect(bad.errors.join('\n')).toContain('/commands/1/patch/verticalAlign')
     expect(bad.errors.join('\n')).toContain('/commands/2/patch/fontFallback/0')
     expect(bad.errors.join('\n')).toContain('/commands/3/patch/letterSpacing')
+    expect(bad.errors.join('\n')).toContain('/commands/4/patch/fontStyle')
+    expect(bad.errors.join('\n')).toContain('/commands/5/patch/ligatures')
   })
 
   it('accepts stroke-style fields and rejects their bad shapes', () => {
@@ -429,6 +462,41 @@ describe('hand-rolled validator vs JSON Schema', () => {
       ]
     },
     { commands: [{ op: 'addNode', node: { type: 'text', text: 'Hi' } }] },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'text',
+            text: 'Hi',
+            fontFamily: 'Noto Sans',
+            fontSize: 24,
+            fontWeight: 400,
+            fill: '#fff',
+            align: 'left',
+            fontStyle: 'italic',
+            ligatures: false
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'text',
+            text: 'Hi',
+            fontFamily: 'Noto Sans',
+            fontSize: 24,
+            fontWeight: 400,
+            fill: '#fff',
+            align: 'left',
+            fontStyle: 'bold'
+          }
+        }
+      ]
+    },
     { commands: [{ op: 'addNode', node: { type: 'alien' } }] },
     { commands: [{ op: 'addNode', node: { type: 'group', children: [{ type: 'rect' }] } }] },
     { commands: [{ op: 'setTween', easing: 'wobbly' }] },
@@ -440,6 +508,22 @@ describe('hand-rolled validator vs JSON Schema', () => {
     { commands: [{ op: 'setTween', easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1, extra: 0 } }] },
     { commands: [{ op: 'setTween', easing: { x1: 'a', y1: 0, x2: 0.58, y2: 1 } }] },
     { commands: [{ op: 'setTween', easing: ['ease'] }] },
+    {
+      commands: [
+        {
+          op: 'setTween',
+          easings: { transform: 'ease-in', opacity: null, fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } }
+        }
+      ]
+    },
+    { commands: [{ op: 'setTween', easings: {} }] },
+    { commands: [{ op: 'setTween', easings: { rotation: 'ease-in' } }] },
+    { commands: [{ op: 'setTween', easings: { transform: 'wobbly' } }] },
+    { commands: [{ op: 'setTween', easings: { transform: { x1: 2, y1: 0, x2: 0.5, y2: 1 } } }] },
+    { commands: [{ op: 'setTween', easings: { transform: { x1: 0.1, y1: 0, x2: 0.9 } } }] },
+    { commands: [{ op: 'setTween', easings: 'ease-in' }] },
+    { commands: [{ op: 'setTween', easings: { transform: ['ease'] } }] },
+    { commands: [{ op: 'setTween', easings: { transform: null, extra: null } }] },
     { commands: [{ op: 'setTween', path: 'smooth' }] },
     { commands: [{ op: 'setTween', path: 'wavy' }] },
     { commands: [{ op: 'moveKeyframe', nodeId: 'x', fromFrame: 0, toFrame: 10 }] },
@@ -573,6 +657,9 @@ describe('hand-rolled validator vs JSON Schema', () => {
         }
       ]
     },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { fontStyle: 'italic', ligatures: false } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { fontStyle: 'oblique' } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { ligatures: 1 } }] },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { lineHeight: 0.2 } }] },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { lineHeight: 5.5 } }] },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { verticalAlign: 'left' } }] },

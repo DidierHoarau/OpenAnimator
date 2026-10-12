@@ -53,18 +53,20 @@ so they work identically in the app and the CLI. The JSON targets bodymovin
 | Document content | Lottie output |
 | --- | --- |
 | Primitives (rect/ellipse) | `rc`/`el` shape items, stroke items before fill items |
-| Paths | `sh` bezier shape items (`pathDataToSubpathAnchors` conversion) |
+| Paths | `sh` bezier shape items (`pathDataToSubpathAnchors` conversion); a `d` that changes across keyframes morphs between poses when the anchor structure matches (subpath and anchor counts, closed flags) and holds the outline where it differs |
 | Groups | nested `gr` items, children reversed to match Lottie's paint order |
 | Images | embedded data-URL image assets (`e: 1`), deduplicated per resource |
 | Drawing layers | one full-stage image asset per cell (natural size = document size × the layer's resolution scale), held until the next cell |
 | Text | outlines via the same font resolution as the app (embedded subset, then bundled Noto Sans); fonts are **never** embedded (licensing) |
 | Camera layer | wraps the content in a `precomp_main` precomp layer whose position/rotation/zoom are keyframed |
-| Tweens | keyframed bezier channels: the named eases and custom beziers are exact; `holdStep` playback and hold keyframes are baked as hold keys sampled through the evaluator |
+| Tweens | keyframed bezier channels: the named eases and custom beziers are exact, including per-property easing channels (`transform`/`opacity`/`fill`); `holdStep` playback and hold keyframes are baked as hold keys sampled through the evaluator |
 | Audio layers | dropped — the export is silent |
 
 Degradations (each reported as an export diagnostic, never a crash):
 
 - `A 'smooth' tween path is exported as linear interpolation in the Lottie file.`
+- `The path data of "…" cannot morph between keyframes (the anchor structure differs); the Lottie file holds the outline over those segments.`
+- `The path data of "…" changes shape across keyframes; the Lottie file keeps the first outline.`
 - `A gradient paint is exported as its first stop color in the Lottie file.`
 - `A text stroke is dropped when text is exported as outlines in the Lottie file.`
 - `Text "…" changes across keyframes; the Lottie file outlines the first pose.`
@@ -89,8 +91,9 @@ against a real player, not just the JSON structure.
 
 One self-contained SVG file whose elements are emitted once with geometry and
 paints frozen at their first appearance; every change over time becomes a CSS
-`@keyframes` rule. Documents with no animation emit no `<style>` block at
-all, so static exports stay pixel-identical to the inline markup.
+`@keyframes` rule. Path data is the one geometry that animates outside CSS
+(see below). Documents with no animation emit no `<style>` block at all, so
+static exports stay pixel-identical to the inline markup.
 
 - Each animated element gets an `#oa-i-N{animation:oa-k-N <count/fps>s linear
   infinite}` rule plus a `@keyframes` block, with
@@ -105,6 +108,12 @@ all, so static exports stay pixel-identical to the inline markup.
 - Animatable properties: `transform`, `opacity`, `fill`, `stroke`,
   `stroke-width` and `visibility` (image runs — a drawing cell or image
   change toggles visibility instead of re-emitting the element).
+- Path data is the one geometry that animates: a `<path>` whose `d` changes
+  across the export carries a per-frame SMIL `<animate attributeName="d">`
+  child whose values are interpolated linearly when every sampled frame
+  shares one command signature (the morph-compatible case, canonical
+  strings) and frame-stepped (`calcMode="discrete"`, the exact evaluator
+  strings) otherwise.
 - Text ships as outlines (same provider as Lottie); the camera layer becomes
   one wrapper `<g>` with an animated transform. `--scale` only sets the
   root's `width`/`height` attributes — the `viewBox` keeps document
@@ -112,7 +121,6 @@ all, so static exports stay pixel-identical to the inline markup.
 
 Degradations (diagnostics, never a crash):
 
-- `The path data of "…" changes shape across frames; the animated SVG keeps the first shape.`
 - `A gradient paint in "…" changes over time; the animated SVG keeps its first appearance.`
 - `The paint order of "…" changes across frames; the animated SVG keeps the first order.`
 - `"…" changes its object type across frames; the animated SVG keeps the first appearance.`

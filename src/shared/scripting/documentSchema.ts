@@ -1,5 +1,5 @@
 /**
- * JSON Schema of the OpenAnimator document (schemaVersion 8) — the generation
+ * JSON Schema of the OpenAnimator document (schemaVersion 9) — the generation
  * contract for tools and LLMs that produce `document.json` payloads. The
  * schema mirrors the structural validation in `document.ts`
  * (`isAnimatorDocument`/`isSceneNode`); documents are always re-validated
@@ -30,6 +30,9 @@ export const MAX_STROKE_DASH_VALUES = 16
 
 /** Hex color pattern accepted by the document and command contracts. */
 export const HEX_COLOR_PATTERN = '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$'
+
+/** Tween channel names of per-property easing overrides. */
+export const TWEEN_CHANNELS = ['transform', 'opacity', 'fill'] as const
 
 /** Shared non-null easing definition: a named easing or a closed cubic
  * bezier. Used by the document contract and the command contract. */
@@ -101,6 +104,16 @@ export function paintSchema(): Record<string, unknown> {
   }
 }
 
+/** Shared per-channel tween easing overrides: only the channel keys, each a
+ * non-null easing; any subset of the channels may be present. */
+export function tweenEasingsSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: Object.fromEntries(TWEEN_CHANNELS.map((channel) => [channel, easingSchema()]))
+  }
+}
+
 /** Shared palette definition: up to 48 hex colors. */
 export function paletteSchema(): Record<string, unknown> {
   return {
@@ -121,6 +134,7 @@ export function embeddedFontSchema(): Record<string, unknown> {
       id: { type: 'string', minLength: 1 },
       family: { type: 'string', minLength: 1 },
       weight: { type: 'number', minimum: 1, maximum: 1000 },
+      italic: { type: 'boolean' },
       resourceId: { type: 'string', minLength: 1 },
       glyphs: { type: 'array', items: { type: 'string' } },
       license: { type: 'string' }
@@ -187,6 +201,8 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
       fontSize: { type: 'number', exclusiveMinimum: 0 },
       fontWeight: { type: 'number', minimum: 1, maximum: 1000 },
       align: { enum: ['left', 'center', 'right'] },
+      fontStyle: { enum: ['normal', 'italic'] },
+      ligatures: { type: 'boolean' },
       letterSpacing: { type: 'number' },
       lineHeight: { type: 'number', minimum: 0.5, maximum: 5 },
       verticalAlign: { enum: ['top', 'middle', 'bottom'] },
@@ -216,13 +232,13 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
 
 export const DOCUMENT_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v8.json',
-  title: 'OpenAnimator document (v8)',
+  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v9.json',
+  title: 'OpenAnimator document (v9)',
   type: 'object',
   additionalProperties: false,
   required: ['schemaVersion', 'name', 'width', 'height', 'fps', 'background', 'layers', 'assets', 'palette', 'fonts'],
   properties: {
-    schemaVersion: { const: 8 },
+    schemaVersion: { const: 9 },
     name: { type: 'string', minLength: 1 },
     width: { type: 'number', exclusiveMinimum: 0 },
     height: { type: 'number', exclusiveMinimum: 0 },
@@ -243,6 +259,7 @@ export const DOCUMENT_SCHEMA = {
       properties: { x: { type: 'number' }, y: { type: 'number' } }
     },
     easing: easingSchema(),
+    tweenEasings: tweenEasingsSchema(),
     paint: paintSchema(),
     palette: paletteSchema(),
     embeddedFont: embeddedFontSchema(),
@@ -260,6 +277,7 @@ export const DOCUMENT_SCHEMA = {
           required: ['easing'],
           properties: {
             easing: { $ref: '#/definitions/easing' },
+            easings: { $ref: '#/definitions/tweenEasings' },
             path: { enum: ['linear', 'smooth'] }
           }
         }

@@ -94,7 +94,7 @@ function embeddedFont(): EmbeddedFont {
 describe('document operations', () => {
   it('creates a document with one empty layer and keyframe at 0', () => {
     const doc = createDocument('test', 960, 540, 24)
-    expect(doc.schemaVersion).toBe(8)
+    expect(doc.schemaVersion).toBe(9)
     expect(doc.palette).toEqual([])
     expect(doc.fonts).toEqual([])
     expect(doc.layers).toHaveLength(1)

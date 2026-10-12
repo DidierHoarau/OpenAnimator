@@ -208,7 +208,7 @@ export class TimelineView {
     this.scrubAudioCheckbox = el('input', 'tl-check') as HTMLInputElement
     this.scrubAudioCheckbox.type = 'checkbox'
     this.scrubAudioCheckbox.title =
-      'Play a short blip of the audio under the playhead while scrubbing paused (off by default)'
+      'Preview the audio under the playhead while scrubbing paused (off by default)'
     this.scrubAudioCheckbox.addEventListener('change', () =>
       editor.setScrubAudio(this.scrubAudioCheckbox.checked)
     )
@@ -544,11 +544,13 @@ export class TimelineView {
     const frameTarget = target.closest<HTMLElement>('[data-frame]')
     if (frameTarget?.dataset.frame !== undefined) {
       this.editor.seekToFrame(Number(frameTarget.dataset.frame))
+      this.endScrubOnPointerUp(event.pointerId)
       return
     }
     const track = target.closest<HTMLElement>('.tl-track')
     if (track?.dataset.frames !== undefined) {
       this.seekIntoTrack(event, track)
+      this.endScrubOnPointerUp(event.pointerId)
       return
     }
     const shapeRow = target.closest<HTMLElement>('.tl-shape-row')
@@ -580,6 +582,17 @@ export class TimelineView {
       this.editor.selectNodes([row.dataset.shapeId], event.shiftKey ? 'toggle' : 'replace')
     }
     this.editor.seekToFrame(frame)
+  }
+
+  /** Releasing a seek press ends the paused scrub session immediately
+   * instead of waiting for its idle timeout. */
+  private endScrubOnPointerUp(pointerId: number): void {
+    const onUp = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== pointerId) return
+      window.removeEventListener('pointerup', onUp)
+      this.editor.audio.endScrub()
+    }
+    window.addEventListener('pointerup', onUp)
   }
 
   /**

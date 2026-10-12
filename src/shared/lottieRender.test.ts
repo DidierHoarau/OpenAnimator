@@ -4,7 +4,8 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { createCameraLayer, createDocument, insertCameraKeyframe, insertKeyframe } from './document'
 import type { LottieBuildDeps } from './lottieExport'
 import { buildLottieAnimation } from './lottieExport'
-import type { AnimatorDocument, PrimitiveNode } from './model'
+import type { AnimatorDocument, PathNode, PrimitiveNode } from './model'
+import { pathDataToSubpathAnchors } from './pathModel'
 
 /**
  * CI render gate: the exported Lottie JSON is fed to the real lottie-web
@@ -192,6 +193,61 @@ describe('lottie-web render gate', () => {
 
     const at = await renderAt(document, 2)
     expectMatrix(matrices(at), [1, 0, 0, 1, 100, 120])
+  })
+
+  it('morphs a compatible path outline between keyframes', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    const polyline: PathNode = {
+      id: 'p1',
+      name: 'poly',
+      type: 'path',
+      center: { x: 0, y: 0 },
+      width: 20,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      d: 'M-10 -10 L10 -10 L0 10',
+      fill: '#0000ff'
+    }
+    layer.keyframes[0].nodes.push(polyline)
+    layer.keyframes[0].tween = { easing: 'linear' }
+    const final = insertKeyframe(layer, 10)
+    if (!final) throw new Error('expected the keyframe to be inserted')
+    ;(final.nodes[0] as PathNode).d = 'M-20 -5 L20 -5 L0 5'
+
+    const anchorsAt = async (frame: number): Promise<Array<{ x: number; y: number }>> => {
+      const markup = await renderAt(document, frame)
+      const attributes = markup.match(/ d="([^"]+)"/g) ?? []
+      for (const attribute of attributes) {
+        const subpaths = pathDataToSubpathAnchors(attribute.slice(4, -1))
+        if (subpaths && subpaths.length === 1 && subpaths[0].anchors.length === 3) {
+          return subpaths[0].anchors.map((anchor) => ({ x: anchor.x, y: anchor.y }))
+        }
+      }
+      throw new Error(`no 3-anchor path rendered: ${markup}`)
+    }
+
+    const at0 = await anchorsAt(0)
+    expect(at0[0].x).toBeCloseTo(-10, 2)
+    expect(at0[0].y).toBeCloseTo(-10, 2)
+    expect(at0[1].x).toBeCloseTo(10, 2)
+    expect(at0[2].y).toBeCloseTo(10, 2)
+
+    const at5 = await anchorsAt(5)
+    expect(at5[0].x).toBeCloseTo(-15, 2)
+    expect(at5[0].y).toBeCloseTo(-7.5, 2)
+    expect(at5[1].x).toBeCloseTo(15, 2)
+    expect(at5[1].y).toBeCloseTo(-7.5, 2)
+    expect(at5[2].x).toBeCloseTo(0, 2)
+    expect(at5[2].y).toBeCloseTo(7.5, 2)
+
+    const at10 = await anchorsAt(10)
+    expect(at10[0].x).toBeCloseTo(-20, 2)
+    expect(at10[0].y).toBeCloseTo(-5, 2)
+    expect(at10[1].x).toBeCloseTo(20, 2)
+    expect(at10[2].y).toBeCloseTo(5, 2)
   })
 
   it('renders the camera precomp with the decomposed keyed transform', async () => {

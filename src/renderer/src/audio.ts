@@ -4,12 +4,14 @@ import type { PeakBucket } from '@shared/audio'
 import { audioMixPlan } from '@shared/audio'
 
 /** Playback surface the editor drives: play/pause, seeks during playback and
- * the paused scrub blip. The no-op default keeps DOM-free tests green. */
+ * the paused scrub preview. The no-op default keeps DOM-free tests green. */
 export interface AudioPlaybackBridge {
   start(document: AnimatorDocument, frame: number, fps: number): void
   stop(): void
   sync(document: AnimatorDocument, frame: number, fps: number): void
   scrub(document: AnimatorDocument, frame: number, fps: number): void
+  /** Ends the paused scrub session immediately (timeline pointer-up). */
+  endScrub(): void
   /** Decoded clip length in seconds; null until the resource is decoded (the
    * call triggers the decode). Used by the timeline clip spans. */
   durationSeconds?(resourceId: string): number | null
@@ -24,11 +26,23 @@ export const NOOP_AUDIO: AudioPlaybackBridge = {
   start: () => {},
   stop: () => {},
   sync: () => {},
-  scrub: () => {}
+  scrub: () => {},
+  endScrub: () => {}
 }
 
-/** Gain multiplier of the paused scrub blip. */
+/** Gain multiplier of the scrub-session clips. */
 const SCRUB_GAIN = 0.35
+/** Updates closer together than this carry no new velocity information. */
+const SCRUB_MIN_STEP_SECONDS = 0.008
+/** playbackRate clamp of the scrub session (Web Audio's practical range). */
+const SCRUB_MIN_RATE = 0.25
+const SCRUB_MAX_RATE = 4
+/** Frame-lock slack: beyond one frame behind the playhead, the session snaps. */
+const SCRUB_MAX_DRIFT_FRAMES = 1
+
+function clampScrubRate(rate: number): number {
+  return Math.min(SCRUB_MAX_RATE, Math.max(SCRUB_MIN_RATE, rate))
+}
 
 interface DecodedClip {
   buffer: AudioBuffer
@@ -48,13 +62,32 @@ interface PlaybackSession {
   baseTime: number
 }
 
+interface ScrubClip extends PlayingClip {
+  /** `resourceId@startFrame` of the mix entry this clip plays. */
+  key: string
+}
+
+interface ScrubSession {
+  document: AnimatorDocument
+  fps: number
+  /** Frame the audible position is locked to, and the audio time it was. */
+  frame: number
+  at: number
+  /** playbackRate currently applied to every session clip. */
+  rate: number
+  clips: ScrubClip[]
+  /** Keys of the started clips; a change means the audible set moved. */
+  keys: string
+}
+
 export interface AudioSystemDeps {
   /** Blob source for decoding (the renderer resource cache). */
   getBlob?: (resourceId: string) => Blob | null
   /** AudioContext factory; explicit null disables audio (headless tests). */
   createContext?: () => AudioContext | null
-  /** Paused scrub blip length in seconds (also the scrub throttle). */
-  scrubSeconds?: number
+  /** Idle window of a scrub session in seconds: it auto-stops this long
+   * after the last scrub call (a live pointer refreshes it). */
+  scrubIdleSeconds?: number
 }
 
 function defaultCreateContext(): AudioContext | null {
@@ -70,27 +103,28 @@ function defaultCreateContext(): AudioContext | null {
  * Renderer-only audio playback: decodes document audio resources lazily
  * through the resource cache and schedules the document's mix (`audioMixPlan`)
  * on an AudioContext — play/pause, re-sync on seeks and loop wraps, and a
- * short blip while scrubbing paused. Everything degrades to a silent no-op
- * when no AudioContext is available, and missing/undecodable resources are
- * skipped (never an error). The decoded cache also feeds the timeline
- * waveform (`peaks`) and clip spans (`durationSeconds`).
+ * frame-locked scrub session while scrubbing paused. Everything degrades to a
+ * silent no-op when no AudioContext is available, and missing/undecodable
+ * resources are skipped (never an error). The decoded cache also feeds the
+ * timeline waveform (`peaks`) and clip spans (`durationSeconds`).
  */
 export class AudioSystem implements AudioPlaybackBridge {
   private context: AudioContext | null = null
   private readonly getBlob: (resourceId: string) => Blob | null
   private readonly createContext: () => AudioContext | null
-  private readonly scrubSeconds: number
+  private readonly scrubIdleSeconds: number
   private readonly decoded = new Map<string, DecodedClip>()
   private readonly decoding = new Set<string>()
   private readonly decodedListeners = new Set<() => void>()
   private playing: PlayingClip[] = []
   private session: PlaybackSession | null = null
-  private lastScrubAt = -Infinity
+  private scrubSession: ScrubSession | null = null
+  private scrubIdleTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(deps: AudioSystemDeps = {}) {
     this.getBlob = deps.getBlob ?? (() => null)
     this.createContext = deps.createContext ?? defaultCreateContext
-    this.scrubSeconds = deps.scrubSeconds ?? 0.12
+    this.scrubIdleSeconds = deps.scrubIdleSeconds ?? 0.2
   }
 
   /** Starts playback of the mix from `frame` (aligned with the editor's
@@ -106,10 +140,12 @@ export class AudioSystem implements AudioPlaybackBridge {
     this.scheduleSession()
   }
 
-  /** Stops playback (idempotent). */
+  /** Stops playback (idempotent); a scrub session started earlier ends too
+   * so playback always owns the clock alone. */
   stop(): void {
     this.session = null
     this.clearPlaying()
+    this.endScrub()
   }
 
   /** Re-aligns a running playback to `frame` — seeks during playback and
@@ -120,30 +156,52 @@ export class AudioSystem implements AudioPlaybackBridge {
     this.scheduleSession()
   }
 
-  /** Short preview blip at `frame` while paused (throttled to the blip
-   * length so scrubbing does not machine-gun the context). */
+  /**
+   * Frame-locked scrub preview at `frame` while paused. The first call opens
+   * a session playing every audible clip at the frame's offset with rate 1;
+   * later calls map the scrub velocity (Δframe / Δt) onto `playbackRate`
+   * (clamped to 0.25×–4×). The audible position may not lag more than one
+   * frame behind the playhead — when the clamped rate can't keep up, the
+   * session snaps by restarting at the exact offset. An idle window ends the
+   * session after the last call; `endScrub()` ends it immediately.
+   */
   scrub(document: AnimatorDocument, frame: number, fps: number): void {
+    // Playback owns the clock; the editor routes playing seeks to sync().
+    if (this.session) return
     const context = this.contextFor()
     if (!context) return
     const now = context.currentTime
-    if (now - this.lastScrubAt < this.scrubSeconds) return
-    const plan = audioMixPlan(document, { fromFrame: frame, fps })
-    let played = false
-    for (const entry of plan) {
-      const clipLocal = -entry.startSeconds
-      if (clipLocal < 0) continue
-      const decoded = this.decoded.get(entry.resourceId)
-      if (!decoded) {
-        this.ensureDecoded(entry.resourceId)
-        continue
-      }
-      if (clipLocal >= decoded.buffer.duration) continue
-      const { source } = this.createClip(context, decoded.buffer, entry.volume * SCRUB_GAIN)
-      source.start(now, clipLocal)
-      source.stop(now + this.scrubSeconds)
-      played = true
+    const current = this.scrubSession
+    if (!current || current.document !== document) {
+      this.startScrubClips(context, document, frame, fps, now, 1)
+      return
     }
-    if (played) this.lastScrubAt = now
+    const dt = now - current.at
+    if (dt < SCRUB_MIN_STEP_SECONDS) return
+    const rate = clampScrubRate((frame - current.frame) / (fps * dt))
+    // Where the running clips have advanced to at `now` (the rate has been
+    // constant since the last accepted call).
+    const audibleFrame = current.frame + (now - current.at) * fps * current.rate
+    const audible = this.audibleScrubEntries(document, frame, fps)
+    const keys = audible.map((entry) => entry.key).join('\n')
+    if (Math.abs(frame - audibleFrame) > SCRUB_MAX_DRIFT_FRAMES || keys !== current.keys) {
+      this.startScrubClips(context, document, frame, fps, now, rate, audible)
+      return
+    }
+    current.frame = frame
+    current.at = now
+    current.rate = rate
+    for (const clip of current.clips) clip.source.playbackRate.value = rate
+    this.armScrubIdle()
+  }
+
+  /** Ends the paused scrub session immediately (idempotent). */
+  endScrub(): void {
+    this.clearScrubIdle()
+    const session = this.scrubSession
+    this.scrubSession = null
+    if (!session) return
+    for (const clip of session.clips) this.releaseClip(clip)
   }
 
   /** Decoded clip length in seconds, or null while not decoded yet. */
@@ -234,17 +292,91 @@ export class AudioSystem implements AudioPlaybackBridge {
   }
 
   private clearPlaying(): void {
-    for (const clip of this.playing) {
-      try {
-        clip.source.stop()
-      } catch {
-        // Already ended.
-      }
-      clip.source.onended = null
-      clip.source.disconnect()
-      clip.gain.disconnect()
-    }
+    for (const clip of this.playing) this.releaseClip(clip)
     this.playing = []
+  }
+
+  private releaseClip(clip: PlayingClip): void {
+    try {
+      clip.source.stop()
+    } catch {
+      // Already ended.
+    }
+    clip.source.onended = null
+    clip.source.disconnect()
+    clip.gain.disconnect()
+  }
+
+  /** Mix entries audible at `frame` (clip started, position inside it) with
+   * their seek offsets; undecoded resources trigger a decode instead. */
+  private audibleScrubEntries(
+    document: AnimatorDocument,
+    frame: number,
+    fps: number
+  ): Array<{ key: string; buffer: AudioBuffer; offset: number; volume: number }> {
+    const audible: Array<{ key: string; buffer: AudioBuffer; offset: number; volume: number }> = []
+    for (const entry of audioMixPlan(document, { fromFrame: frame, fps })) {
+      const offset = -entry.startSeconds
+      if (offset < 0) continue
+      const decoded = this.decoded.get(entry.resourceId)
+      if (!decoded) {
+        this.ensureDecoded(entry.resourceId)
+        continue
+      }
+      if (offset >= decoded.buffer.duration) continue
+      audible.push({
+        key: `${entry.resourceId}@${entry.startFrame}`,
+        buffer: decoded.buffer,
+        offset,
+        volume: entry.volume
+      })
+    }
+    return audible
+  }
+
+  /** (Re)starts the scrub session for `frame`: clips run at `rate` from the
+   * exact per-clip offsets, so the audible position is always frame-locked. */
+  private startScrubClips(
+    context: AudioContext,
+    document: AnimatorDocument,
+    frame: number,
+    fps: number,
+    now: number,
+    rate: number,
+    audible = this.audibleScrubEntries(document, frame, fps)
+  ): void {
+    this.endScrub()
+    const clips: ScrubClip[] = []
+    for (const entry of audible) {
+      const { source, gain } = this.createClip(context, entry.buffer, entry.volume * SCRUB_GAIN)
+      source.playbackRate.value = rate
+      source.start(now, entry.offset)
+      clips.push({ source, gain, key: entry.key })
+    }
+    this.scrubSession = {
+      document,
+      fps,
+      frame,
+      at: now,
+      rate,
+      clips,
+      keys: clips.map((clip) => clip.key).join('\n')
+    }
+    this.armScrubIdle()
+  }
+
+  private armScrubIdle(): void {
+    this.clearScrubIdle()
+    this.scrubIdleTimer = setTimeout(() => {
+      this.scrubIdleTimer = null
+      this.endScrub()
+    }, this.scrubIdleSeconds * 1000)
+  }
+
+  private clearScrubIdle(): void {
+    if (this.scrubIdleTimer === null) return
+    clearTimeout(this.scrubIdleTimer)
+    this.scrubIdleTimer = null
   }
 
   private ensureDecoded(resourceId: string): void {
@@ -261,6 +393,18 @@ export class AudioSystem implements AudioPlaybackBridge {
         this.decoded.set(resourceId, { buffer: audioBuffer, peaks: new Map() })
         // A clip that was skipped at playback start joins the running mix.
         if (this.session) this.scheduleSession()
+        // A scrub session re-anchors so the freshly decoded clip joins it.
+        else if (this.scrubSession) {
+          const session = this.scrubSession
+          this.startScrubClips(
+            context,
+            session.document,
+            session.frame,
+            session.fps,
+            context.currentTime,
+            session.rate
+          )
+        }
         for (const listener of this.decodedListeners) listener()
       })
       .catch(() => {

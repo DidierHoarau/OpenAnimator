@@ -66,7 +66,7 @@ import type { Rect } from '@shared/hitTesting'
 import { groupNaturalSize, groupNodes, ungroupNode } from '@shared/groups'
 import type { Vec2 } from '@shared/geometry'
 import { cloneNode, isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
-import type { AnimatorDocument, Asset, AudioLayer, CameraLayer, CameraPose, DrawingLayer, EmbeddedFont, GroupNode, ImageNode, KeyframeTween, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
+import type { AnimatorDocument, Asset, AudioLayer, CameraLayer, CameraPose, DrawingLayer, EmbeddedFont, GroupNode, ImageNode, KeyframeTween, Layer, ObjectLayer, SceneNode, SymbolNode, TweenChannel } from '@shared/model'
 import type { AppPreferences } from '@shared/preferences'
 import { createStarterDocument } from '@shared/starterDocument'
 import { validateAssetGraph } from '@shared/symbols'
@@ -531,8 +531,8 @@ export class Editor {
     this.currentFrame = clamped
     this.frameChanged()
     // Seeks are the audio latency baseline: during playback the mix re-aligns
-    // to the new position; while paused a short blip previews the clip content
-    // under the playhead (opt-in session flag).
+    // to the new position; while paused a frame-locked scrub session previews
+    // the clip content under the playhead (opt-in session flag).
     if (this.playing) this.audio.sync(this.document, this.currentFrame, this.document.fps)
     else if (this.scrubAudio) this.audio.scrub(this.document, this.currentFrame, this.document.fps)
   }
@@ -669,10 +669,11 @@ export class Editor {
     this.uiChanged()
   }
 
-  /** Enables/disables the paused scrub audio blip (session state). */
+  /** Enables/disables the paused scrub audio preview (session state). */
   setScrubAudio(enabled: boolean): void {
     if (this.scrubAudio === enabled) return
     this.scrubAudio = enabled
+    if (!enabled) this.audio.endScrub()
     this.uiChanged()
   }
 
@@ -2034,8 +2035,8 @@ export class Editor {
 
   /**
    * Replaces the tween easing of the keyframe at the playhead, preserving its
-   * motion-path mode. Accepts a named easing or a custom cubic bezier; one
-   * undo step, no-op when unchanged.
+   * motion-path mode and per-channel overrides. Accepts a named easing or a
+   * custom cubic bezier; one undo step, no-op when unchanged.
    */
   setTweenEasingHere(easing: Easing): void {
     const layer = this.currentLayer
@@ -2044,9 +2045,37 @@ export class Editor {
     if (!keyframe?.tween) return
     if (easingsEqual(keyframe.tween.easing, easing)) return
     this.pushHistory('Set easing')
-    const next: KeyframeTween = keyframe.tween.path
-      ? { easing, path: keyframe.tween.path }
-      : { easing }
+    const next: KeyframeTween = { easing }
+    if (keyframe.tween.path) next.path = keyframe.tween.path
+    if (keyframe.tween.easings) next.easings = keyframe.tween.easings
+    setKeyframeTween(layer, this.currentFrame, next)
+    this.docChanged()
+  }
+
+  /**
+   * Sets (or clears, with `null`) one per-channel easing override of the
+   * tween at the playhead: an absent channel follows the base easing. One
+   * undo step; no-op when unchanged.
+   */
+  setTweenChannelEasingHere(channel: TweenChannel, easing: Easing | null): void {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer) || layer.locked) return
+    const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
+    const tween = keyframe?.tween
+    if (!keyframe || !tween) return
+    const current = tween.easings?.[channel]
+    if (easing === null) {
+      if (current === undefined) return
+    } else if (current !== undefined && easingsEqual(current, easing)) {
+      return
+    }
+    this.pushHistory('Set channel easing')
+    const easings: Partial<Record<TweenChannel, Easing>> = { ...tween.easings }
+    if (easing === null) delete easings[channel]
+    else easings[channel] = easing
+    const next: KeyframeTween = { ...tween }
+    if (Object.keys(easings).length > 0) next.easings = easings
+    else delete next.easings
     setKeyframeTween(layer, this.currentFrame, next)
     this.docChanged()
   }
@@ -2065,6 +2094,7 @@ export class Editor {
     if ((keyframe.tween.path ?? 'linear') === path) return
     this.pushHistory('Set motion path')
     const next: KeyframeTween = { easing: keyframe.tween.easing }
+    if (keyframe.tween.easings) next.easings = keyframe.tween.easings
     if (path === 'smooth') next.path = 'smooth'
     setKeyframeTween(layer, this.currentFrame, next)
     this.docChanged()

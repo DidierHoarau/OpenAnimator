@@ -10,6 +10,7 @@ import type {
   DrawingLayer,
   ImageNode,
   ObjectLayer,
+  PathAnchor,
   PathNode,
   SceneNode
 } from './model'
@@ -581,9 +582,12 @@ function shapeValueOf(subpath: { anchors: Array<{ x: number; y: number; in?: { x
 
 /**
  * One `sh` item per subpath of a path node: static when the path data never
- * changes, hold-keyed (snap, never morphing) when it does. Path data that
- * cannot be encoded or changes its subpath count across keyframes falls back
- * to the first pose plus a diagnostic.
+ * changes, keyed when it does. A segment whose endpoint poses are
+ * morph-compatible (same per-subpath anchor count and closed flag — the
+ * `morphPathData` rule) interpolates with `s`/`e` anchor triplets and the
+ * segment's easing bezier; every other segment keeps a hold key (`h: 1`).
+ * Path data that cannot be encoded or changes its subpath count across
+ * keyframes falls back to the first pose plus a diagnostic.
  */
 function pathGeometryItems(d: string, name: string): LottieObject[] {
   const subpaths = pathDataToSubpathAnchors(d)
@@ -596,14 +600,46 @@ function pathGeometryItems(d: string, name: string): LottieObject[] {
   }))
 }
 
+interface AnimatedPathKey {
+  t: number
+  d: string
+  easing: CubicBezierEasing | null
+}
+
+type ParsedSubpath = { anchors: PathAnchor[]; closed: boolean }
+
+/** Morph compatibility of two parsed poses (counts and closed flags only —
+ * a property of the anchor structure, not of the coordinates). */
+function posesMorphCompatible(a: ParsedSubpath[], b: ParsedSubpath[]): boolean {
+  for (let index = 0; index < a.length; index++) {
+    if (a[index].anchors.length !== b[index].anchors.length) return false
+    if (a[index].closed !== b[index].closed) return false
+  }
+  return true
+}
+
 function pathGeometryItemsAnimated(
   name: string,
-  channel: Array<{ t: number; d: string }>
+  channel: AnimatedPathKey[],
+  ctx: Ctx
 ): LottieObject[] | null {
   const parsed = channel.map((key) => pathDataToSubpathAnchors(key.d))
   if (parsed.some((entry) => entry === null)) return null
   const subpathCount = parsed[0]!.length
   if (parsed.some((entry) => entry!.length !== subpathCount)) return null
+  let heldTween = false
+  const interpolating = channel.map((key, keyIndex) => {
+    const next = keyIndex < channel.length - 1 ? parsed[keyIndex + 1]! : null
+    const morphs = key.easing !== null && next !== null && posesMorphCompatible(parsed[keyIndex]!, next)
+    if (morphs !== (key.easing !== null)) heldTween = true
+    return morphs
+  })
+  if (heldTween) {
+    report(
+      ctx,
+      `The path data of "${name}" cannot morph between keyframes (the anchor structure differs); the Lottie file holds the outline over those segments.`
+    )
+  }
   const items: LottieObject[] = []
   for (let index = 0; index < subpathCount; index++) {
     items.push({
@@ -611,13 +647,22 @@ function pathGeometryItemsAnimated(
       d: 1,
       ks: {
         a: 1,
-        k: channel.map((key, keyIndex) => ({
-          t: key.t,
-          s: shapeValueOf(parsed[keyIndex]![index]),
-          h: 1,
-          o: { x: 0, y: 0 },
-          i: { x: 1, y: 1 }
-        }))
+        k: channel.map((key, keyIndex) => {
+          const shape = shapeValueOf(parsed[keyIndex]![index])
+          // Keyed shape values are array-wrapped (bodymovin convention):
+          // lottie-web reads `s[0]`/`e[0]` for path keyframes.
+          if (!interpolating[keyIndex]) {
+            return { t: key.t, s: [shape], h: 1, o: { x: 0, y: 0 }, i: { x: 1, y: 1 } }
+          }
+          const easing = key.easing!
+          return {
+            t: key.t,
+            s: [shape],
+            e: [shapeValueOf(parsed[keyIndex + 1]![index])],
+            o: { x: round4(easing.x1), y: round4(easing.y1) },
+            i: { x: round4(easing.x2), y: round4(easing.y2) }
+          }
+        })
       },
       nm: subpathCount > 1 ? `${name} ${index + 1}` : name
     })
@@ -773,17 +818,26 @@ function pathContentItems(args: NodeBuildArgs): LottieObject[] {
 function pathGeometryFor(args: NodeBuildArgs): LottieObject[] {
   const pose = args.firstPose
   if (pose.type !== 'path') return []
-  const dChannel: Array<{ t: number; d: string }> = []
+  const dChannel: AnimatedPathKey[] = []
   let staticData = true
   for (const key of args.spec.keys) {
     const current = args.poseAt(key.docFrame)
     if (!current || current.type !== 'path') continue
-    dChannel.push({ t: key.t, d: current.d })
+    dChannel.push({ t: key.t, d: current.d, easing: key.easing })
     if (current.d !== pose.d) staticData = false
+  }
+  // The successor target of a segment the export range cuts short (same
+  // interpolation target numeric channels sample).
+  if (args.spec.successor) {
+    const successorPose = args.poseAt(args.spec.successor.docFrame)
+    if (successorPose && successorPose.type === 'path') {
+      dChannel.push({ t: args.spec.successor.t, d: successorPose.d, easing: null })
+      if (successorPose.d !== pose.d) staticData = false
+    }
   }
   if (dChannel.length === 0) return []
   if (staticData) return pathGeometryItems(pose.d, args.name)
-  const animated = pathGeometryItemsAnimated(args.name, dChannel)
+  const animated = pathGeometryItemsAnimated(args.name, dChannel, args.ctx)
   if (animated) return animated
   report(
     args.ctx,

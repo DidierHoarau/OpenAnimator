@@ -74,6 +74,9 @@ function fieldConstraints(spec: FieldSpec): string[] {
   if (spec.nullable) notes.push('may be `null`')
   if (spec.bezier) notes.push('string or cubic-bezier object `{x1,y1,x2,y2}`')
   if (spec.paint) notes.push('color, gradient object or `none`')
+  if (spec.tweenEasings) {
+    notes.push('per-channel overrides `{transform,opacity,fill}`: named easing, cubic-bezier object or `null` to clear')
+  }
   if (spec.hexColors) notes.push('`#rgb`/`#rrggbb` strings')
   if (spec.stringItems) notes.push('strings')
   if (spec.type === 'array') {

@@ -507,6 +507,59 @@ describe('executeScriptCommands', () => {
     expect(layer.keyframes[0].tween).toBeUndefined()
   })
 
+  it('setTween applies per-channel easings and clears channels with null', async () => {
+    const editor = createEditor()
+    const setup = validated({
+      commands: [
+        { op: 'addLayer', name: 'Ball' },
+        {
+          op: 'addNode',
+          frame: 0,
+          node: rectNode('ball', { x: 100, y: 100 })
+        },
+        {
+          op: 'setTween',
+          frame: 0,
+          easing: 'linear',
+          easings: { opacity: 'ease-in', fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } }
+        },
+        { op: 'updateNode', nodeId: 'ball', frame: 10, patch: { center: { x: 300, y: 100 } } }
+      ]
+    })
+    const result = await executeScriptCommands(editor, setup)
+    expect(result.issues).toEqual([])
+    expect(result.applied).toBe(4)
+    const tween = () => ballLayer(editor).keyframes[0].tween
+    expect(tween()).toEqual({
+      easing: 'linear',
+      easings: { opacity: 'ease-in', fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } }
+    })
+
+    // `null` clears one channel; the untouched override survives.
+    const cleared = await executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setTween', frame: 0, easing: 'linear', easings: { opacity: null } }] })
+    )
+    expect(cleared.issues).toEqual([])
+    expect(cleared.applied).toBe(1)
+    expect(tween()).toEqual({ easing: 'linear', easings: { fill: { x1: 0.1, y1: 0, x2: 0.9, y2: 1 } } })
+
+    // Camera keyframes ignore the field with a warning.
+    const camera = await executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'setCameraKeyframe', frame: 0 },
+          { op: 'setTween', frame: 0, easings: { transform: 'ease-out' } }
+        ]
+      })
+    )
+    expect(camera.applied).toBe(2)
+    expect(camera.issues).toHaveLength(1)
+    expect(camera.issues[0]).toMatchObject({ index: 1, severity: 'warning' })
+    expect(camera.issues[0].message).toContain('object keyframes only')
+  })
+
   it('adds audio layers from session resources and applies setAudio edits', async () => {
     const editor = createEditor()
     editor.resources.put(AUDIO_RESOURCE, AUDIO_BYTES)

@@ -9,13 +9,14 @@ import noto400Url from '@expo-google-fonts/noto-sans/400Regular/NotoSans_400Regu
 import noto700Url from '@expo-google-fonts/noto-sans/700Bold/NotoSans_700Bold.ttf?url'
 
 /**
- * Converts a selected text node into vector outlines. The node's own family
- * is used when it can be loaded — a system font through the main process, or
- * the bundled Noto Sans for the fallback family — and the glyph outline math
+ * Converts a selected text node into vector outlines. The node's own face is
+ * used when it can be loaded — a system font through the main process, or the
+ * bundled Noto Sans for the fallback family — and the glyph outline math
  * (baselines, anchors, letter spacing, multi-subpath merge) lives in the
  * shared `textOutline` module so the exporters build identical outlines.
- * Fonts that cannot be loaded fall back to the bundled Noto Sans so the
- * conversion always yields deterministic outlines.
+ * Upright fonts that cannot be loaded fall back to the bundled Noto Sans so
+ * the conversion always yields deterministic outlines; italic nodes need an
+ * installed italic face (the bundle ships upright faces only).
  */
 
 const FONT_URLS: Record<number, string> = { 400: noto400Url, 700: noto700Url }
@@ -60,9 +61,9 @@ async function parseFontBytes(bytes: Uint8Array): Promise<Font | null> {
   }
 }
 
-async function readSystemFontBytes(family: string, weight: number): Promise<Uint8Array | null> {
+async function readSystemFontBytes(family: string, weight: number, italic: boolean): Promise<Uint8Array | null> {
   try {
-    const result = await window.api.readSystemFont(family, weight)
+    const result = await window.api.readSystemFont(family, weight, italic)
     return result.ok ? new Uint8Array(result.bytes) : null
   } catch (error: unknown) {
     console.warn('OpenAnimator: failed to read the system font', error)
@@ -72,18 +73,24 @@ async function readSystemFontBytes(family: string, weight: number): Promise<Uint
 
 function loadFontFor(node: TextNode): Promise<LoadedFont | null> {
   const family = node.fontFamily.trim()
-  const key = `${family.toLowerCase()}|${node.fontWeight}`
+  const italic = node.fontStyle === 'italic'
+  const key = `${family.toLowerCase()}|${node.fontWeight}|${italic}`
   const cached = parsedFontCache.get(key)
   if (cached) return cached
   const promise = (async (): Promise<LoadedFont | null> => {
-    if (family && !isBundledFamily(family)) {
-      const bytes = await readSystemFontBytes(family, node.fontWeight)
+    if (family !== '' && (italic || !isBundledFamily(family))) {
+      const bytes = await readSystemFontBytes(family, node.fontWeight, italic)
       const font = bytes ? await parseFontBytes(bytes) : null
       if (font) return { font, bundled: false }
     }
-    const bytes = await loadBundledFontBytes(node.fontWeight)
-    const font = bytes ? await parseFontBytes(bytes) : null
-    return font ? { font, bundled: true } : null
+    // The bundle ships upright faces only, so italic falls through to a
+    // system face or fails — upright outlines would misrepresent the style.
+    if (!italic) {
+      const bytes = await loadBundledFontBytes(node.fontWeight)
+      const font = bytes ? await parseFontBytes(bytes) : null
+      return font ? { font, bundled: true } : null
+    }
+    return null
   })()
   parsedFontCache.set(key, promise)
   return promise

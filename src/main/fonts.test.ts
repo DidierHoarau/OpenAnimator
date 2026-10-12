@@ -18,12 +18,14 @@ const FC_OUTPUT = [
 ].join('\n')
 
 describe('parseFcList', () => {
-  it('parses upright faces and maps fontconfig weights to CSS weights', () => {
+  it('parses faces with their style and maps fontconfig weights to CSS weights', () => {
     expect(parseFcList(FC_OUTPUT)).toEqual([
-      { family: 'DejaVu Sans', weight: 400, file: '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf' },
-      { family: 'DejaVu Sans', weight: 700, file: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' },
-      { family: 'Noto Sans', weight: 400, file: '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf' },
-      { family: 'Noto Sans', weight: 700, file: '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf' }
+      { family: 'DejaVu Sans', weight: 400, italic: false, file: '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf' },
+      { family: 'DejaVu Sans', weight: 700, italic: false, file: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf' },
+      { family: 'DejaVu Sans', weight: 400, italic: true, file: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf' },
+      { family: 'Noto Sans', weight: 400, italic: false, file: '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf' },
+      { family: 'Noto Sans', weight: 400, italic: true, file: '/usr/share/fonts/truetype/noto/NotoSans-Italic.ttf' },
+      { family: 'Noto Sans', weight: 700, italic: false, file: '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf' }
     ])
   })
 
@@ -45,7 +47,7 @@ describe('parseFcList', () => {
       'TooShort|Regular',
       'Ok|Black|210|/fonts/ok.ttf'
     ].join('\n')
-    expect(parseFcList(output)).toEqual([{ family: 'Ok', weight: 900, file: '/fonts/ok.ttf' }])
+    expect(parseFcList(output)).toEqual([{ family: 'Ok', weight: 900, italic: false, file: '/fonts/ok.ttf' }])
   })
 })
 
@@ -61,10 +63,11 @@ describe('pickNearestWeight', () => {
 
 describe('SystemFontIndex', () => {
   const faces: FcFontFace[] = [
-    { family: 'DejaVu Sans', weight: 400, file: '/fonts/DejaVuSans.ttf' },
-    { family: 'DejaVu Sans', weight: 700, file: '/fonts/DejaVuSans-Bold.ttf' },
-    { family: 'DejaVu Sans', weight: 400, file: '/fonts/DejaVuSans-dup.ttf' },
-    { family: 'Noto Sans', weight: 400, file: '/fonts/NotoSans.ttf' }
+    { family: 'DejaVu Sans', weight: 400, italic: false, file: '/fonts/DejaVuSans.ttf' },
+    { family: 'DejaVu Sans', weight: 700, italic: false, file: '/fonts/DejaVuSans-Bold.ttf' },
+    { family: 'DejaVu Sans', weight: 400, italic: false, file: '/fonts/DejaVuSans-dup.ttf' },
+    { family: 'DejaVu Sans', weight: 400, italic: true, file: '/fonts/DejaVuSans-Oblique.ttf' },
+    { family: 'Noto Sans', weight: 400, italic: false, file: '/fonts/NotoSans.ttf' }
   ]
 
   it('lists families with sorted deduplicated weights, loading lazily once', async () => {
@@ -88,6 +91,15 @@ describe('SystemFontIndex', () => {
     expect(readBytes).toHaveBeenCalledWith('/fonts/DejaVuSans-Bold.ttf')
     await expect(index.read('DejaVu Sans', 550)).resolves.toBeInstanceOf(Uint8Array)
     expect(readBytes).toHaveBeenLastCalledWith('/fonts/DejaVuSans.ttf')
+  })
+
+  it('reads the italic face only when asked for one', async () => {
+    const readBytes = vi.fn(async (filePath: string) => new Uint8Array([filePath.length]))
+    const index = new SystemFontIndex({ loadFaces: async () => faces, readBytes })
+    await expect(index.read('DejaVu Sans', 400, true)).resolves.toBeInstanceOf(Uint8Array)
+    expect(readBytes).toHaveBeenLastCalledWith('/fonts/DejaVuSans-Oblique.ttf')
+    // No italic face installed → no silent upright fallback.
+    await expect(index.read('Noto Sans', 400, true)).resolves.toBeNull()
   })
 
   it('returns null for unknown families without touching the file system', async () => {
