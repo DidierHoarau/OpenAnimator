@@ -6,18 +6,17 @@ import {
   evaluateCameraAtFrame,
   findCameraKeyframeAtFrame,
   findKeyframeAtFrame,
-  findKeyframeIndexForFrame,
-  findNearestNodeKeyframeIndex,
   findNextCellFrame,
   findPreviousCellFrame,
   normalizePaletteColors
 } from '@shared/document'
+import { parseGpl, serializeGpl } from '@shared/gpl'
 import type { CellRange } from '@shared/document'
-import { isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
-import type { ImageNode, SceneNode } from '@shared/model'
+import { MAX_STROKE_DASH_VALUES, isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
+import type { ImageNode, SceneNode, StrokeLinecap, StrokeLinejoin, StrokeStyle } from '@shared/model'
 import { isGradientPaint, paintPrimaryColor } from '@shared/paint'
 import type { Paint } from '@shared/paint'
-import { pathDataToAnchors } from '@shared/pathModel'
+import { applyAnchorEdit, parseSubpaths, setSubpathClosed } from '@shared/pathEdit'
 import { applyTextMetrics, TEXT_LINE_HEIGHT } from '@shared/textModel'
 import type { SystemFont } from '@shared/api'
 
@@ -84,6 +83,147 @@ class PanelSection {
   }
 }
 
+/** Parses a dash pattern typed as whitespace/comma-separated numbers; null
+ * when malformed, out of range (1–16 values) or all zeros. */
+function parseDashArrayInput(value: string): number[] | null {
+  const tokens = value.split(/[\s,]+/).filter((entry) => entry.length > 0)
+  if (tokens.length === 0 || tokens.length > MAX_STROKE_DASH_VALUES) return null
+  const values = tokens.map(Number)
+  if (values.some((entry) => !Number.isFinite(entry) || entry < 0)) return null
+  if (!values.some((entry) => entry > 0)) return null
+  return values
+}
+
+/**
+ * Stroke-style editor (caps/joins row + dash row) bound to one node slot via
+ * `onChange`. Clearing a control removes the field, so documents that never
+ * touched the controls keep byte-identical markup. All controls are inert
+ * (disabled) while the node's outline is off.
+ */
+class StrokeStyleControls {
+  private readonly linecap: HTMLSelectElement
+  private readonly linejoin: HTMLSelectElement
+  private readonly dashArray: HTMLInputElement
+  private readonly dashOffset: HTMLInputElement
+  private readonly onChange: (mutate: (style: StrokeStyle) => void) => void
+  private readonly rerender: () => void
+
+  constructor(options: {
+    row: (label: string) => HTMLDivElement
+    onChange: (mutate: (style: StrokeStyle) => void) => void
+    rerender: () => void
+  }) {
+    this.onChange = options.onChange
+    this.rerender = options.rerender
+
+    const styleRow = options.row('Style')
+    this.linecap = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['', 'Cap: default'],
+      ['round', 'Round cap'],
+      ['square', 'Square cap']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.linecap.appendChild(option)
+    }
+    this.linecap.title =
+      'Shape of dash segment ends (holds across tweened frames; default is butt)'
+    this.linecap.addEventListener('change', () => {
+      const value = this.linecap.value
+      this.onChange((style) => {
+        if (value === '') delete style.strokeLinecap
+        else style.strokeLinecap = value as StrokeLinecap
+      })
+    })
+    this.linejoin = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['', 'Join: default'],
+      ['round', 'Round join'],
+      ['bevel', 'Bevel join']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.linejoin.appendChild(option)
+    }
+    this.linejoin.title =
+      'Shape of stroke corners (holds across tweened frames; default is miter)'
+    this.linejoin.addEventListener('change', () => {
+      const value = this.linejoin.value
+      this.onChange((style) => {
+        if (value === '') delete style.strokeLinejoin
+        else style.strokeLinejoin = value as StrokeLinejoin
+      })
+    })
+    styleRow.append(this.linecap, this.linejoin)
+
+    const dashRow = options.row('Dash')
+    this.dashArray = el('input') as HTMLInputElement
+    this.dashArray.type = 'text'
+    this.dashArray.placeholder = '6 4'
+    this.dashArray.title =
+      'Dash pattern in stage pixels — up to 16 numbers, e.g. "6 4" (holds across tweened frames); empty keeps a solid stroke'
+    this.dashArray.addEventListener('change', () => {
+      const raw = this.dashArray.value.trim()
+      if (raw.length === 0) {
+        this.onChange((style) => delete style.strokeDasharray)
+        return
+      }
+      const values = parseDashArrayInput(raw)
+      if (!values) {
+        this.rerender()
+        return
+      }
+      this.onChange((style) => {
+        style.strokeDasharray = values
+      })
+    })
+    this.dashOffset = el('input') as HTMLInputElement
+    this.dashOffset.type = 'number'
+    this.dashOffset.step = '1'
+    this.dashOffset.title =
+      'Dash phase offset in stage pixels (interpolates across tweened frames; empty = 0)'
+    this.dashOffset.addEventListener('change', () => {
+      const raw = this.dashOffset.value.trim()
+      if (raw.length === 0) {
+        this.onChange((style) => delete style.strokeDashoffset)
+        return
+      }
+      const value = Number(raw)
+      if (!Number.isFinite(value)) {
+        this.rerender()
+        return
+      }
+      this.onChange((style) => {
+        style.strokeDashoffset = value
+      })
+    })
+    dashRow.append(this.dashArray, this.dashOffset)
+  }
+
+  /** Syncs the controls with one node's stroke style; focused controls keep
+   * the user's in-progress value. */
+  sync(
+    node: StrokeStyle,
+    state: { editable: boolean; outlined: boolean; keepFocused: (input: HTMLElement) => boolean }
+  ): void {
+    const disabled = !state.editable || !state.outlined
+    this.linecap.disabled = disabled
+    this.linejoin.disabled = disabled
+    this.dashArray.disabled = disabled
+    this.dashOffset.disabled = disabled
+    if (!state.keepFocused(this.linecap)) this.linecap.value = node.strokeLinecap ?? ''
+    if (!state.keepFocused(this.linejoin)) this.linejoin.value = node.strokeLinejoin ?? ''
+    if (!state.keepFocused(this.dashArray)) {
+      this.dashArray.value = node.strokeDasharray !== undefined ? node.strokeDasharray.join(' ') : ''
+    }
+    if (!state.keepFocused(this.dashOffset)) {
+      this.dashOffset.value =
+        node.strokeDashoffset !== undefined ? String(node.strokeDashoffset) : ''
+    }
+  }
+}
+
 /**
  * Right panel with collapsible sections: "Layer" operations on the selected
  * object (keyframe add/remove and tweening at the current frame), and the
@@ -142,6 +282,7 @@ export class PropertiesView {
   private readonly strokeToggle: HTMLInputElement
   private readonly strokeColor: HTMLInputElement
   private readonly strokeWidth: HTMLInputElement
+  private readonly strokeStyle: StrokeStyleControls
   private readonly ungroupButton: HTMLButtonElement
   private readonly imageFileLabel: HTMLElement
   private readonly nativeSizeButton: HTMLButtonElement
@@ -165,9 +306,11 @@ export class PropertiesView {
   private readonly pathStrokeToggle: HTMLInputElement
   private readonly pathStrokeColor: HTMLInputElement
   private readonly pathStrokeWidth: HTMLInputElement
+  private readonly pathStrokeStyle: StrokeStyleControls
   private readonly pathFillToggle: HTMLInputElement
   private readonly pathFillColor: HTMLInputElement
   private readonly pathInfoLabel: HTMLElement
+  private readonly pathSubpathButton: HTMLButtonElement
   private readonly textContent: HTMLTextAreaElement
   private readonly textFont: HTMLInputElement
   private readonly fontDatalist: HTMLDataListElement
@@ -183,6 +326,7 @@ export class PropertiesView {
   private readonly textStrokeToggle: HTMLInputElement
   private readonly textStrokeColor: HTMLInputElement
   private readonly textStrokeWidth: HTMLInputElement
+  private readonly textStrokeStyle: StrokeStyleControls
   private readonly outlinesButton: HTMLButtonElement
   private readonly imageImportDeps: ImageImportDeps
   private readonly listSystemFonts: () => Promise<SystemFont[]>
@@ -202,6 +346,7 @@ export class PropertiesView {
   private readonly brushSwatches: SwatchStrip
   private readonly paletteDocStrip: SwatchStrip
   private readonly paletteGlobalStrip: SwatchStrip
+  private readonly paletteRecentStrip: SwatchStrip
   private readonly addDocSwatchButton: HTMLButtonElement
   private readonly addGlobalSwatchButton: HTMLButtonElement
   private globalPalette: string[] = []
@@ -371,6 +516,15 @@ export class PropertiesView {
       })
     })
     outlineRow.append(this.strokeToggle, this.strokeColor, this.strokeWidth)
+    this.strokeStyle = new StrokeStyleControls({
+      row: (label) => this.row(fillRows, label),
+      onChange: (mutate) => {
+        editor.updateSelectedNode((current) => {
+          if (current.type === 'primitive') mutate(current)
+        })
+      },
+      rerender: () => this.render()
+    })
     this.strokeGradient = this.createPaintEditor((node, paint) => {
       if (node.type === 'primitive') node.stroke = paint
     })
@@ -428,6 +582,15 @@ export class PropertiesView {
       })
     })
     pathStrokeRow.append(this.pathStrokeToggle, this.pathStrokeColor, this.pathStrokeWidth)
+    this.pathStrokeStyle = new StrokeStyleControls({
+      row: (label) => this.row(pathStrokeRows, label),
+      onChange: (mutate) => {
+        editor.updateSelectedNode((current) => {
+          if (current.type === 'path') mutate(current)
+        })
+      },
+      rerender: () => this.render()
+    })
     this.pathStrokeGradient = this.createPaintEditor((node, paint) => {
       if (node.type === 'path') node.stroke = paint
     })
@@ -471,8 +634,28 @@ export class PropertiesView {
 
     const pathInfoRow = this.row(path.content, 'Geometry')
     this.pathInfoLabel = el('span', 'panel-file-name')
-    this.pathInfoLabel.title = 'Anchor count of the path (compound paths cannot be anchor-edited)'
+    this.pathInfoLabel.title = 'Anchor and subpath count of the path'
     pathInfoRow.appendChild(this.pathInfoLabel)
+    pathInfoRow.appendChild(el('span', 'panel-suffix', 'Edit anchors: A'))
+    this.pathSubpathButton = this.button(
+      'Close subpath',
+      'Close the path into a loop, or open it again (single subpaths only)',
+      () => {
+        editor.updateSelectedNode((current) => {
+          if (current.type !== 'path') return
+          const subpaths = parseSubpaths(current.d)
+          if (!subpaths || subpaths.length !== 1) return
+          if (!setSubpathClosed(subpaths, 0, !subpaths[0].closed)) return
+          const updated = applyAnchorEdit(current, subpaths)
+          current.d = updated.d
+          current.center = updated.center
+          current.width = updated.width
+          current.height = updated.height
+        })
+        this.render()
+      }
+    )
+    pathInfoRow.appendChild(this.pathSubpathButton)
     path.content.append(this.transformRows, pathStrokeRows)
 
     // Text properties, visible only while a text node is selected.
@@ -735,6 +918,15 @@ export class PropertiesView {
       })
     })
     textOutlineRow.append(this.textStrokeToggle, this.textStrokeColor, this.textStrokeWidth)
+    this.textStrokeStyle = new StrokeStyleControls({
+      row: (label) => this.row(fontRows, label),
+      onChange: (mutate) => {
+        editor.updateSelectedNode((current) => {
+          if (current.type === 'text') mutate(current)
+        })
+      },
+      rerender: () => this.render()
+    })
     this.textStrokeGradient = this.createPaintEditor((node, paint) => {
       if (node.type === 'text') node.stroke = paint
     })
@@ -1093,9 +1285,10 @@ export class PropertiesView {
     })
     cellMoveRow.appendChild(this.cellMoveInput)
 
-    // Palette section: the document swatches (stored in the project file) and
-    // the global swatches (stored on this machine); right-click removes a
-    // swatch, a click applies it to the selection (or the brush).
+    // Palette section: the document swatches (stored in the project file),
+    // the global swatches (stored on this machine) and the session's recent
+    // colors; right-click removes a swatch, a click applies it to the
+    // selection (or the brush).
     const palette = this.createSection('palette', 'Palette')
     const docPaletteRow = this.row(palette.content, 'Document')
     this.paletteDocStrip = new SwatchStrip({
@@ -1111,6 +1304,12 @@ export class PropertiesView {
       onRemove: (color) => this.removeGlobalColor(color)
     })
     globalPaletteRow.appendChild(this.paletteGlobalStrip.root)
+    const recentPaletteRow = this.row(palette.content, 'Recent')
+    this.paletteRecentStrip = new SwatchStrip({
+      title: 'Recent colors',
+      onPick: (color) => this.applyPaletteColor(color)
+    })
+    recentPaletteRow.appendChild(this.paletteRecentStrip.root)
     const paletteActions = el('div', 'panel-buttons')
     this.addDocSwatchButton = this.button(
       '+ Swatch',
@@ -1122,7 +1321,22 @@ export class PropertiesView {
       'Add the current color to the global palette (stored on this machine, shared by all projects)',
       () => this.addGlobalColor(this.currentPaletteColor())
     )
-    paletteActions.append(this.addDocSwatchButton, this.addGlobalSwatchButton)
+    const importPaletteButton = this.button(
+      'Import…',
+      'Import a GIMP palette (.gpl) file into the global palette',
+      () => void this.importGplPalette()
+    )
+    const exportPaletteButton = this.button(
+      'Export…',
+      'Export the global palette as a GIMP palette (.gpl) file',
+      () => void this.exportGplPalette()
+    )
+    paletteActions.append(
+      this.addDocSwatchButton,
+      this.addGlobalSwatchButton,
+      importPaletteButton,
+      exportPaletteButton
+    )
     palette.content.append(paletteActions)
 
     scroll.append(
@@ -1193,23 +1407,13 @@ export class PropertiesView {
   }
 
   /**
-   * Applies a palette color to the primary paint of the selection — the
-   * primitive fill, the path outline (falling back to its fill) or the text
-   * fill — and to the brush when nothing suitable is selected.
+   * Applies a palette color to the primary paint of the selection (the
+   * editor's shared routing: primitive fill, path outline else fill, text
+   * fill, else the brush) and records it as recently used.
    */
   private applyPaletteColor(color: string): void {
-    const node = this.selectedNodePose()
-    if (node?.type === 'primitive' || node?.type === 'path' || node?.type === 'text') {
-      this.editor.updateSelectedNode((current) => {
-        if (current.type === 'primitive') current.fill = color
-        else if (current.type === 'path') {
-          if (current.stroke !== undefined) current.stroke = color
-          else current.fill = color
-        } else if (current.type === 'text') current.fill = color
-      })
-      return
-    }
-    this.editor.setBrushColor(color)
+    this.editor.applyPrimaryColor(color)
+    this.editor.addRecentColor(color)
   }
 
   /** Representative color of the current selection's paint (else the brush). */
@@ -1275,6 +1479,57 @@ export class PropertiesView {
       // Persistence is best-effort; the session keeps the working copy.
     })
     this.render()
+  }
+
+  /** Imports a GIMP palette file into the global palette (merged, persisted
+   * once, capped like every palette). */
+  private async importGplPalette(): Promise<void> {
+    try {
+      const result = await window.api.importPaletteFile()
+      if (result.canceled) {
+        if (result.error) this.editor.showMessage(result.error, { severity: 'error' })
+        return
+      }
+      const colors = parseGpl(result.text)
+      if (!colors) {
+        this.editor.showMessage('Not a GIMP palette file')
+        return
+      }
+      const merged = normalizePaletteColors([...this.globalPalette, ...colors])
+      const added = merged.length - this.globalPalette.length
+      this.globalPalette = merged
+      this.persistGlobalPalette()
+      this.editor.showMessage(`Imported ${added} colors from ${result.fileName}`)
+    } catch (error) {
+      this.editor.showMessage('Could not import the palette', {
+        severity: 'error',
+        details: error instanceof Error ? error.message : String(error)
+      })
+    }
+  }
+
+  /** Exports the global palette as a GIMP palette file. */
+  private async exportGplPalette(): Promise<void> {
+    if (this.globalPalette.length === 0) {
+      this.editor.showMessage('The global palette is empty')
+      return
+    }
+    try {
+      const pick = await window.api.pickExportPath({
+        defaultName: 'palette.gpl',
+        filters: [{ name: 'GIMP palette', extensions: ['gpl'] }]
+      })
+      if (pick.canceled) return
+      const bytes = new TextEncoder().encode(serializeGpl(this.globalPalette))
+      const result = await window.api.writeExportFile(pick.path, bytes)
+      if (result.ok) this.editor.showMessage(`Exported ${this.globalPalette.length} colors`)
+      else this.editor.showMessage(result.error, { severity: 'error' })
+    } catch (error) {
+      this.editor.showMessage('Could not export the palette', {
+        severity: 'error',
+        details: error instanceof Error ? error.message : String(error)
+      })
+    }
   }
 
   private button(title: string, tooltip: string, onClick: () => void): HTMLButtonElement {
@@ -1604,6 +1859,7 @@ export class PropertiesView {
       this.strokeSwatches.setColors(this.combinedPalette())
       this.strokeSwatches.setActive(stroke !== undefined ? paintPrimaryColor(stroke) : null)
       this.strokeSwatches.setDisabled(!editable || !outlined || strokeIsGradient)
+      this.strokeStyle.sync(node, { editable, outlined, keepFocused })
     }
     if (node.type === 'path') {
       const outlined = node.stroke !== undefined
@@ -1634,10 +1890,21 @@ export class PropertiesView {
       this.pathFillSwatches.setColors(this.combinedPalette())
       this.pathFillSwatches.setActive(fill !== undefined ? paintPrimaryColor(fill) : null)
       this.pathFillSwatches.setDisabled(!editable || !filled || fillIsGradient)
-      const parsed = pathDataToAnchors(node.d)
-      this.pathInfoLabel.textContent = parsed
-        ? `${parsed.anchors.length} anchors${parsed.closed ? ' · closed' : ''}`
-        : 'compound path'
+      this.pathStrokeStyle.sync(node, { editable, outlined, keepFocused })
+      const subpaths = parseSubpaths(node.d)
+      if (subpaths) {
+        const anchorCount = subpaths.reduce((sum, subpath) => sum + subpath.anchors.length, 0)
+        const parts = [`${anchorCount} anchors`]
+        if (subpaths.length > 1) parts.push(`${subpaths.length} subpaths`)
+        else if (subpaths[0].closed) parts.push('closed')
+        this.pathInfoLabel.textContent = parts.join(' · ')
+      } else {
+        this.pathInfoLabel.textContent = 'compound path'
+      }
+      const single = subpaths && subpaths.length === 1 ? subpaths[0] : null
+      this.pathSubpathButton.textContent = single?.closed ? 'Open subpath' : 'Close subpath'
+      this.pathSubpathButton.disabled =
+        !editable || !single || (!single.closed && single.anchors.length <= 2)
     }
     if (node.type === 'text') {
       if (!keepFocused(this.textContent)) this.textContent.value = node.text
@@ -1680,6 +1947,7 @@ export class PropertiesView {
       this.textStrokeSwatches.setColors(this.combinedPalette())
       this.textStrokeSwatches.setActive(stroke !== undefined ? paintPrimaryColor(stroke) : null)
       this.textStrokeSwatches.setDisabled(!editable || !outlined || strokeIsGradient)
+      this.textStrokeStyle.sync(node, { editable, outlined, keepFocused })
       this.outlinesButton.disabled = !editable
     }
     this.lastNodeId = node.id
@@ -1739,13 +2007,15 @@ export class PropertiesView {
     for (const input of inputs) input.disabled = layer.locked
   }
 
-  /** Palette section: document and global swatch strips, always visible. */
+  /** Palette section: document, global and recent swatch strips. */
   private renderPaletteSection(): void {
     const current = this.currentPaletteColor()
     this.paletteDocStrip.setColors(this.editor.document.palette)
     this.paletteDocStrip.setActive(current)
     this.paletteGlobalStrip.setColors(this.globalPalette)
     this.paletteGlobalStrip.setActive(current)
+    this.paletteRecentStrip.setColors(this.editor.recentColors)
+    this.paletteRecentStrip.setActive(current)
   }
 
   /** Span of the cell covering the playhead of the active drawing layer. */
@@ -1766,18 +2036,6 @@ export class PropertiesView {
    * The first edit materialises the pose at the current frame via auto-key.
    */
   private selectedNodePose(): SceneNode | null {
-    const editor = this.editor
-    const nodeId = editor.primarySelectedNodeId
-    if (!nodeId) return null
-    const layer = editor.currentLayer
-    if (!layer || !isObjectLayer(layer)) return null
-    const activeIndex = findKeyframeIndexForFrame(layer, editor.currentFrame)
-    if (activeIndex !== -1) {
-      const node = layer.keyframes[activeIndex].nodes.find((node) => node.id === nodeId)
-      if (node) return node
-    }
-    const nearestIndex = findNearestNodeKeyframeIndex(layer, nodeId, editor.currentFrame)
-    if (nearestIndex === -1) return null
-    return layer.keyframes[nearestIndex].nodes.find((node) => node.id === nodeId) ?? null
+    return this.editor.selectedNodePose()
   }
 }

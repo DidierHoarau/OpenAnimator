@@ -21,6 +21,16 @@ const TOOL_GROUPS: ToolEntry[][] = [
       icon: '<path d="M4 4l7.07 17 2.51-7.39L21 11.07Z"/>'
     },
     {
+      tool: 'direct',
+      label: 'Direct selection',
+      title:
+        'Edit path anchors: drag anchors and handles, double-click an anchor for corner/smooth, double-click a segment to insert (A)',
+      icon:
+        '<path d="m5 3 5.6 13.4 1.8-5.2 5.2-1.8Z"/>' +
+        '<circle cx="17.6" cy="17.6" r="2.4"/>' +
+        '<path d="M11.4 11.4 15.2 15.2"/>'
+    },
+    {
       tool: 'hand',
       label: 'Hand',
       title: 'Pan the stage view (H, or hold Space and drag)',
@@ -29,6 +39,15 @@ const TOOL_GROUPS: ToolEntry[][] = [
         '<path d="M14 10V4a2 2 0 0 0-4 0v2"/>' +
         '<path d="M10 10.5V6a2 2 0 0 0-4 0v8"/>' +
         '<path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/>'
+    },
+    {
+      tool: 'eyedropper',
+      label: 'Eyedropper',
+      title: 'Pick a stage color into the selection or the brush (I, or Alt+click from any tool)',
+      icon:
+        '<path d="m2 22 1-1h3l9-9"/>' +
+        '<path d="M3 21v-3l9-9"/>' +
+        '<path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.7.7a2.1 2.1 0 1 1-3 3l-3.3-3.3a2.1 2.1 0 1 1 3-3l.6.6Z"/>'
     }
   ],
   [

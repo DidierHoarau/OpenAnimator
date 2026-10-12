@@ -1,6 +1,6 @@
 import { evaluateEasing, isEasing } from './easing'
 import type { AnimatorDocument, Asset, AudioLayer, CameraKeyframe, CameraLayer, CameraPose, DrawingCell, DrawingLayer, EmbeddedFont, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode } from './model'
-import { cloneNode, isAudioLayer, isCameraLayer, isObjectLayer } from './model'
+import { MAX_STROKE_DASH_VALUES, cloneNode, isAudioLayer, isCameraLayer, isObjectLayer } from './model'
 import { cubicBezierPoint, segmentControls } from './motionPath'
 import { isPaintValue } from './paint'
 import { formatHexColor, parseHexColor } from './color'
@@ -81,7 +81,7 @@ export function createDocument(name: string, width: number, height: number, fps:
   const layer = createLayer('Layer 1')
   layer.keyframes.push({ frame: 0, nodes: [] })
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     name,
     width,
     height,
@@ -1040,7 +1040,8 @@ export function isSceneNode(value: unknown): value is SceneNode {
         (node.primitive === 'rect' || node.primitive === 'ellipse') &&
         isPaintValue(node.fill) &&
         (node.stroke === undefined || isPaintValue(node.stroke)) &&
-        (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth))
+        (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth)) &&
+        isStrokeStyleFields(node)
       )
     case 'image':
       return (
@@ -1058,7 +1059,8 @@ export function isSceneNode(value: unknown): value is SceneNode {
         typeof node.d === 'string' &&
         (node.fill === undefined || isPaintValue(node.fill)) &&
         (node.stroke === undefined || isPaintValue(node.stroke)) &&
-        (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth))
+        (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth)) &&
+        isStrokeStyleFields(node)
       )
     case 'text':
       return (
@@ -1077,11 +1079,46 @@ export function isSceneNode(value: unknown): value is SceneNode {
           node.verticalAlign === 'top' ||
           node.verticalAlign === 'middle' ||
           node.verticalAlign === 'bottom') &&
-        (node.fontFallback === undefined || isFontFallback(node.fontFallback))
+        (node.fontFallback === undefined || isFontFallback(node.fontFallback)) &&
+        isStrokeStyleFields(node)
       )
     default:
       return false
   }
+}
+
+/**
+ * True when `value` is a valid stroke dash pattern: 1–`MAX_STROKE_DASH_VALUES`
+ * finite values ≥ 0, not all zero (an all-zero pattern paints nothing).
+ */
+export function isStrokeDasharray(value: unknown): value is number[] {
+  return (
+    Array.isArray(value) &&
+    value.length >= 1 &&
+    value.length <= MAX_STROKE_DASH_VALUES &&
+    value.every((entry) => isFiniteNumber(entry) && entry >= 0) &&
+    value.some((entry) => (entry as number) > 0)
+  )
+}
+
+/** Validates the optional stroke-style fields shared by stroked node kinds. */
+function isStrokeStyleFields(node: Record<string, unknown>): boolean {
+  const linecap = node.strokeLinecap
+  if (linecap !== undefined && linecap !== 'butt' && linecap !== 'round' && linecap !== 'square') {
+    return false
+  }
+  const linejoin = node.strokeLinejoin
+  if (
+    linejoin !== undefined &&
+    linejoin !== 'miter' &&
+    linejoin !== 'round' &&
+    linejoin !== 'bevel'
+  ) {
+    return false
+  }
+  if (node.strokeDasharray !== undefined && !isStrokeDasharray(node.strokeDasharray)) return false
+  if (node.strokeDashoffset !== undefined && !isFiniteNumber(node.strokeDashoffset)) return false
+  return true
 }
 
 function isTween(value: unknown): value is KeyframeTween {
@@ -1250,7 +1287,7 @@ export function normalizePaletteColors(colors: readonly string[]): string[] {
 }
 
 /** Deep structural validation for documents restored from persistence.
- * Requires `schemaVersion: 7` and fully typed content; older documents go
+ * Requires `schemaVersion: 8` and fully typed content; older documents go
  * through `migrateDocument` first. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
@@ -1265,7 +1302,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
       candidate.holdStep >= 1 &&
       candidate.holdStep <= 16)
   return (
-    candidate.schemaVersion === 7 &&
+    candidate.schemaVersion === 8 &&
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
     typeof candidate.height === 'number' &&

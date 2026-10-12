@@ -1,9 +1,12 @@
 import { expect, test } from '@playwright/test'
 import type { ElectronApplication, Locator, Page } from '@playwright/test'
+import { unzipSync, strFromU8 } from 'fflate'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { pathDataToSubpathAnchors } from '../src/shared/pathModel'
 
 import { closeApp, dismissStartup, launchApp } from './helpers'
 import type { DialogPatches } from './helpers'
@@ -53,6 +56,18 @@ async function boxOf(locator: Locator): Promise<{ x: number; y: number; width: n
 async function seekTrack(page: Page, track: Locator, frame: number): Promise<void> {
   const box = await boxOf(track)
   await page.mouse.click(box.x + frame * FRAME_WIDTH + FRAME_WIDTH / 2, box.y + box.height / 2)
+}
+
+/** Screen coordinates of a document point through the stage's own mapping. */
+async function screenPointOf(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
+  return page.evaluate((point) => {
+    const svg = document.querySelector('svg.stage') as SVGSVGElement | null
+    if (!svg) return point
+    const matrix = svg.getScreenCTM()
+    if (!matrix) return point
+    const mapped = new DOMPoint(point.x, point.y).matrixTransform(matrix)
+    return { x: mapped.x, y: mapped.y }
+  }, { x, y })
 }
 
 test('draws a rectangle, keys a held pose and tweens between the poses', async () => {
@@ -115,6 +130,121 @@ test('draws a rectangle, keys a held pose and tweens between the poses', async (
   await expect(tweenButton).toBeEnabled()
   await tweenButton.click()
   await expect(page.locator('.tl-tween')).toHaveCount(1)
+})
+
+test('draws a pen path and edits its anchors', async () => {
+  const dir = await tempDir()
+  const savePath = join(dir, 'anchors.oanim')
+  const page = await start({ savePath })
+  await dismissStartup(page)
+  await page.getByRole('button', { name: 'New', exact: true }).click()
+  await expect(page.locator('footer.statusbar')).toContainText('file: unsaved')
+
+  // Three pen clicks (no drags: corner anchors) plus Enter commit a
+  // two-segment open path; the properties panel reports its geometry.
+  await page.locator('.tool-button[data-tool="pen"]').click()
+  const stageBox = await boxOf(page.locator('svg.stage'))
+  const centerX = stageBox.x + stageBox.width / 2
+  const centerY = stageBox.y + stageBox.height / 2
+  await page.mouse.click(centerX - 120, centerY + 40)
+  await page.mouse.click(centerX - 20, centerY - 60)
+  await page.mouse.click(centerX + 100, centerY + 50)
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.properties-panel')).toContainText('3 anchors')
+
+  // Direct selection: the committed path exposes one square marker per anchor.
+  await page.locator('.tool-button[data-tool="direct"]').click()
+  const markers = page.locator('svg.stage .stage__anchor-marker')
+  await expect(markers).toHaveCount(3)
+  const markerCenters = (): Promise<Array<{ x: number; y: number }>> =>
+    markers.evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect()
+        return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
+      })
+    )
+
+  // Double-clicking the first segment's midpoint inserts a fourth anchor.
+  let dots = await markerCenters()
+  await page.mouse.dblclick((dots[0].x + dots[1].x) / 2, (dots[0].y + dots[1].y) / 2)
+  await expect(page.locator('.properties-panel')).toContainText('4 anchors')
+  await expect(markers).toHaveCount(4)
+
+  // Drag the inserted (second) anchor by a known screen offset.
+  dots = await markerCenters()
+  const dropPoint = { x: dots[1].x + 60, y: dots[1].y - 30 }
+  await page.mouse.move(dots[1].x, dots[1].y)
+  await page.mouse.down()
+  await page.mouse.move(dropPoint.x, dropPoint.y, { steps: 6 })
+  await page.mouse.up()
+  await expect(page.locator('.properties-panel')).toContainText('4 anchors')
+
+  // The drop point in document coordinates, through the stage's own mapping.
+  const expected = await page.evaluate(({ x, y }) => {
+    const svg = document.querySelector('svg.stage') as SVGSVGElement | null
+    if (!svg) return { x: 0, y: 0 }
+    const matrix = svg.getScreenCTM()?.inverse()
+    if (!matrix) return { x: 0, y: 0 }
+    const point = new DOMPoint(x, y).matrixTransform(matrix)
+    return { x: point.x, y: point.y }
+  }, dropPoint)
+
+  // Save and inspect the archive: one open subpath with four anchors and the
+  // moved anchor at the drop point through the node's placement.
+  await page.getByRole('button', { name: 'Save As…', exact: true }).click()
+  await expect(page.locator('footer.statusbar')).toContainText('file: anchors.oanim')
+  const archive = unzipSync(new Uint8Array(await readFile(savePath)))
+  const doc = JSON.parse(strFromU8(archive['document.json'])) as {
+    layers: Array<{ keyframes?: Array<{ nodes: Array<Record<string, unknown>> }> }>
+  }
+  const pathNode = doc.layers
+    .flatMap((layer) => layer.keyframes ?? [])
+    .flatMap((keyframe) => keyframe.nodes)
+    .find((node) => node.type === 'path') as
+    | { d: string; center: { x: number; y: number }; width: number; height: number; rotation: number }
+    | undefined
+  expect(pathNode).toBeTruthy()
+  expect(pathNode!.rotation).toBe(0)
+  const subpaths = pathDataToSubpathAnchors(pathNode!.d)
+  expect(subpaths).toHaveLength(1)
+  expect(subpaths![0].closed).toBe(false)
+  const anchors = subpaths![0].anchors
+  expect(anchors).toHaveLength(4)
+
+  // Renderer placement: `center + scale · local` with `scale = size / bbox`.
+  const xs = anchors.map((anchor) => anchor.x)
+  const ys = anchors.map((anchor) => anchor.y)
+  const naturalWidth = Math.max(...xs) - Math.min(...xs)
+  const naturalHeight = Math.max(...ys) - Math.min(...ys)
+  const scaleX = naturalWidth > 0 ? pathNode!.width / naturalWidth : 1
+  const scaleY = naturalHeight > 0 ? pathNode!.height / naturalHeight : 1
+  const moved = anchors[1]
+  const visualX = pathNode!.center.x + scaleX * moved.x
+  const visualY = pathNode!.center.y + scaleY * moved.y
+  // ±2 px absorbs the 2-decimal rounding the serializer applies to `d`.
+  expect(Math.abs(visualX - expected.x)).toBeLessThanOrEqual(2)
+  expect(Math.abs(visualY - expected.y)).toBeLessThanOrEqual(2)
+})
+
+test('picks a stage color with the eyedropper', async () => {
+  const page = await start()
+  await dismissStartup(page)
+
+  // The starter demo's ball sits at document (180, 180) on frame 1: the
+  // eyedropper tool picks its fill (#f59e0b) and feeds the recent colors row.
+  const ballPoint = await screenPointOf(page, 180, 180)
+  await page.locator('.tool-button[data-tool="eyedropper"]').click()
+  await page.mouse.click(ballPoint.x, ballPoint.y)
+  await expect(page.locator('footer.statusbar')).toContainText('Picked #f59e0b')
+  await expect(page.locator('.properties-panel .swatch-chip[data-color="#f59e0b"]')).toHaveCount(1)
+
+  // Alt+click picks once from any tool: the select tool over the backdrop.
+  await page.locator('.tool-button[data-tool="select"]').click()
+  const backdropPoint = await screenPointOf(page, 40, 40)
+  await page.keyboard.down('Alt')
+  await page.mouse.click(backdropPoint.x, backdropPoint.y)
+  await page.keyboard.up('Alt')
+  await expect(page.locator('footer.statusbar')).toContainText('Picked #10151b')
 })
 
 test('saves the starter demo and reopens it after a new project', async () => {

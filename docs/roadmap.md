@@ -23,6 +23,7 @@ this page records what landed and what is being considered next.
 | v0.21.0 | Stability — cancellable exports with staged writes and a GIF encode worker, unsaved-changes close protection, crash recovery for never-saved documents, in-app modals replacing native dialogs, export diagnostics surfacing, two new E2E golden paths |
 | v0.22.0 | Performance — rAF-coalesced stage rendering with keyed incremental patching, structural-sharing undo snapshots, idle-debounced autosave with an incremental recovery packer, and a deterministic 500-node regression benchmark (seek 28→24 ms, drag 44.5→37 ms/move, playback ≈30 fps, 24-frame export ≈1.5 s on the reference machine) |
 | v0.23.0 | Editor UX — full application menu over the existing editor commands, keyboard-shortcut cheat sheet and docs page from one shortcut table (plus the F7 timeline leak fix), scene-object clipboard beside the keyframe clipboard, grid snapping with align/distribute, a Preferences dialog replacing hardcoded defaults, and feedback polish (labeled undo, persistent errors, About dialog) |
+| v0.24.0 | Vector depth — direct-selection anchor editing (`A`) with the `setPathAnchors` scripting op and multi-subpath support, stroke styles (linecap/linejoin/dash) through model, renderer, UI and SVG round-trip, per-stop gradient alpha, path fill/stroke tweening, the eyedropper with a recent-colors row, and GIMP (`.gpl`) palette import/export |
 
 ## What's next
 
@@ -34,14 +35,15 @@ this page records what landed and what is being considered next.
   degrades to dashed placeholders with per-export diagnostics; the supported
   subset grows as demand shows up.
 - **Scripting follows the UI.** Every new editor capability ships with a
-  scripted equivalent through the same pipeline — v0.23.0 added
-  `duplicateNodes`, `align`, `distribute` and `setPreferences` — so
-  LLM-driven animation keeps full coverage of the tool.
+  scripted equivalent through the same pipeline — v0.24.0 added
+  `setPathAnchors` for anchor editing (v0.23.0 added `duplicateNodes`,
+  `align`, `distribute` and `setPreferences`) — so LLM-driven animation
+  keeps full coverage of the tool.
 - **E2E golden paths as features land.** The Playwright suite pins the
   golden paths (drawing/tweening, save/reopen, exports, scripting, startup,
-  cancellation, close protection, node clipboard and shortcut help) plus the
-  500-node performance budget; new major features should add their own
-  golden path.
+  cancellation, close protection, node clipboard, shortcut help, anchor
+  editing and the eyedropper) plus the 500-node performance budget; new
+  major features should add their own golden path.
 
 Suggestions are welcome — open an issue (see
 [Contributing](contributing.md)) and describe the workflow you need.

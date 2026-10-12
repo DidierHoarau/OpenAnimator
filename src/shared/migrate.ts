@@ -270,7 +270,7 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
     throw new MigrationError('invalid document: "layers" must be an array')
   }
   return {
-    schemaVersion: 7,
+    schemaVersion: 8,
     name: document.name,
     width: document.width,
     height: document.height,
@@ -285,7 +285,7 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
 }
 
 /**
- * Normalizes a parsed project file to the current schema (v7): v2–v6
+ * Normalizes a parsed project file to the current schema (v8): v2–v7
  * documents are deep-validated and returned detached from the parsed input
  * (documents saved before a section existed are normalized to empty defaults
  * — `assets: []`, `palette: []`, `fonts: []`; layers saved before drawing
@@ -298,7 +298,7 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
  */
 export function migrateDocument(raw: unknown): AnimatorDocument {
   const version = (typeof raw === 'object' && raw !== null ? (raw as { schemaVersion?: unknown }).schemaVersion : undefined)
-  if (version === 2 || version === 3 || version === 4 || version === 5 || version === 6 || version === 7) {
+  if (version === 2 || version === 3 || version === 4 || version === 5 || version === 6 || version === 7 || version === 8) {
     const source = raw as Record<string, unknown>
     if (source.assets !== undefined && !Array.isArray(source.assets)) {
       throw new MigrationError('invalid document: "assets" must be an array')
@@ -325,7 +325,7 @@ export function migrateDocument(raw: unknown): AnimatorDocument {
       : source.layers
     const candidate = {
       ...source,
-      schemaVersion: 7,
+      schemaVersion: 8,
       layers,
       assets: (source.assets as unknown[] | undefined) ?? [],
       palette: (source.palette as unknown[] | undefined) ?? [],

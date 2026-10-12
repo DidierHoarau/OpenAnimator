@@ -94,7 +94,7 @@ function embeddedFont(): EmbeddedFont {
 describe('document operations', () => {
   it('creates a document with one empty layer and keyframe at 0', () => {
     const doc = createDocument('test', 960, 540, 24)
-    expect(doc.schemaVersion).toBe(7)
+    expect(doc.schemaVersion).toBe(8)
     expect(doc.palette).toEqual([])
     expect(doc.fonts).toEqual([])
     expect(doc.layers).toHaveLength(1)
@@ -321,6 +321,57 @@ describe('document operations', () => {
       ]
     }
     expect(isAnimatorDocument(badNode)).toBe(false)
+  })
+
+  it('accepts valid stroke-style fields and rejects malformed ones', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    const keyframe = layer.keyframes[0]
+    const withNode = (node: PrimitiveNode): unknown => ({
+      ...doc,
+      layers: [{ ...layer, keyframes: [{ ...keyframe, nodes: [node] }] }]
+    })
+
+    expect(
+      isAnimatorDocument(
+        withNode(
+          rect('styled', 0, 0, {
+            stroke: '#000000',
+            strokeWidth: 2,
+            strokeLinecap: 'round',
+            strokeLinejoin: 'bevel',
+            strokeDasharray: [6, 4],
+            strokeDashoffset: 2
+          })
+        )
+      )
+    ).toBe(true)
+    // Each field alone is valid too (partial stroke styles).
+    expect(isAnimatorDocument(withNode(rect('a', 0, 0, { strokeLinecap: 'square' })))).toBe(true)
+    expect(isAnimatorDocument(withNode(rect('b', 0, 0, { strokeDashoffset: -3 })))).toBe(true)
+
+    const badLinecap = withNode(rect('c', 0, 0, { strokeLinecap: 'fancy' as never }))
+    expect(isAnimatorDocument(badLinecap)).toBe(false)
+    const badLinejoin = withNode(rect('d', 0, 0, { strokeLinejoin: 'pointy' as never }))
+    expect(isAnimatorDocument(badLinejoin)).toBe(false)
+
+    const emptyDash = withNode(rect('e', 0, 0, { strokeDasharray: [] }))
+    expect(isAnimatorDocument(emptyDash)).toBe(false)
+    const zeroDash = withNode(rect('f', 0, 0, { strokeDasharray: [0, 0] }))
+    expect(isAnimatorDocument(zeroDash)).toBe(false)
+    const negativeDash = withNode(rect('g', 0, 0, { strokeDasharray: [6, -1] }))
+    expect(isAnimatorDocument(negativeDash)).toBe(false)
+    const hugeDash = withNode(
+      rect('h', 0, 0, { strokeDasharray: Array.from({ length: 17 }, () => 4) })
+    )
+    expect(isAnimatorDocument(hugeDash)).toBe(false)
+    const nonNumericDash = withNode(rect('i', 0, 0, { strokeDasharray: ['6'] as never }))
+    expect(isAnimatorDocument(nonNumericDash)).toBe(false)
+
+    const badOffset = withNode(rect('j', 0, 0, { strokeDashoffset: Number.NaN }))
+    expect(isAnimatorDocument(badOffset)).toBe(false)
+    const stringOffset = withNode(rect('k', 0, 0, { strokeDashoffset: '2' as never }))
+    expect(isAnimatorDocument(stringOffset)).toBe(false)
   })
 
   it('round-trips the authored frame count through JSON', () => {

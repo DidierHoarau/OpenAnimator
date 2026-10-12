@@ -4,6 +4,28 @@ import type { Paint } from './paint'
 
 export type PrimitiveKind = 'rect' | 'ellipse'
 
+/** Maximum number of entries in a stroke dash pattern. */
+export const MAX_STROKE_DASH_VALUES = 16
+
+export type StrokeLinecap = 'butt' | 'round' | 'square'
+export type StrokeLinejoin = 'miter' | 'round' | 'bevel'
+
+/** SVG stroke-style vocabulary shared by every stroked node kind (primitive,
+ * path, text). Absent fields keep the SVG defaults the renderer historically
+ * relied on, so pre-v8 documents render byte-identically. Edited in the
+ * properties panel's stroke sections; emitted only when `stroke` is set. */
+export interface StrokeStyle {
+  /** Shape of dash segment ends. Absent ≡ SVG default (`'butt'`). */
+  strokeLinecap?: StrokeLinecap
+  /** Shape of stroke corners. Absent ≡ SVG default (`'miter'`). */
+  strokeLinejoin?: StrokeLinejoin
+  /** Dash pattern in stage pixels: 1–`MAX_STROKE_DASH_VALUES` finite values
+   * ≥ 0, not all zero; serialized space-joined. Absent ≡ solid stroke. */
+  strokeDasharray?: number[]
+  /** Phase offset into the dash pattern in stage pixels. Absent ≡ 0. */
+  strokeDashoffset?: number
+}
+
 /** Transform vocabulary shared by every node type. */
 export interface NodeBase {
   id: string
@@ -20,7 +42,7 @@ export interface NodeBase {
   opacity: number
 }
 
-export interface PrimitiveNode extends NodeBase {
+export interface PrimitiveNode extends NodeBase, StrokeStyle {
   type: 'primitive'
   primitive: PrimitiveKind
   fill: Paint
@@ -54,9 +76,10 @@ export interface SymbolNode extends NodeBase {
  * its bounding-box center sits at (0,0). The placed size (`width`/`height`)
  * maps that natural bbox to the stage — scale is folded into the transform,
  * never re-encoded into `d`. Multiple subpaths (e.g. glyph outlines) are
- * allowed; anchor editing is only offered for single-subpath paths.
+ * allowed; the direct-selection tool edits them subpath by subpath (never
+ * merging subpaths).
  */
-export interface PathNode extends NodeBase {
+export interface PathNode extends NodeBase, StrokeStyle {
   type: 'path'
   d: string
   fill?: Paint
@@ -77,7 +100,7 @@ export interface PathAnchor {
 
 /** Rendered text block laid out as explicit lines (`\n`); `width`/`height`
  * are the measured layout box, refreshed whenever text or font changes. */
-export interface TextNode extends NodeBase {
+export interface TextNode extends NodeBase, StrokeStyle {
   type: 'text'
   text: string
   fontFamily: string
@@ -240,7 +263,7 @@ export interface EmbeddedFont {
 
 /** The authoring document. `layers[0]` is the topmost layer. */
 export interface AnimatorDocument {
-  schemaVersion: 7
+  schemaVersion: 8
   name: string
   width: number
   height: number

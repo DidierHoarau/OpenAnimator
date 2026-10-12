@@ -26,7 +26,9 @@ describe('buildToolsPanel', () => {
     expect(panel.querySelectorAll('.tools-group')).toHaveLength(4)
     expect(toolButtons(panel).map((button) => button.dataset.tool)).toEqual([
       'select',
+      'direct',
       'hand',
+      'eyedropper',
       'brush',
       'eraser',
       'rect',
@@ -68,6 +70,7 @@ describe('buildToolsPanel', () => {
     // A drawing layer takes painting only; everything but Hand is dimmed.
     expect(disabledTools(panel)).toEqual([
       'select',
+      'direct',
       'rect',
       'ellipse',
       'line',

@@ -283,6 +283,130 @@ describe('importSvgAsVectors — viewport and style', () => {
   })
 })
 
+describe('importSvgAsVectors — stroke styles', () => {
+  it('imports linecap, linejoin, dash pattern and dash offset', () => {
+    const { group } = importOk(
+      `${HEADER}<rect width="10" height="10" fill="#ff0000" stroke="#000000" stroke-width="2"` +
+        ' stroke-linecap="round" stroke-linejoin="bevel" stroke-dasharray="6 4" stroke-dashoffset="2"/></svg>'
+    )
+    const rect = group.children[0] as PrimitiveNode
+    expect(rect.strokeLinecap).toBe('round')
+    expect(rect.strokeLinejoin).toBe('bevel')
+    expect(rect.strokeDasharray).toEqual([6, 4])
+    expect(rect.strokeDashoffset).toBe(2)
+  })
+
+  it('accepts the fields through style declarations, including comma-separated dashes', () => {
+    const { group } = importOk(
+      `${HEADER}<rect width="10" height="10" stroke="#000000"` +
+        ' style="stroke-linecap:square;stroke-linejoin:round;stroke-dasharray:6, 4;stroke-dashoffset:-3px"/></svg>'
+    )
+    const rect = group.children[0] as PrimitiveNode
+    expect(rect.strokeLinecap).toBe('square')
+    expect(rect.strokeLinejoin).toBe('round')
+    expect(rect.strokeDasharray).toEqual([6, 4])
+    expect(rect.strokeDashoffset).toBe(-3)
+  })
+
+  it('inherits stroke styles through groups', () => {
+    const { group } = importOk(
+      `${HEADER}<g stroke="#000000" stroke-linecap="round" stroke-dasharray="4 2">` +
+        '<rect width="10" height="10"/><line x1="0" y1="0" x2="5" y2="5"/></g></svg>'
+    )
+    const rect = group.children[0] as PrimitiveNode
+    expect(rect.strokeLinecap).toBe('round')
+    expect(rect.strokeDasharray).toEqual([4, 2])
+    const line = group.children[1] as PathNode
+    expect(line.strokeLinecap).toBe('round')
+    expect(line.strokeDasharray).toEqual([4, 2])
+    // A child can reset an inherited dash pattern with "none".
+    const reset = importOk(
+      `${HEADER}<g stroke="#000000" stroke-dasharray="4 2">` +
+        '<rect width="10" height="10" stroke-dasharray="none"/></g></svg>'
+    )
+    expect((reset.group.children[0] as PrimitiveNode).strokeDasharray).toBeUndefined()
+  })
+
+  it('scales dash lengths and the dash offset by the accumulated transform', () => {
+    const { group } = importOk(
+      `${HEADER}<g transform="scale(2)"><line x1="0" y1="0" x2="5" y2="5" stroke="#000000"` +
+        ' stroke-dasharray="4 2" stroke-dashoffset="1"/></g></svg>'
+    )
+    const line = group.children[0] as PathNode
+    expect(line.strokeDasharray).toEqual([8, 4])
+    expect(line.strokeDashoffset).toBe(2)
+  })
+
+  it('drops stroke styles when the stroke never paints or the dashes are all zero', () => {
+    const { group } = importOk(
+      HEADER +
+        '<rect width="10" height="10" stroke-linecap="round"/>' +
+        '<rect x="20" width="10" height="10" stroke="none" stroke-linecap="round" stroke-dasharray="4 2"/>' +
+        '<rect x="40" width="10" height="10" stroke="#000000" stroke-width="0" stroke-dasharray="4 2"/>' +
+        '<rect x="60" width="10" height="10" stroke="#000000" stroke-dasharray="0 0"/>' +
+        '</svg>'
+    )
+    for (const child of group.children) {
+      expect((child as PrimitiveNode).strokeLinecap).toBeUndefined()
+      expect((child as PrimitiveNode).strokeDasharray).toBeUndefined()
+    }
+  })
+
+  it('rejects invalid linecaps, linejoins and malformed dash lists', () => {
+    expect(importReason(`${HEADER}<rect width="5" height="5" stroke-linecap="fancy"/></svg>`)).toBe(
+      'unsupported value "fancy" for stroke-linecap (supported: butt, round, square)'
+    )
+    expect(importReason(`${HEADER}<rect width="5" height="5" stroke-linejoin="pointy"/></svg>`)).toBe(
+      'unsupported value "pointy" for stroke-linejoin (supported: miter, round, bevel)'
+    )
+    expect(importReason(`${HEADER}<rect width="5" height="5" stroke-dasharray="6mm 4"/></svg>`)).toBe(
+      'unsupported value "6mm" for stroke-dasharray (only unitless px lengths)'
+    )
+    expect(importReason(`${HEADER}<rect width="5" height="5" stroke-dasharray="6 -4"/></svg>`)).toBe(
+      'negative stroke-dasharray value "6 -4"'
+    )
+    const many = Array.from({ length: 17 }, () => '4').join(' ')
+    expect(importReason(`${HEADER}<rect width="5" height="5" stroke-dasharray="${many}"/></svg>`)).toBe(
+      'stroke-dasharray with more than 16 values is not supported'
+    )
+    expect(importReason(`${HEADER}<rect width="5" height="5" stroke-dasharray="nope"/></svg>`)).toBe(
+      'unsupported value "nope" for stroke-dasharray (only unitless px lengths)'
+    )
+  })
+
+  it('still rejects stroke-miterlimit, fill-rule and class', () => {
+    expect(importReason(`${HEADER}<rect width="5" height="5" stroke-miterlimit="4"/></svg>`)).toBe(
+      'unsupported attribute "stroke-miterlimit" on <rect>'
+    )
+    expect(importReason(`${HEADER}<rect width="5" height="5" fill-rule="evenodd"/></svg>`)).toBe(
+      'unsupported attribute "fill-rule" on <rect>'
+    )
+    expect(importReason(`${HEADER}<rect width="5" height="5" class="shape"/></svg>`)).toBe(
+      'unsupported attribute "class" on <rect>'
+    )
+  })
+
+  it('round-trips rendered stroke styles back through the importer', async () => {
+    const { nodeToSvgMarkup } = await import('./renderSvg')
+    const { group } = importOk(
+      `${HEADER}<rect width="30" height="20" fill="#ff0000" stroke="#000000" stroke-width="2"` +
+        ' stroke-linecap="round" stroke-linejoin="bevel" stroke-dasharray="6 4" stroke-dashoffset="2"/></svg>'
+    )
+    const original = group.children[0] as PrimitiveNode
+    const rendered = nodeToSvgMarkup(original)
+    const reimported = importOk(`<svg xmlns="http://www.w3.org/2000/svg">${rendered}</svg>`)
+    const roundTripped = reimported.group.children[0] as PrimitiveNode
+    expect(roundTripped.strokeLinecap).toBe('round')
+    expect(roundTripped.strokeLinejoin).toBe('bevel')
+    expect(roundTripped.strokeDasharray).toEqual([6, 4])
+    expect(roundTripped.strokeDashoffset).toBe(2)
+    expect(roundTripped.strokeWidth).toBe(2)
+    expect(roundTripped.stroke).toBe('#000000')
+    expect(roundTripped.width).toBe(30)
+    expect(roundTripped.height).toBe(20)
+  })
+})
+
 describe('importSvgAsVectors — unsupported input', () => {
   it('rejects unsupported elements and attributes', () => {
     expect(importReason(`${HEADER}<filter id="f"/></svg>`)).toBe('unsupported element <filter>')
@@ -394,5 +518,16 @@ describe('importSvgAsVectors — duplicate collapse integration', () => {
     expect(group.width).toBe(80)
     expect(group.children.every((child) => child.type === 'symbol')).toBe(true)
     expect(group.children.map((child) => child.center.x)).toEqual([-25, 25])
+  })
+
+  it('keeps shapes that differ only in stroke styles separate', () => {
+    const { group, assets } = importOk(
+      HEADER +
+        '<rect x="10" y="10" width="30" height="20" stroke="#000000" stroke-linecap="butt" stroke-dasharray="6 4"/>' +
+        '<rect x="60" y="10" width="30" height="20" stroke="#000000" stroke-linecap="round" stroke-dasharray="6 4"/>' +
+        '</svg>'
+    )
+    expect(assets).toHaveLength(0)
+    expect(group.children.every((child) => child.type === 'primitive')).toBe(true)
   })
 })

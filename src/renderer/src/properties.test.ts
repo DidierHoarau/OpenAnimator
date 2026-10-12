@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument } from '@shared/document'
-import type { Asset, DrawingLayer, ImageNode, PrimitiveNode, SymbolNode, TextNode } from '@shared/model'
+import type { Asset, DrawingLayer, ImageNode, PathNode, PrimitiveNode, SymbolNode, TextNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { PropertiesView } from './properties'
@@ -821,5 +821,200 @@ describe('PropertiesView — tween easing editor and motion path', () => {
     editor.undo()
     expect(tweenAt(0)).toEqual({ easing: 'ease-out' })
     expect(pathSelect().value).toBe('linear')
+  })
+})
+
+describe('PropertiesView — stroke style controls', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24))
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container)
+    editor.addNode(rect('a', 0, 0))
+  })
+
+  function row(label: string): HTMLElement {
+    const section = sectionByTitle(container, 'Shape')
+    const match = [...section.querySelectorAll('.panel-row')].find(
+      (candidate) => candidate.querySelector('label')?.textContent === label
+    )
+    if (!match) throw new Error(`missing row ${label}`)
+    return match as HTMLElement
+  }
+
+  function selectedRect(): PrimitiveNode {
+    const layer = editor.document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    return layer.keyframes[0].nodes[0] as PrimitiveNode
+  }
+
+  it('writes caps, joins and the dash pattern on an outlined shape', () => {
+    // Inert until the outline exists.
+    const styleRow = row('Style')
+    expect((styleRow.querySelectorAll('select')[0] as HTMLSelectElement).disabled).toBe(true)
+
+    const toggle = row('Outline').querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change'))
+
+    const capSelect = row('Style').querySelectorAll<HTMLSelectElement>('select')[0]
+    const joinSelect = row('Style').querySelectorAll<HTMLSelectElement>('select')[1]
+    expect(capSelect.disabled).toBe(false)
+    capSelect.value = 'round'
+    capSelect.dispatchEvent(new Event('change'))
+    joinSelect.value = 'bevel'
+    joinSelect.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeLinecap).toBe('round')
+    expect(selectedRect().strokeLinejoin).toBe('bevel')
+
+    // Clearing a select drops the field again (pre-v8 markup stays intact).
+    capSelect.value = ''
+    capSelect.dispatchEvent(new Event('change'))
+    expect('strokeLinecap' in selectedRect()).toBe(false)
+
+    const dashInput = row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!
+    dashInput.value = '6, 4 2'
+    dashInput.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDasharray).toEqual([6, 4, 2])
+
+    const offsetInput = row('Dash').querySelector<HTMLInputElement>('input[type="number"]')!
+    offsetInput.value = '3'
+    offsetInput.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDashoffset).toBe(3)
+
+    // Emptying the inputs removes the fields.
+    const dashAgain = row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!
+    dashAgain.value = ''
+    dashAgain.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDasharray).toBeUndefined()
+    const offsetAgain = row('Dash').querySelector<HTMLInputElement>('input[type="number"]')!
+    offsetAgain.value = ''
+    offsetAgain.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDashoffset).toBeUndefined()
+  })
+
+  it('rejects malformed dash patterns and reverts the input', () => {
+    const toggle = row('Outline').querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change'))
+
+    const dashInput = row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!
+    for (const bad of ['abc', '-3 4', '0 0', '1 '.repeat(17).trim()]) {
+      dashInput.value = bad
+      dashInput.dispatchEvent(new Event('change'))
+      expect(selectedRect().strokeDasharray).toBeUndefined()
+      expect(dashInput.value).toBe('')
+    }
+  })
+
+  it('syncs the controls from the selected node and disables them without an outline', () => {
+    editor.updateSelectedNode((node) => {
+      if (node.type !== 'primitive') return
+      node.stroke = '#ffffff'
+      node.strokeWidth = 2
+      node.strokeLinecap = 'square'
+      node.strokeDasharray = [8, 4]
+      node.strokeDashoffset = 1
+    })
+    const capSelect = row('Style').querySelectorAll<HTMLSelectElement>('select')[0]
+    expect(capSelect.value).toBe('square')
+    expect(row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe('8 4')
+    expect(row('Dash').querySelector<HTMLInputElement>('input[type="number"]')!.value).toBe('1')
+
+    // Turning the outline off leaves the fields in the document but disables
+    // every control (they render nothing).
+    const toggle = row('Outline').querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    toggle.checked = false
+    toggle.dispatchEvent(new Event('change'))
+    expect(selectedRect().strokeDasharray).toEqual([8, 4])
+    expect(capSelect.disabled).toBe(true)
+    expect(row('Dash').querySelector<HTMLInputElement>('input[type="text"]')!.disabled).toBe(true)
+  })
+})
+
+describe('PropertiesView — path anchors', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24))
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container)
+  })
+
+  function pathNode(id: string, d: string, width = 100, height = 100): PathNode {
+    return {
+      id,
+      type: 'path',
+      name: id,
+      d,
+      width,
+      height,
+      center: { x: 0, y: 0 },
+      rotation: 0,
+      opacity: 1
+    }
+  }
+
+  function livePath(): PathNode {
+    const layer = editor.currentLayer
+    if (layer?.kind !== 'object') throw new Error('expected an object layer')
+    const keyframe = layer.keyframes.find((entry) => entry.nodes.length > 0)
+    if (!keyframe) throw new Error('expected a keyframe with nodes')
+    return keyframe.nodes[0] as PathNode
+  }
+
+  const infoLabel = (): HTMLElement =>
+    sectionByTitle(container, 'Path').querySelector<HTMLElement>('.panel-file-name')!
+  const subpathButton = (): HTMLButtonElement =>
+    [...sectionByTitle(container, 'Path').querySelectorAll('button')].find((candidate) =>
+      candidate.title.startsWith('Close the path into a loop')
+    )!
+
+  it('labels the anchor count and toggles a single subpath open/closed', () => {
+    editor.addNode(pathNode('p', 'M-50 -20L0 20L50 -20'))
+    expect(infoLabel().textContent).toBe('3 anchors')
+    expect(subpathButton().textContent).toBe('Close subpath')
+    expect(subpathButton().disabled).toBe(false)
+
+    // Closing emits the explicit closing segment and flips label and button.
+    subpathButton().click()
+    expect(livePath().d).toBe('M-50 -20L0 20L50 -20L-50 -20Z')
+    expect(infoLabel().textContent).toBe('3 anchors · closed')
+    expect(subpathButton().textContent).toBe('Open subpath')
+
+    // Re-opening restores the open form.
+    subpathButton().click()
+    expect(livePath().d).toBe('M-50 -20L0 20L50 -20')
+    expect(infoLabel().textContent).toBe('3 anchors')
+
+    // Each toggle is its own undo step.
+    editor.undo()
+    expect(livePath().d).toBe('M-50 -20L0 20L50 -20L-50 -20Z')
+  })
+
+  it('reports subpath counts and disables the toggle for multi and degenerate paths', () => {
+    editor.addNode(pathNode('multi', 'M-50 -50L-10 -50L-10 -10Z M10 10L50 10L50 50Z'))
+    expect(infoLabel().textContent).toBe('6 anchors · 2 subpaths')
+    expect(subpathButton().textContent).toBe('Close subpath')
+    expect(subpathButton().disabled).toBe(true)
+
+    // Two anchors cannot close into a loop.
+    editor.addNode(pathNode('pair', 'M-50 0L50 0', 100, 2))
+    expect(infoLabel().textContent).toBe('2 anchors')
+    expect(subpathButton().disabled).toBe(true)
+
+    // Unparseable data (an arc) falls back to the compound label.
+    editor.addNode(pathNode('arc', 'M0 0A5 5 0 0 1 10 10'))
+    expect(infoLabel().textContent).toBe('compound path')
+    expect(subpathButton().disabled).toBe(true)
   })
 })

@@ -137,6 +137,62 @@ describe('validateScriptPayload', () => {
     expect(bad.errors.join('\n')).toContain('/commands/3/patch/letterSpacing')
   })
 
+  it('accepts stroke-style fields and rejects their bad shapes', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        {
+          op: 'updateNode',
+          nodeId: 'x',
+          patch: {
+            strokeLinecap: 'round',
+            strokeLinejoin: 'bevel',
+            strokeDasharray: [6, 4],
+            strokeDashoffset: 2
+          }
+        },
+        {
+          op: 'addNode',
+          frame: 0,
+          node: {
+            type: 'path',
+            d: 'M0 0L10 10',
+            stroke: '#000000',
+            strokeLinecap: 'square',
+            strokeDasharray: [2]
+          }
+        }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+    const bad = validateScriptPayload({
+      commands: [
+        { op: 'updateNode', nodeId: 'x', patch: { strokeLinecap: 'fancy' } },
+        { op: 'updateNode', nodeId: 'x', patch: { strokeLinejoin: 'pointy' } },
+        { op: 'updateNode', nodeId: 'x', patch: { strokeDasharray: [] } },
+        { op: 'updateNode', nodeId: 'x', patch: { strokeDasharray: [0, 0] } },
+        { op: 'updateNode', nodeId: 'x', patch: { strokeDasharray: [6, -1] } },
+        { op: 'updateNode', nodeId: 'x', patch: { strokeDasharray: ['6'] } },
+        {
+          op: 'updateNode',
+          nodeId: 'x',
+          patch: { strokeDasharray: Array.from({ length: 17 }, () => 4) }
+        },
+        { op: 'updateNode', nodeId: 'x', patch: { strokeDashoffset: 'x' } },
+        { op: 'addNode', frame: 0, node: { type: 'path', d: 'M0 0L1 1', strokeDasharray: [0] } }
+      ]
+    })
+    const joined = bad.errors.join('\n')
+    expect(joined).toContain('/commands/0/patch/strokeLinecap')
+    expect(joined).toContain('/commands/1/patch/strokeLinejoin')
+    expect(joined).toContain('/commands/2/patch/strokeDasharray: must have at least 1 item')
+    expect(joined).toContain('/commands/3/patch/strokeDasharray: must not be all zeros')
+    expect(joined).toContain('/commands/4/patch/strokeDasharray/1')
+    expect(joined).toContain('/commands/5/patch/strokeDasharray/0')
+    expect(joined).toContain('/commands/6/patch/strokeDasharray: must have at most 16 items')
+    expect(joined).toContain('/commands/7/patch/strokeDashoffset')
+    expect(joined).toContain('/commands/8')
+  })
+
   it('accepts the UX ops and rejects bad modes, axes and preference patches', () => {
     const ok = validateScriptPayload({
       commands: [
@@ -448,6 +504,64 @@ describe('hand-rolled validator vs JSON Schema', () => {
         }
       ]
     },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 0,
+              stops: [
+                { offset: 0, color: '#f59e0b', alpha: 0.5 },
+                { offset: 0.5, color: '#fff', alpha: 1 },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 0,
+              stops: [
+                { offset: 0, color: '#fff', alpha: 1.5 },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 0,
+              stops: [
+                { offset: 0, color: '#fff', alpha: 'x' },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
     { commands: [{ op: 'updateNode', nodeId: 'x', patch: { stroke: 'none' } }] },
     { commands: [{ op: 'addNode', node: { type: 'primitive', primitive: 'rect', fill: '' } }] },
     {
@@ -645,7 +759,141 @@ describe('hand-rolled validator vs JSON Schema', () => {
     { commands: [{ op: 'moveCell', toFrame: 3 }] },
     { commands: [{ op: 'moveNodeToFrame', nodeId: 'x', targetFrame: 3 }] },
     { commands: [{ op: 'moveNodeToFrame', targetFrame: 3 }] },
-    { commands: [{ op: 'moveNodeToFrame', nodeId: 'x' }] }
+    { commands: [{ op: 'moveNodeToFrame', nodeId: 'x' }] },
+    {
+      commands: [
+        {
+          op: 'updateNode',
+          nodeId: 'x',
+          patch: {
+            strokeLinecap: 'round',
+            strokeLinejoin: 'bevel',
+            strokeDasharray: [6, 4],
+            strokeDashoffset: 2
+          }
+        }
+      ]
+    },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { strokeLinecap: 'fancy' } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { strokeDasharray: [] } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { strokeDasharray: [0, 0] } }] },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { strokeDasharray: [6, -1] } }] },
+    {
+      commands: [
+        { op: 'updateNode', nodeId: 'x', patch: { strokeDasharray: Array.from({ length: 17 }, () => 4) } }
+      ]
+    },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { strokeDashoffset: 'x' } }] },
+    {
+      commands: [
+        { op: 'addNode', node: { type: 'path', d: 'M0 0L1 1', strokeLinecap: 'round', strokeDasharray: [0] } }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 10, y: 10 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          frame: 3,
+          layerId: 'l1',
+          subpaths: [
+            {
+              closed: true,
+              anchors: [
+                { x: 0, y: 0, in: { x: -1, y: 0 }, out: { x: 1, y: 0 } },
+                { x: 10, y: 10 },
+                { x: 20, y: 0 }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    { commands: [{ op: 'setPathAnchors', nodeId: 'x' }] },
+    {
+      commands: [
+        { op: 'setPathAnchors', subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }] }
+      ]
+    },
+    { commands: [{ op: 'setPathAnchors', nodeId: 'x', subpaths: [] }] },
+    {
+      commands: [
+        { op: 'setPathAnchors', nodeId: 'x', subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }] }] }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: 'yes', anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 'a', y: 0 }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0, in: { x: 1 } }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0, in: null }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0, extra: 1 }, { x: 1, y: 1 }] }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }], extra: 1 }]
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'setPathAnchors',
+          nodeId: 'x',
+          subpaths: [{ closed: false, anchors: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }],
+          extra: 1
+        }
+      ]
+    }
   ]
 
   it('agrees with the compiled schema on every corpus entry', () => {

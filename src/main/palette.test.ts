@@ -4,7 +4,8 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { PaletteStore } from './palette'
+import { PaletteStore, importPaletteFile } from './palette'
+import type { PaletteImportDeps } from './palette'
 
 describe('PaletteStore', () => {
   let dir: string
@@ -69,5 +70,50 @@ describe('PaletteStore', () => {
     const raw = await readFile(join(nested, 'palette.json'), 'utf8')
     expect(JSON.parse(raw)).toEqual({ version: 1, colors: ['#123456'] })
     expect((await readdir(nested)).sort()).toEqual(['palette.json'])
+  })
+})
+
+describe('importPaletteFile', () => {
+  function deps(
+    dialogResult: { canceled: boolean; filePaths: string[] },
+    file?: { text?: string; error?: Error }
+  ): PaletteImportDeps {
+    return {
+      showOpenDialog: () => Promise.resolve(dialogResult),
+      readFile: () => {
+        if (file?.error) return Promise.reject(file.error)
+        return Promise.resolve(file?.text ?? '')
+      }
+    }
+  }
+
+  it('returns the file name and text for a chosen file', async () => {
+    const result = await importPaletteFile(
+      deps(
+        { canceled: false, filePaths: [join('some', 'dir', 'sunset.gpl')] },
+        { text: 'GIMP Palette\n255 0 0\n' }
+      )
+    )
+    expect(result).toEqual({ canceled: false, fileName: 'sunset.gpl', text: 'GIMP Palette\n255 0 0\n' })
+  })
+
+  it('reports cancellation', async () => {
+    await expect(importPaletteFile(deps({ canceled: true, filePaths: [] }))).resolves.toEqual({
+      canceled: true
+    })
+  })
+
+  it('reports an empty selection as canceled', async () => {
+    await expect(importPaletteFile(deps({ canceled: false, filePaths: [] }))).resolves.toEqual({
+      canceled: true
+    })
+  })
+
+  it('reports read failures with the reason', async () => {
+    const result = await importPaletteFile(
+      deps({ canceled: false, filePaths: ['missing.gpl'] }, { error: new Error('EACCES') })
+    )
+    expect(result.canceled).toBe(true)
+    if (result.canceled) expect(result.error).toContain('EACCES')
   })
 })

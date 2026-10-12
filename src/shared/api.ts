@@ -55,6 +55,7 @@ export const EXPORT_STREAM_WRITE_CHANNEL = 'openanimator:export-stream-write'
 export const EXPORT_STREAM_COMMIT_CHANNEL = 'openanimator:export-stream-commit'
 export const PALETTE_GET_CHANNEL = 'openanimator:palette-get'
 export const PALETTE_SET_CHANNEL = 'openanimator:palette-set'
+export const PALETTE_IMPORT_CHANNEL = 'openanimator:palette-import'
 export const FONT_LIST_CHANNEL = 'openanimator:font-list'
 export const FONT_READ_CHANNEL = 'openanimator:font-read'
 export const FONT_POLICY_CHANNEL = 'openanimator:font-policy'
@@ -150,6 +151,11 @@ export type FontReadResult = { ok: true; bytes: Uint8Array } | { ok: false; erro
  * namespace (`src/shared/shortcuts.ts`). */
 export type MenuCommand = ShortcutId
 
+/** Result of asking the user for a GIMP palette file to import. */
+export type PaletteImportResult =
+  | { canceled: true; error?: string }
+  | { canceled: false; fileName: string; text: string }
+
 /** Result of asking the main process to open an external URL. */
 export type OpenExternalResult = { ok: true } | { ok: false; error: string }
 
@@ -190,6 +196,8 @@ export interface OpenAnimatorApi {
   loadGlobalPalette(): Promise<string[]>
   /** Replaces the persistent global color palette. */
   saveGlobalPalette(colors: string[]): Promise<boolean>
+  /** Asks the user for a GIMP palette (`.gpl`) file and reads its text. */
+  importPaletteFile(): Promise<PaletteImportResult>
   /** Lists installed system font families and their available weights. */
   listSystemFonts(): Promise<SystemFont[]>
   /** Reads the installed face nearest to (family, weight) as raw font bytes. */

@@ -13,6 +13,10 @@ export interface GradientStop {
   offset: number
   /** `#rrggbb` (or `#rgb`) color. */
   color: string
+  /** 0..1 stop opacity; absent means fully opaque. Emitted as
+   * `stop-opacity` (and folded into the paint key) only when ≠ 1, so
+   * pre-alpha documents keep their byte-identical output and gradient ids. */
+  alpha?: number
 }
 
 /** Linear gradient: `angle` in degrees, 0 = left→right, positive clockwise
@@ -55,9 +59,12 @@ function isGradientStop(value: unknown): value is GradientStop {
   if (typeof value !== 'object' || value === null) return false
   const stop = value as Record<string, unknown>
   for (const key of Object.keys(stop)) {
-    if (key !== 'offset' && key !== 'color') return false
+    if (key !== 'offset' && key !== 'color' && key !== 'alpha') return false
   }
   if (!isFiniteNumber(stop.offset) || stop.offset < 0 || stop.offset > 1) return false
+  if (stop.alpha !== undefined && (!isFiniteNumber(stop.alpha) || stop.alpha < 0 || stop.alpha > 1)) {
+    return false
+  }
   return typeof stop.color === 'string' && parseHexColor(stop.color) !== null
 }
 
@@ -129,7 +136,12 @@ export function lerpPaint(from: Paint, to: Paint, t: number): Paint {
   for (let i = 0; i < from.stops.length; i++) {
     const color = lerpHexColor(from.stops[i].color, to.stops[i].color, t)
     if (!color) return t < 1 ? from : to
-    stops.push({ offset: lerpNumber(from.stops[i].offset, to.stops[i].offset, t), color })
+    const stop: GradientStop = { offset: lerpNumber(from.stops[i].offset, to.stops[i].offset, t), color }
+    // Alpha interpolates pairwise (absent ≡ 1); the field stays absent when
+    // the interpolated value is fully opaque, mirroring the storage rule.
+    const alpha = lerpNumber(from.stops[i].alpha ?? 1, to.stops[i].alpha ?? 1, t)
+    if (alpha !== 1) stop.alpha = alpha
+    stops.push(stop)
   }
   if (from.type === 'linear' && to.type === 'linear') {
     return { type: 'linear', angle: lerpNumber(from.angle, to.angle, t), stops }
@@ -156,7 +168,12 @@ function lerpNumber(a: number, b: number, t: number): number {
  * `<defs>` per unique paint and reference it from every occurrence.
  */
 export function paintKey(paint: GradientPaint): string {
-  const stops = paint.stops.map((stop) => `${stop.offset}:${stop.color.toLowerCase()}`).join(';')
+  const stops = paint.stops
+    .map((stop) => {
+      const base = `${stop.offset}:${stop.color.toLowerCase()}`
+      return stop.alpha !== undefined && stop.alpha !== 1 ? `${base}@${stop.alpha}` : base
+    })
+    .join(';')
   const canonical =
     paint.type === 'linear'
       ? `linear|${paint.angle}|${stops}`

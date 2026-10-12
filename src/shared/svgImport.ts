@@ -1,8 +1,8 @@
 import { createDocumentAsset, symbolContentFromGroup } from './assets'
 import { createId } from './document'
 import { groupNodes } from './groups'
-import { cloneNode } from './model'
-import type { Asset, GroupNode, PathNode, PrimitiveNode, SceneNode, SymbolNode } from './model'
+import { MAX_STROKE_DASH_VALUES, cloneNode } from './model'
+import type { Asset, GroupNode, PathNode, PrimitiveNode, SceneNode, StrokeLinecap, StrokeLinejoin, SymbolNode } from './model'
 import { normalizePathData, parsePathCommands, pathDataBounds, serializeCommands } from './pathModel'
 import type { PathCommand } from './pathModel'
 
@@ -19,7 +19,9 @@ import type { PathCommand } from './pathModel'
  * Supported: `svg`/`g`, `rect` (incl. rounded corners), `circle`, `ellipse`,
  * `line`, `polyline`, `polygon`, `path` (M/L/H/V/C/S/Q/T/Z, no arcs);
  * `fill`/`stroke` (`none`, `#rgb`, `#rrggbb`), `stroke-width`, `opacity`,
- * the same keys in `style`, and `transform`.
+ * `stroke-linecap`, `stroke-linejoin`, `stroke-dasharray` (`none` or up to 16
+ * unitless/px values), `stroke-dashoffset`, the same keys in `style`, and
+ * `transform`.
  */
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; reason: string }
@@ -410,11 +412,26 @@ interface Appearance {
   stroke: string
   strokeWidth: number
   opacity: number
+  strokeLinecap?: StrokeLinecap
+  strokeLinejoin?: StrokeLinejoin
+  /** Dash pattern in user units (scaled like `strokeWidth` at materialize). */
+  strokeDasharray?: number[]
+  /** Dash phase in user units (scaled like `strokeWidth` at materialize). */
+  strokeDashoffset?: number
 }
 
 const DEFAULT_APPEARANCE: Appearance = { fill: '#000000', stroke: 'none', strokeWidth: 1, opacity: 1 }
 
-const STYLE_PROPERTIES = new Set(['fill', 'stroke', 'stroke-width', 'opacity'])
+const STYLE_PROPERTIES = new Set([
+  'fill',
+  'stroke',
+  'stroke-width',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'stroke-dasharray',
+  'stroke-dashoffset',
+  'opacity'
+])
 
 function parseStyleDeclarations(value: string): Parsed<Map<string, string>> {
   const declarations = new Map<string, string>()
@@ -437,12 +454,17 @@ function parseStyleDeclarations(value: string): Parsed<Map<string, string>> {
 
 /** Resolves the element's paint state over its inherited base. Presentation
  * attributes are applied first, then the `style` attribute (CSS wins).
- * `opacity` is folded multiplicatively into the inherited value. */
+ * `opacity` is folded multiplicatively into the inherited value; the
+ * stroke-style fields inherit like the paints. */
 function resolveAppearance(el: XmlElement, base: Appearance): Parsed<Appearance> {
   let fill = base.fill
   let stroke = base.stroke
   let strokeWidth = base.strokeWidth
   let opacity = 1
+  let strokeLinecap = base.strokeLinecap
+  let strokeLinejoin = base.strokeLinejoin
+  let strokeDasharray = base.strokeDasharray
+  let strokeDashoffset = base.strokeDashoffset
 
   const applyPaint = (key: 'fill' | 'stroke', raw: string): string | null => {
     const parsed = parseColorValue(raw)
@@ -458,31 +480,81 @@ function resolveAppearance(el: XmlElement, base: Appearance): Parsed<Appearance>
     strokeWidth = parsed.value
     return null
   }
+  const applyLinecap = (raw: string): string | null => {
+    const value = raw.trim().toLowerCase()
+    if (value !== 'butt' && value !== 'round' && value !== 'square') {
+      return `unsupported value "${raw}" for stroke-linecap (supported: butt, round, square)`
+    }
+    strokeLinecap = value
+    return null
+  }
+  const applyLinejoin = (raw: string): string | null => {
+    const value = raw.trim().toLowerCase()
+    if (value !== 'miter' && value !== 'round' && value !== 'bevel') {
+      return `unsupported value "${raw}" for stroke-linejoin (supported: miter, round, bevel)`
+    }
+    strokeLinejoin = value
+    return null
+  }
+  const applyDasharray = (raw: string): string | null => {
+    const value = raw.trim().toLowerCase()
+    if (value === 'none') {
+      strokeDasharray = undefined
+      return null
+    }
+    const parts = value.split(/[\s,]+/).filter((part) => part.length > 0)
+    if (parts.length === 0) return `malformed stroke-dasharray "${raw}"`
+    if (parts.length > MAX_STROKE_DASH_VALUES) {
+      return `stroke-dasharray with more than ${MAX_STROKE_DASH_VALUES} values is not supported`
+    }
+    const values: number[] = []
+    for (const part of parts) {
+      const parsed = parseLength(part, 'stroke-dasharray')
+      if (!parsed.ok) return parsed.reason
+      if (parsed.value < 0) return `negative stroke-dasharray value "${raw}"`
+      values.push(parsed.value)
+    }
+    // An all-zero pattern renders as a solid stroke (SVG spec), so it is
+    // stored as no dash pattern at all.
+    strokeDasharray = values.some((entry) => entry > 0) ? values : undefined
+    return null
+  }
+  const applyDashoffset = (raw: string): string | null => {
+    const parsed = parseLength(raw, 'stroke-dashoffset')
+    if (!parsed.ok) return parsed.reason
+    strokeDashoffset = parsed.value
+    return null
+  }
   const applyOpacity = (raw: string): string | null => {
     const value = Number(raw.trim())
     if (!Number.isFinite(value)) return `unsupported value "${raw}" for opacity`
     opacity = Math.min(1, Math.max(0, value))
     return null
   }
+  const applyProperty = (key: string, raw: string): string | null => {
+    if (key === 'fill' || key === 'stroke') return applyPaint(key, raw)
+    if (key === 'stroke-width') return applyStrokeWidth(raw)
+    if (key === 'stroke-linecap') return applyLinecap(raw)
+    if (key === 'stroke-linejoin') return applyLinejoin(raw)
+    if (key === 'stroke-dasharray') return applyDasharray(raw)
+    if (key === 'stroke-dashoffset') return applyDashoffset(raw)
+    return applyOpacity(raw)
+  }
 
-  const fillRaw = el.attributes.get('fill')
-  if (fillRaw !== undefined) {
-    const error = applyPaint('fill', fillRaw)
-    if (error) return { ok: false, reason: error }
-  }
-  const strokeRaw = el.attributes.get('stroke')
-  if (strokeRaw !== undefined) {
-    const error = applyPaint('stroke', strokeRaw)
-    if (error) return { ok: false, reason: error }
-  }
-  const strokeWidthRaw = el.attributes.get('stroke-width')
-  if (strokeWidthRaw !== undefined) {
-    const error = applyStrokeWidth(strokeWidthRaw)
-    if (error) return { ok: false, reason: error }
-  }
-  const opacityRaw = el.attributes.get('opacity')
-  if (opacityRaw !== undefined) {
-    const error = applyOpacity(opacityRaw)
+  const PRESENTATION_ATTRIBUTES = [
+    'fill',
+    'stroke',
+    'stroke-width',
+    'stroke-linecap',
+    'stroke-linejoin',
+    'stroke-dasharray',
+    'stroke-dashoffset',
+    'opacity'
+  ] as const
+  for (const name of PRESENTATION_ATTRIBUTES) {
+    const raw = el.attributes.get(name)
+    if (raw === undefined) continue
+    const error = applyProperty(name, raw)
     if (error) return { ok: false, reason: error }
   }
   const styleRaw = el.attributes.get('style')
@@ -490,16 +562,23 @@ function resolveAppearance(el: XmlElement, base: Appearance): Parsed<Appearance>
     const declarations = parseStyleDeclarations(styleRaw)
     if (!declarations.ok) return declarations
     for (const [key, raw] of declarations.value) {
-      const error =
-        key === 'fill' || key === 'stroke'
-          ? applyPaint(key, raw)
-          : key === 'stroke-width'
-            ? applyStrokeWidth(raw)
-            : applyOpacity(raw)
+      const error = applyProperty(key, raw)
       if (error) return { ok: false, reason: error }
     }
   }
-  return { ok: true, value: { fill, stroke, strokeWidth, opacity: base.opacity * opacity } }
+  return {
+    ok: true,
+    value: {
+      fill,
+      stroke,
+      strokeWidth,
+      opacity: base.opacity * opacity,
+      strokeLinecap,
+      strokeLinejoin,
+      strokeDasharray,
+      strokeDashoffset
+    }
+  }
 }
 
 const GLOBAL_ATTRIBUTES = new Set([
@@ -508,6 +587,10 @@ const GLOBAL_ATTRIBUTES = new Set([
   'fill',
   'stroke',
   'stroke-width',
+  'stroke-linecap',
+  'stroke-linejoin',
+  'stroke-dasharray',
+  'stroke-dashoffset',
   'opacity',
   'style',
   'version',
@@ -743,12 +826,32 @@ function transformCommand(command: PathCommand, m: Matrix): PathCommand {
   }
 }
 
-function strokeFields(
-  appearance: Appearance,
-  scale: number
-): Partial<Pick<PrimitiveNode, 'stroke' | 'strokeWidth'>> {
+type StrokeFields = Partial<
+  Pick<
+    PrimitiveNode,
+    'stroke' | 'strokeWidth' | 'strokeLinecap' | 'strokeLinejoin' | 'strokeDasharray' | 'strokeDashoffset'
+  >
+>
+
+/** Appearance → node stroke fields: nothing when the stroke never paints;
+ * otherwise the paint, its width and the authored stroke-style fields, with
+ * lengths and the dash pattern scaled by the accumulated transform (the same
+ * factor as `stroke-width`). */
+function strokeFields(appearance: Appearance, scale: number): StrokeFields {
   if (appearance.stroke === 'none' || appearance.strokeWidth === 0) return {}
-  return { stroke: appearance.stroke, strokeWidth: appearance.strokeWidth * scale }
+  const fields: StrokeFields = {
+    stroke: appearance.stroke,
+    strokeWidth: appearance.strokeWidth * scale
+  }
+  if (appearance.strokeLinecap !== undefined) fields.strokeLinecap = appearance.strokeLinecap
+  if (appearance.strokeLinejoin !== undefined) fields.strokeLinejoin = appearance.strokeLinejoin
+  if (appearance.strokeDasharray !== undefined) {
+    fields.strokeDasharray = appearance.strokeDasharray.map((value) => value * scale)
+  }
+  if (appearance.strokeDashoffset !== undefined) {
+    fields.strokeDashoffset = appearance.strokeDashoffset * scale
+  }
+  return fields
 }
 
 /** Converts raw geometry plus accumulated transform and paint into a node:
@@ -941,15 +1044,15 @@ function importRoot(root: XmlElement, out: SceneNode[]): string | null {
 
 /** Canonical geometry+appearance key of a leaf shape; null for kinds that are
  * never collapsed (position, rotation, opacity and name are carried by the
- * symbol instance instead). */
+ * symbol instance instead). Includes the stroke-style fields so shapes that
+ * differ only in linecap/linejoin/dash never collapse into one symbol. */
 function shapeKey(node: SceneNode): string | null {
+  if (node.type !== 'primitive' && node.type !== 'path') return null
+  const style = `${node.strokeLinecap ?? null}|${node.strokeLinejoin ?? null}|${JSON.stringify(node.strokeDasharray ?? null)}|${node.strokeDashoffset ?? null}`
   if (node.type === 'primitive') {
-    return `primitive|${node.primitive}|${node.width}|${node.height}|${JSON.stringify(node.fill)}|${JSON.stringify(node.stroke ?? null)}|${node.strokeWidth ?? null}`
+    return `primitive|${node.primitive}|${node.width}|${node.height}|${JSON.stringify(node.fill)}|${JSON.stringify(node.stroke ?? null)}|${node.strokeWidth ?? null}|${style}`
   }
-  if (node.type === 'path') {
-    return `path|${node.width}|${node.height}|${node.d}|${JSON.stringify(node.fill ?? null)}|${JSON.stringify(node.stroke ?? null)}|${node.strokeWidth ?? null}`
-  }
-  return null
+  return `path|${node.width}|${node.height}|${node.d}|${JSON.stringify(node.fill ?? null)}|${JSON.stringify(node.stroke ?? null)}|${node.strokeWidth ?? null}|${style}`
 }
 
 export interface SvgCollapseResult {

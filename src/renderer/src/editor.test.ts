@@ -688,6 +688,9 @@ describe('drawing layers and paint tools', () => {
     expect(editor.tool).toBe('eraser')
     editor.setTool('rect')
     expect(editor.tool).toBe('eraser')
+    // The direct-selection tool edits object-layer paths only.
+    editor.setTool('direct')
+    expect(editor.tool).toBe('eraser')
     // Hand is compatible with both kinds.
     editor.setTool('hand')
     expect(editor.tool).toBe('hand')
@@ -709,6 +712,8 @@ describe('drawing layers and paint tools', () => {
     expect(editor.tool).toBe('vector')
     editor.setTool('brush')
     expect(editor.tool).toBe('vector')
+    editor.setTool('direct')
+    expect(editor.tool).toBe('direct')
   })
 
   it('auto-switches the tool when the document changes under it', () => {

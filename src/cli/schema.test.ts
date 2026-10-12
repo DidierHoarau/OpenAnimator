@@ -27,7 +27,7 @@ describe('CLI schema export', () => {
   })
 
   it('publishes the document schema under its versioned file name', () => {
-    expect(schemaFileName('document')).toBe('document-v7.json')
+    expect(schemaFileName('document')).toBe('document-v8.json')
     expect(schemaFileName('commands')).toBe('commands-v1.json')
     expect(schemaForKind('document')).toBe(DOCUMENT_SCHEMA)
   })

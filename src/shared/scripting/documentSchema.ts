@@ -1,5 +1,5 @@
 /**
- * JSON Schema of the OpenAnimator document (schemaVersion 7) — the generation
+ * JSON Schema of the OpenAnimator document (schemaVersion 8) — the generation
  * contract for tools and LLMs that produce `document.json` payloads. The
  * schema mirrors the structural validation in `document.ts`
  * (`isAnimatorDocument`/`isSceneNode`); documents are always re-validated
@@ -24,6 +24,9 @@ export const EASING_VALUES = ['linear', 'ease-in', 'ease-out', 'ease-in-out'] as
 
 /** Maximum number of colors in the document palette. */
 export const MAX_PALETTE_COLORS = 48
+
+/** Maximum number of entries in a stroke dash pattern. */
+export const MAX_STROKE_DASH_VALUES = 16
 
 /** Hex color pattern accepted by the document and command contracts. */
 export const HEX_COLOR_PATTERN = '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$'
@@ -50,7 +53,8 @@ export function easingSchema(): Record<string, unknown> {
 }
 
 /** Shared gradient paint definition: one strict linear or radial shape, 2–8
- * stops with 0..1 offsets and hex colors; unknown fields are rejected. */
+ * stops with 0..1 offsets, hex colors and an optional 0..1 opacity; unknown
+ * fields are rejected. */
 export function gradientPaintSchema(): Record<string, unknown> {
   const stop = {
     type: 'object',
@@ -58,7 +62,8 @@ export function gradientPaintSchema(): Record<string, unknown> {
     required: ['offset', 'color'],
     properties: {
       offset: { type: 'number', minimum: 0, maximum: 1 },
-      color: { type: 'string', pattern: HEX_COLOR_PATTERN }
+      color: { type: 'string', pattern: HEX_COLOR_PATTERN },
+      alpha: { type: 'number', minimum: 0, maximum: 1 }
     }
   }
   return {
@@ -186,6 +191,18 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
       lineHeight: { type: 'number', minimum: 0.5, maximum: 5 },
       verticalAlign: { enum: ['top', 'middle', 'bottom'] },
       fontFallback: { type: 'array', maxItems: 8, items: { type: 'string' } },
+      strokeLinecap: { enum: ['butt', 'round', 'square'] },
+      strokeLinejoin: { enum: ['miter', 'round', 'bevel'] },
+      strokeDasharray: {
+        type: 'array',
+        minItems: 1,
+        maxItems: MAX_STROKE_DASH_VALUES,
+        items: { type: 'number', minimum: 0 },
+        // At least one dash must be positive (draft-07 `contains`), matching
+        // the core `isStrokeDasharray` and the hand-rolled validator.
+        contains: { type: 'number', exclusiveMinimum: 0 }
+      },
+      strokeDashoffset: { type: 'number' },
       resourceId: { type: 'string' },
       naturalWidth: { type: 'number', minimum: 1 },
       naturalHeight: { type: 'number', minimum: 1 },
@@ -199,13 +216,13 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
 
 export const DOCUMENT_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v7.json',
-  title: 'OpenAnimator document (v7)',
+  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v8.json',
+  title: 'OpenAnimator document (v8)',
   type: 'object',
   additionalProperties: false,
   required: ['schemaVersion', 'name', 'width', 'height', 'fps', 'background', 'layers', 'assets', 'palette', 'fonts'],
   properties: {
-    schemaVersion: { const: 7 },
+    schemaVersion: { const: 8 },
     name: { type: 'string', minLength: 1 },
     width: { type: 'number', exclusiveMinimum: 0 },
     height: { type: 'number', exclusiveMinimum: 0 },

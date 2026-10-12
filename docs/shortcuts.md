@@ -77,6 +77,7 @@ On macOS every `Ctrl` below is `Cmd`.
 | Shortcut | Action |
 | --- | --- |
 | `V` | Select Tool |
+| `A` | Direct Selection Tool |
 | `H` | Hand Tool |
 | `B` | Brush Tool |
 | `E` | Eraser Tool |
@@ -86,6 +87,7 @@ On macOS every `Ctrl` below is `Cmd`.
 | `P` | Pen Tool |
 | `T` | Text Tool |
 | `N` | Vector Tool |
+| `I` | Eyedropper Tool |
 | `[` | Decrease Brush Size |
 | `]` | Increase Brush Size |
 

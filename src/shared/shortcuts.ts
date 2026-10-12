@@ -57,6 +57,7 @@ export type ShortcutId =
   | 'view.toggleLibrary'
   | 'view.toggleProperties'
   | 'tool.select'
+  | 'tool.direct'
   | 'tool.hand'
   | 'tool.brush'
   | 'tool.eraser'
@@ -66,6 +67,7 @@ export type ShortcutId =
   | 'tool.pen'
   | 'tool.text'
   | 'tool.vector'
+  | 'tool.eyedropper'
   | 'tool.brushDown'
   | 'tool.brushUp'
   | 'stage.pan'
@@ -158,6 +160,7 @@ export const SHORTCUTS: readonly ShortcutRow[] = [
 
   // Tools
   { id: 'tool.select', label: 'Select Tool', keys: 'V', category: 'Tools', owner: 'page', bindings: ['v'] },
+  { id: 'tool.direct', label: 'Direct Selection Tool', keys: 'A', category: 'Tools', owner: 'page', bindings: ['a'] },
   { id: 'tool.hand', label: 'Hand Tool', keys: 'H', category: 'Tools', owner: 'page', bindings: ['h'] },
   { id: 'tool.brush', label: 'Brush Tool', keys: 'B', category: 'Tools', owner: 'page', bindings: ['b'] },
   { id: 'tool.eraser', label: 'Eraser Tool', keys: 'E', category: 'Tools', owner: 'page', bindings: ['e'] },
@@ -167,6 +170,7 @@ export const SHORTCUTS: readonly ShortcutRow[] = [
   { id: 'tool.pen', label: 'Pen Tool', keys: 'P', category: 'Tools', owner: 'page', bindings: ['p'] },
   { id: 'tool.text', label: 'Text Tool', keys: 'T', category: 'Tools', owner: 'page', bindings: ['t'] },
   { id: 'tool.vector', label: 'Vector Tool', keys: 'N', category: 'Tools', owner: 'page', bindings: ['n'] },
+  { id: 'tool.eyedropper', label: 'Eyedropper Tool', keys: 'I', category: 'Tools', owner: 'page', bindings: ['i'] },
   { id: 'tool.brushDown', label: 'Decrease Brush Size', keys: '[', category: 'Tools', owner: 'page', bindings: ['['] },
   { id: 'tool.brushUp', label: 'Increase Brush Size', keys: ']', category: 'Tools', owner: 'page', bindings: [']'] },
 

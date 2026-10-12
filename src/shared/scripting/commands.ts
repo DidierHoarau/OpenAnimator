@@ -11,6 +11,7 @@ import {
   gradientPaintSchema,
   HEX_COLOR_PATTERN,
   MAX_PALETTE_COLORS,
+  MAX_STROKE_DASH_VALUES,
   paintSchema,
   sceneNodeSchema
 } from './documentSchema'
@@ -108,6 +109,30 @@ export type ScriptCommand =
   | { op: 'align'; mode: AlignMode }
   | { op: 'distribute'; axis: DistributeAxis }
   | { op: 'setPreferences'; preferences: Partial<AppPreferences> }
+  | {
+      op: 'setPathAnchors'
+      nodeId: string
+      layerId?: string
+      frame?: number
+      /** Full replacement subpath/anchor list (covers add, move, remove and
+       * corner/smooth toggles in one undo step). */
+      subpaths: ScriptSubpath[]
+    }
+
+/** One editable subpath of a `setPathAnchors` command. */
+export interface ScriptSubpath {
+  closed: boolean
+  anchors: ScriptPathAnchor[]
+}
+
+/** One anchor of a `setPathAnchors` command; handles are offsets from the
+ * anchor point, exactly like the model's `PathAnchor`. */
+export interface ScriptPathAnchor {
+  x: number
+  y: number
+  in?: { x: number; y: number }
+  out?: { x: number; y: number }
+}
 
 /** One validation or application outcome, designed to be fed back to a model. */
 export interface ScriptIssue {
@@ -145,6 +170,33 @@ export const COMMANDS_SCHEMA = {
       required: ['x', 'y'],
       properties: { x: { type: 'number' }, y: { type: 'number' } }
     },
+    /** One editable path anchor (setPathAnchors). */
+    pathAnchor: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['x', 'y'],
+      properties: {
+        x: { type: 'number' },
+        y: { type: 'number' },
+        in: { $ref: '#/definitions/vec2' },
+        out: { $ref: '#/definitions/vec2' }
+      }
+    },
+    /** One editable subpath (setPathAnchors). */
+    anchorSubpath: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['anchors', 'closed'],
+      properties: {
+        closed: { type: 'boolean' },
+        anchors: { type: 'array', minItems: 2, items: { $ref: '#/definitions/pathAnchor' } }
+      }
+    },
+    anchorSubpaths: {
+      type: 'array',
+      minItems: 1,
+      items: { $ref: '#/definitions/anchorSubpath' }
+    },
     easing: easingSchema(),
     /** setTween's easing also accepts null, which turns the tween off. */
     tweenEasing: { anyOf: [{ $ref: '#/definitions/easing' }, { type: 'null' }] },
@@ -175,7 +227,17 @@ export const COMMANDS_SCHEMA = {
         letterSpacing: { type: 'number' },
         lineHeight: { type: 'number', minimum: 0.5, maximum: 5 },
         verticalAlign: { enum: ['top', 'middle', 'bottom'] },
-        fontFallback: { type: 'array', maxItems: 8, items: { type: 'string' } }
+        fontFallback: { type: 'array', maxItems: 8, items: { type: 'string' } },
+        strokeLinecap: { enum: ['butt', 'round', 'square'] },
+        strokeLinejoin: { enum: ['miter', 'round', 'bevel'] },
+        strokeDasharray: {
+          type: 'array',
+          minItems: 1,
+          maxItems: MAX_STROKE_DASH_VALUES,
+          items: { type: 'number', minimum: 0 },
+          contains: { type: 'number', exclusiveMinimum: 0 }
+        },
+        strokeDashoffset: { type: 'number' }
       }
     },
     frameNumber: { type: 'integer', minimum: 0 },
@@ -232,7 +294,8 @@ export const COMMANDS_SCHEMA = {
             'duplicateNodes',
             'align',
             'distribute',
-            'setPreferences'
+            'setPreferences',
+            'setPathAnchors'
           ]
         },
         kind: { enum: ['object', 'drawing', 'camera', 'audio'] },
@@ -270,6 +333,7 @@ export const COMMANDS_SCHEMA = {
         easing: { $ref: '#/definitions/tweenEasing' },
         mode: { enum: ALIGN_MODES },
         axis: { enum: DISTRIBUTE_AXES },
+        subpaths: { $ref: '#/definitions/anchorSubpaths' },
         preferences: { $ref: '#/definitions/preferencesPatch' }
       },
       allOf: [
@@ -541,6 +605,14 @@ export const COMMANDS_SCHEMA = {
             additionalProperties: false,
             properties: { op: {}, preferences: {} }
           }
+        },
+        {
+          if: { properties: { op: { const: 'setPathAnchors' } }, required: ['op'] },
+          then: {
+            required: ['nodeId', 'subpaths'],
+            additionalProperties: false,
+            properties: { op: {}, nodeId: {}, layerId: {}, frame: {}, subpaths: {} }
+          }
         }
       ]
     }
@@ -564,6 +636,11 @@ export interface FieldSpec {
   hexColors?: boolean
   /** Array items must be strings (the item shape of loose string lists). */
   stringItems?: boolean
+  /** Array items must be finite numbers ≥ 0 with at least one > 0 (stroke
+   * dash patterns). */
+  numberItems?: boolean
+  /** Array items are editable subpath objects (setPathAnchors). */
+  pathSubpaths?: boolean
   minItems?: number
   maxItems?: number
 }
@@ -608,7 +685,8 @@ export const OPS = [
   'duplicateNodes',
   'align',
   'distribute',
-  'setPreferences'
+  'setPreferences',
+  'setPathAnchors'
 ] as const
 
 /** One scripting op name. */
@@ -764,6 +842,12 @@ export const OP_FIELDS: Record<Op, Record<string, FieldSpec>> = {
   },
   setPreferences: {
     preferences: { type: 'object', required: true }
+  },
+  setPathAnchors: {
+    nodeId: { type: 'string', required: true },
+    layerId: { type: 'string' },
+    frame: { type: 'integer', min: 0 },
+    subpaths: { type: 'array', pathSubpaths: true, minItems: 1, required: true }
   }
 }
 
@@ -778,19 +862,35 @@ const NODE_BASE_FIELDS: Record<string, FieldSpec> = {
   opacity: { type: 'number', min: 0, max: 1 }
 }
 
+/** Optional stroke-style fields shared by every stroked node kind and by
+ * node patches (linecap/linejoin/dash pattern/dash offset). */
+const STROKE_STYLE_FIELDS: Record<string, FieldSpec> = {
+  strokeLinecap: { type: 'string', enum: ['butt', 'round', 'square'] },
+  strokeLinejoin: { type: 'string', enum: ['miter', 'round', 'bevel'] },
+  strokeDasharray: {
+    type: 'array',
+    numberItems: true,
+    minItems: 1,
+    maxItems: MAX_STROKE_DASH_VALUES
+  },
+  strokeDashoffset: { type: 'number' }
+}
+
 /** Per-kind extra fields; the values are required when the kind matches. */
 const NODE_KIND_FIELDS: Record<string, Record<string, FieldSpec>> = {
   primitive: {
     primitive: { type: 'string', enum: ['rect', 'ellipse'], required: true },
     fill: { type: 'string', paint: true, required: true },
     stroke: { type: 'string', paint: true },
-    strokeWidth: { type: 'number', min: 0 }
+    strokeWidth: { type: 'number', min: 0 },
+    ...STROKE_STYLE_FIELDS
   },
   path: {
     d: { type: 'string', required: true },
     fill: { type: 'string', paint: true },
     stroke: { type: 'string', paint: true },
-    strokeWidth: { type: 'number', min: 0 }
+    strokeWidth: { type: 'number', min: 0 },
+    ...STROKE_STYLE_FIELDS
   },
   text: {
     text: { type: 'string', required: true },
@@ -804,7 +904,8 @@ const NODE_KIND_FIELDS: Record<string, Record<string, FieldSpec>> = {
     stroke: { type: 'string', paint: true },
     strokeWidth: { type: 'number', min: 0 },
     verticalAlign: { type: 'string', enum: ['top', 'middle', 'bottom'] },
-    fontFallback: { type: 'array', stringItems: true, maxItems: 8 }
+    fontFallback: { type: 'array', stringItems: true, maxItems: 8 },
+    ...STROKE_STYLE_FIELDS
   },
   image: {
     resourceId: { type: 'string', required: true },
@@ -835,7 +936,8 @@ const NODE_PATCH_FIELDS: Record<string, FieldSpec> = {
   letterSpacing: { type: 'number' },
   lineHeight: { type: 'number', min: 0.5, max: 5 },
   verticalAlign: { type: 'string', enum: ['top', 'middle', 'bottom'] },
-  fontFallback: { type: 'array', stringItems: true, maxItems: 8 }
+  fontFallback: { type: 'array', stringItems: true, maxItems: 8 },
+  ...STROKE_STYLE_FIELDS
 }
 
 class Collector {
@@ -895,6 +997,22 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
           collector.at(`${path}/${index}`, 'must be string')
         }
       })
+    }
+    if (spec.numberItems) {
+      items.forEach((item, index) => {
+        if (typeof item !== 'number' || !Number.isFinite(item) || item < 0) {
+          collector.at(`${path}/${index}`, 'must be a number >= 0')
+        }
+      })
+      if (
+        items.length > 0 &&
+        !items.some((item) => typeof item === 'number' && Number.isFinite(item) && item > 0)
+      ) {
+        collector.at(path, 'must not be all zeros')
+      }
+    }
+    if (spec.pathSubpaths) {
+      checkPathSubpaths(collector, path, items)
     }
     return
   }
@@ -1007,8 +1125,16 @@ function checkGradientStop(collector: Collector, path: string, value: unknown): 
   else if (typeof color !== 'string' || parseHexColor(color) === null) {
     collector.at(`${path}/color`, 'must be a hex color (#rgb or #rrggbb)')
   }
+  const alpha = stop.alpha
+  if (alpha !== undefined) {
+    if (typeof alpha !== 'number' || !Number.isFinite(alpha)) {
+      collector.at(`${path}/alpha`, 'must be number')
+    } else if (alpha < 0 || alpha > 1) {
+      collector.at(`${path}/alpha`, 'must be >= 0 and <= 1')
+    }
+  }
   for (const key of Object.keys(stop)) {
-    if (key !== 'offset' && key !== 'color') {
+    if (key !== 'offset' && key !== 'color' && key !== 'alpha') {
       collector.at(`${path}/${key}`, 'must not have additional properties')
     }
   }
@@ -1050,6 +1176,64 @@ function checkGradientPaint(collector: Collector, path: string, value: unknown):
     )
   }
   stops.forEach((stop, index) => checkGradientStop(collector, `${path}/stops/${index}`, stop))
+}
+
+/** Strict `setPathAnchors` subpath list: each subpath carries a closed flag
+ * and at least two anchors with finite `x`/`y` and optional `in`/`out`
+ * handle offsets. */
+function checkPathSubpaths(collector: Collector, path: string, items: unknown[]): void {
+  items.forEach((entry, index) => {
+    const subpathPath = `${path}/${index}`
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      collector.at(subpathPath, 'must be object')
+      return
+    }
+    const subpath = entry as Record<string, unknown>
+    if (typeof subpath.closed !== 'boolean') collector.at(`${subpathPath}/closed`, 'must be boolean')
+    const anchors = subpath.anchors
+    if (!Array.isArray(anchors)) {
+      collector.at(`${subpathPath}/anchors`, 'must be array')
+    } else {
+      if (anchors.length < 2) collector.at(`${subpathPath}/anchors`, 'must have at least 2 items')
+      anchors.forEach((anchor, anchorIndex) => {
+        checkPathAnchor(collector, `${subpathPath}/anchors/${anchorIndex}`, anchor)
+      })
+    }
+    for (const key of Object.keys(subpath)) {
+      if (key !== 'closed' && key !== 'anchors') {
+        collector.at(`${subpathPath}/${key}`, 'must not have additional properties')
+      }
+    }
+  })
+}
+
+function checkPathAnchor(collector: Collector, path: string, value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    collector.at(path, 'must be object')
+    return
+  }
+  const anchor = value as Record<string, unknown>
+  for (const key of ['x', 'y'] as const) {
+    const entry = anchor[key]
+    if (entry === undefined) collector.at(`${path}/${key}`, 'is required')
+    else if (typeof entry !== 'number' || !Number.isFinite(entry)) {
+      collector.at(`${path}/${key}`, 'must be number')
+    }
+  }
+  for (const key of ['in', 'out'] as const) {
+    const entry = anchor[key]
+    if (entry === undefined) continue
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      collector.at(`${path}/${key}`, 'must be object')
+      continue
+    }
+    checkVec2(collector, `${path}/${key}`, entry)
+  }
+  for (const key of Object.keys(anchor)) {
+    if (key !== 'x' && key !== 'y' && key !== 'in' && key !== 'out') {
+      collector.at(`${path}/${key}`, 'must not have additional properties')
+    }
+  }
 }
 
 function validateSceneNodes(collector: Collector, path: string, value: unknown): void {
