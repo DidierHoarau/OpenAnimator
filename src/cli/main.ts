@@ -9,7 +9,13 @@ import {
 } from '../shared/exportOptions'
 import type { ExportFormat } from '../shared/exportOptions'
 import { validateDocumentPayload, validateScriptPayload } from '../shared/scripting/commands'
-import { createResourceResolver, loadDocumentAndResources, renderToFile, withEmbeddedFontFiles } from './render'
+import {
+  createResourceResolver,
+  extensionToFormat,
+  loadDocumentAndResources,
+  renderToFile,
+  withEmbeddedFontFiles
+} from './render'
 
 /**
  * OpenAnimator headless CLI. Run via `npm run cli -- <command>` (or the
@@ -27,14 +33,24 @@ const USAGE = `OpenAnimator CLI
 
 Commands:
   render <project.oanim|document.json> --out <file>
-      [--format png-sequence|gif|webm|mp4]  default: from the --out extension
-      [--scale 0.25..4]                     resolution multiplier (default 1)
+      [--format png-sequence|gif|webm|mp4|lottie|dotlottie|svg-animation|spritesheet]
+                                            default: from the --out extension
+                                            (.json → lottie, .lottie → dotLottie,
+                                            .svg → animated SVG; spritesheet
+                                            requires --format spritesheet)
+      [--scale 0.25..4]                     resolution multiplier (default 1;
+                                            the Lottie formats ignore it)
       [--fps 1..60]                         output fps (default: document fps)
       [--from N] [--to N]                   0-based inclusive frame range (default: full document)
-      [--transparent]                       alpha-capable formats only
+      [--transparent]                       alpha for png-sequence/gif/spritesheet/
+                                            lottie/dotlottie/svg-animation and webm
+                                            (VP9 alpha); MP4 is always opaque
   validate <payload.json> [--kind commands|document]
                                             prints schema errors, exit 1 on invalid
   help                                      this message
+
+Lottie, dotLottie and animated-SVG exports are built natively (no ffmpeg);
+video and audio mixdown need ffmpeg on PATH.
 `
 
 interface CliArgs {
@@ -70,14 +86,6 @@ function numberFlag(flags: CliArgs['flags'], key: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-function extensionToFormat(path: string): ExportFormat | undefined {
-  if (path.endsWith('.zip')) return 'png-sequence'
-  if (path.endsWith('.gif')) return 'gif'
-  if (path.endsWith('.webm')) return 'webm'
-  if (path.endsWith('.mp4')) return 'mp4'
-  return undefined
-}
-
 async function runRender(args: CliArgs): Promise<string> {
   const input = args.positional[0]
   const outPath = args.flags.get('out')
@@ -99,7 +107,7 @@ async function runRender(args: CliArgs): Promise<string> {
     },
     document
   )
-  await withEmbeddedFontFiles(document, resources, (fontFiles) =>
+  const outcome = await withEmbeddedFontFiles(document, resources, (fontFiles) =>
     renderToFile(
       document,
       options,
@@ -111,7 +119,13 @@ async function runRender(args: CliArgs): Promise<string> {
     )
   )
   const size = exportPixelSize(document, options)
-  return `Wrote ${outPath} — ${exportFrameCount(options)} frame(s) ${size.width}x${size.height} at ${options.fps} fps`
+  let summary = `Wrote ${outPath} — ${exportFrameCount(options)} frame(s) ${size.width}x${size.height} at ${options.fps} fps`
+  const diagnostics = outcome.diagnostics ?? []
+  if (diagnostics.length > 0) {
+    summary += ` (${diagnostics.length} diagnostic${diagnostics.length === 1 ? '' : 's'})`
+    for (const message of diagnostics) summary += `\n  - ${message}`
+  }
+  return summary
 }
 
 async function runValidate(args: CliArgs): Promise<string> {

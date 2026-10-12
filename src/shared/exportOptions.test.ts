@@ -45,7 +45,7 @@ describe('export options', () => {
     expect(options.fps).toBe(1)
     expect(options.fromFrame).toBe(0)
     expect(options.toFrame).toBe(9)
-    // Video formats have no alpha; the flag is dropped.
+    // MP4 has no alpha codec; the flag is dropped.
     expect(options.transparent).toBe(false)
   })
 
@@ -76,5 +76,34 @@ describe('export options', () => {
     expect(exportExtension('gif')).toBe('gif')
     expect(exportExtension('webm')).toBe('webm')
     expect(exportExtension('mp4')).toBe('mp4')
+    expect(exportExtension('lottie')).toBe('json')
+    expect(exportExtension('dotlottie')).toBe('lottie')
+    expect(exportExtension('svg-animation')).toBe('svg')
+    expect(exportExtension('spritesheet')).toBe('zip')
+  })
+
+  it('keeps transparency for the new alpha-capable formats and pins vector scale', () => {
+    const document = createDocument('demo', 960, 540, 12)
+    document.frames = 10
+    for (const format of ['webm', 'svg-animation', 'spritesheet'] as const) {
+      const options = sanitizeExportOptions({ format, scale: 2, transparent: true }, document)
+      expect(options.transparent).toBe(true)
+      expect(options.scale).toBe(2)
+    }
+    // The vector Lottie formats ignore the raster scale entirely.
+    for (const format of ['lottie', 'dotlottie'] as const) {
+      const options = sanitizeExportOptions({ format, scale: 3, transparent: true }, document)
+      expect(options.scale).toBe(1)
+      expect(options.transparent).toBe(true)
+    }
+  })
+
+  it('drops transparency only for MP4 among the new formats', () => {
+    const document = createDocument('demo', 960, 540, 12)
+    document.frames = 10
+    const mp4 = sanitizeExportOptions({ format: 'mp4', transparent: true }, document)
+    expect(mp4.transparent).toBe(false)
+    const webm = sanitizeExportOptions({ format: 'webm', transparent: true }, document)
+    expect(webm.transparent).toBe(true)
   })
 })

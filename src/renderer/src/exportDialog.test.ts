@@ -45,8 +45,23 @@ describe('showExportDialog', () => {
     showExportDialog(editor())
     const overlay = document.querySelector('.modal-overlay')!
     expect(overlay.textContent).toContain(
-      'WebM and MP4 include the mixed audio tracks (audible audio layers); PNG sequence and GIF are silent.'
+      'WebM and MP4 include the mixed audio tracks (audible audio layers); all other formats are silent.'
     )
+  })
+
+  it('offers all eight export formats', () => {
+    showExportDialog(editor())
+    const overlay = document.querySelector('.modal-overlay')!
+    expect([...formatSelect(overlay).options].map((option) => option.value)).toEqual([
+      'png-sequence',
+      'gif',
+      'webm',
+      'mp4',
+      'lottie',
+      'dotlottie',
+      'svg-animation',
+      'spritesheet'
+    ])
   })
 
   it('hands sanitized options to the runner and closes on success', async () => {
@@ -85,7 +100,7 @@ describe('showExportDialog', () => {
     expect(overlay.querySelector('.export-form')?.classList.contains('hidden')).toBe(false)
   })
 
-  it('disables the transparent option for video formats', () => {
+  it('disables the transparent option only for MP4', () => {
     showExportDialog(editor())
     const overlay = document.querySelector('.modal-overlay')!
     const transparent = overlay.querySelector<HTMLInputElement>('input[type="checkbox"]')!
@@ -96,9 +111,32 @@ describe('showExportDialog', () => {
     expect(transparent.disabled).toBe(true)
     expect(transparent.checked).toBe(false)
 
+    formatSelect(overlay).value = 'webm'
+    formatSelect(overlay).dispatchEvent(new Event('change'))
+    expect(transparent.disabled).toBe(false)
+
     formatSelect(overlay).value = 'gif'
     formatSelect(overlay).dispatchEvent(new Event('change'))
     expect(transparent.disabled).toBe(false)
+  })
+
+  it('disables the resolution scale for the vector Lottie formats', () => {
+    showExportDialog(editor())
+    const overlay = document.querySelector('.modal-overlay')!
+    const scale = overlay.querySelectorAll<HTMLInputElement>('input[type="number"]')[0]
+    expect(scale.disabled).toBe(false)
+
+    formatSelect(overlay).value = 'lottie'
+    formatSelect(overlay).dispatchEvent(new Event('change'))
+    expect(scale.disabled).toBe(true)
+
+    formatSelect(overlay).value = 'dotlottie'
+    formatSelect(overlay).dispatchEvent(new Event('change'))
+    expect(scale.disabled).toBe(true)
+
+    formatSelect(overlay).value = 'svg-animation'
+    formatSelect(overlay).dispatchEvent(new Event('change'))
+    expect(scale.disabled).toBe(false)
   })
 
   it('closes on the close and cancel buttons without running the export', () => {

@@ -3,7 +3,7 @@ import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { unzipSync } from 'fflate'
+import { strFromU8, unzipSync } from 'fflate'
 import { PNG } from 'pngjs'
 import { describe, expect, it } from 'vitest'
 
@@ -14,13 +14,21 @@ import type { AnimatorDocument } from '../shared/model'
 import { sanitizeExportOptions } from '../shared/exportOptions'
 import {
   buildFfmpegArgs,
+  createCliTextOutlineProvider,
   createResourceResolver,
+  extensionToFormat,
   loadDocumentAndResources,
   renderDocument,
   renderFrame,
   renderToFile,
   withEmbeddedFontFiles
 } from './render'
+
+const APP_VERSION = (
+  JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+    version: string
+  }
+).version
 
 const DOCUMENT: AnimatorDocument = {
   schemaVersion: 7,
@@ -130,6 +138,25 @@ describe('createResourceResolver', () => {
   })
 })
 
+describe('extensionToFormat', () => {
+  it('maps every supported output extension to its format', () => {
+    expect(extensionToFormat('out.zip')).toBe('png-sequence')
+    expect(extensionToFormat('out.gif')).toBe('gif')
+    expect(extensionToFormat('out.webm')).toBe('webm')
+    expect(extensionToFormat('out.mp4')).toBe('mp4')
+    expect(extensionToFormat('out.json')).toBe('lottie')
+    expect(extensionToFormat('out.lottie')).toBe('dotlottie')
+    expect(extensionToFormat('out.svg')).toBe('svg-animation')
+  })
+
+  it('returns undefined for unknown extensions', () => {
+    expect(extensionToFormat('out.avi')).toBeUndefined()
+    expect(extensionToFormat('out')).toBeUndefined()
+    // Spritesheet has no unique extension; the --format flag is required.
+    expect(extensionToFormat('out.png')).toBeUndefined()
+  })
+})
+
 describe('renderFrame', () => {
   it('rasterizes at the scaled pixel size with the tweened box moving', () => {
     const options = sanitizeExportOptions({ format: 'gif', fromFrame: 0, toFrame: 3 }, DOCUMENT)
@@ -195,6 +222,83 @@ describe('renderToFile', () => {
   })
 })
 
+describe('renderToFile — vector and spritesheet formats', () => {
+  it('writes a Lottie JSON file without rasterizing any frame', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+    const outPath = join(dir, 'out.json')
+    const options = sanitizeExportOptions({ format: 'lottie', fromFrame: 0, toFrame: 3 }, DOCUMENT)
+    const outcome = await renderToFile(DOCUMENT, options, () => null, outPath)
+    expect(outcome.frames).toHaveLength(0)
+    expect(outcome.diagnostics).toEqual([])
+    const lottie = JSON.parse(await readFile(outPath, 'utf8'))
+    expect(lottie.v).toBe('5.7.4')
+    expect(lottie.fr).toBe(12)
+    expect(lottie.ip).toBe(0)
+    expect(lottie.op).toBe(4)
+    expect(lottie.w).toBe(96)
+    expect(lottie.h).toBe(64)
+    expect(lottie.layers.length).toBeGreaterThan(0)
+  })
+
+  it('writes a dotLottie ZIP with manifest and animation entry', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+    const outPath = join(dir, 'out.lottie')
+    const options = sanitizeExportOptions({ format: 'dotlottie', fromFrame: 0, toFrame: 3 }, DOCUMENT)
+    const outcome = await renderToFile(DOCUMENT, options, () => null, outPath)
+    expect(outcome.frames).toHaveLength(0)
+    const files = unzipSync(new Uint8Array(await readFile(outPath)))
+    const manifest = JSON.parse(strFromU8(files['manifest.json']))
+    expect(manifest.version).toBe('1.0')
+    expect(manifest.generator).toBe(`OpenAnimator ${APP_VERSION}`)
+    expect(manifest.animations).toEqual([{ id: 'openanimator', loop: true }])
+    const animation = JSON.parse(strFromU8(files['animations/animation.json']))
+    expect(animation.v).toBe('5.7.4')
+    expect(animation.layers.length).toBeGreaterThan(0)
+  })
+
+  it('writes an animated SVG with a keyframes stylesheet', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+    const outPath = join(dir, 'out.svg')
+    const options = sanitizeExportOptions(
+      { format: 'svg-animation', fromFrame: 0, toFrame: 3 },
+      DOCUMENT
+    )
+    const outcome = await renderToFile(DOCUMENT, options, () => null, outPath)
+    expect(outcome.frames).toHaveLength(0)
+    const svg = await readFile(outPath, 'utf8')
+    expect(svg.startsWith('<svg ')).toBe(true)
+    expect(svg).toContain('<style>')
+    expect(svg).toContain('animation:')
+  })
+
+  it('packs the rendered frames into a spritesheet atlas zip', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+    const outPath = join(dir, 'out.zip')
+    const options = sanitizeExportOptions(
+      { format: 'spritesheet', fromFrame: 0, toFrame: 3 },
+      DOCUMENT
+    )
+    const outcome = await renderToFile(DOCUMENT, options, () => null, outPath)
+    expect(outcome.frames).toHaveLength(4)
+    const files = unzipSync(new Uint8Array(await readFile(outPath)))
+    // 4 frames of 96×64 pack into a near-square 2×2 grid.
+    const atlas = PNG.sync.read(Buffer.from(files['atlas.png']))
+    expect(atlas.width).toBe(192)
+    expect(atlas.height).toBe(128)
+    const metadata = JSON.parse(strFromU8(files['atlas.json']))
+    expect(metadata.meta.app).toBe('OpenAnimator')
+    expect(metadata.meta.version).toBe(APP_VERSION)
+    expect(metadata.meta.image).toBe('atlas.png')
+    expect(metadata.openanimator).toEqual({ fps: 12, fromFrame: 0, toFrame: 3, frameCount: 4 })
+    expect(Object.keys(metadata.frames)).toEqual([
+      'frame_0000',
+      'frame_0001',
+      'frame_0002',
+      'frame_0003'
+    ])
+  })
+})
+
 describe('buildFfmpegArgs', () => {
   const framesPattern = 'frames/frame_%04d.png'
   const windowOptions = (format: 'webm' | 'mp4') =>
@@ -209,6 +313,53 @@ describe('buildFfmpegArgs', () => {
     expect(args).toEqual([
       '-y', '-framerate', '10', '-i', framesPattern,
       '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', 'out.webm'
+    ])
+  })
+
+  it('renders transparent WebM onto yuva420p with auto alt-ref disabled', () => {
+    const options = sanitizeExportOptions(
+      { format: 'webm', fromFrame: 0, toFrame: 3, fps: 10, transparent: true },
+      DOCUMENT
+    )
+    const args = buildFfmpegArgs([], options, {
+      framesPattern,
+      audioFiles: [],
+      outPath: 'out.webm'
+    })
+    expect(args).toEqual([
+      '-y', '-framerate', '10', '-i', framesPattern,
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuva420p', '-auto-alt-ref', '0', 'out.webm'
+    ])
+  })
+
+  it('keeps the alpha arguments when mixing audio into a transparent WebM', () => {
+    const options = sanitizeExportOptions(
+      { format: 'webm', fromFrame: 0, toFrame: 3, fps: 10, transparent: true },
+      DOCUMENT
+    )
+    const args = buildFfmpegArgs(
+      [{ resourceId: 'r1', startFrame: 0, startSeconds: 0, volume: 1 }],
+      options,
+      { framesPattern, audioFiles: ['audio_0.wav'], outPath: 'out.webm' }
+    )
+    expect(args).toContain('yuva420p')
+    expect(args[args.indexOf('-auto-alt-ref') + 1]).toBe('0')
+  })
+
+  it('stays opaque for MP4 even when transparency was requested', () => {
+    const options = sanitizeExportOptions(
+      { format: 'mp4', fromFrame: 0, toFrame: 3, fps: 10, transparent: true },
+      DOCUMENT
+    )
+    expect(options.transparent).toBe(false)
+    const args = buildFfmpegArgs([], options, {
+      framesPattern,
+      audioFiles: [],
+      outPath: 'out.mp4'
+    })
+    expect(args).toEqual([
+      '-y', '-framerate', '10', '-i', framesPattern,
+      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', 'out.mp4'
     ])
   })
 
@@ -366,5 +517,43 @@ describe('withEmbeddedFontFiles', () => {
       }
     }
     expect(whitePixels).toBeGreaterThan(0)
+  })
+})
+
+describe('createCliTextOutlineProvider', () => {
+  function textNodeOf(document: AnimatorDocument) {
+    const layer = document.layers[document.layers.length - 1]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    const node = layer.keyframes[0].nodes[0]
+    if (node.type !== 'text') throw new Error('expected a text node')
+    return node
+  }
+
+  it('outlines text through the document subset when the container ships it', async () => {
+    const document = embeddedDocument()
+    const bytes = loadSubsetBytes(document.fonts[0].glyphs)
+    const resources = new Map([[document.fonts[0].resourceId, { bytes, ext: 'ttf' }]])
+    const outline = await createCliTextOutlineProvider(document, resources)(textNodeOf(document))
+    expect(outline).not.toBeNull()
+    expect(outline!.d.startsWith('M')).toBe(true)
+    expect(outline!.width).toBeGreaterThan(2)
+    expect(outline!.height).toBeGreaterThan(2)
+    expect(outline!.fill).toBe('#ffffff')
+  })
+
+  it('falls back to the bundled font when the subset resource is missing', async () => {
+    const document = embeddedDocument()
+    const outline = await createCliTextOutlineProvider(document, new Map())(textNodeOf(document))
+    expect(outline).not.toBeNull()
+    expect(outline!.d.startsWith('M')).toBe(true)
+  })
+
+  it('returns null for text that lays out no glyphs', async () => {
+    const document = embeddedDocument()
+    const bytes = loadSubsetBytes(document.fonts[0].glyphs)
+    const resources = new Map([[document.fonts[0].resourceId, { bytes, ext: 'ttf' }]])
+    const node = textNodeOf(document)
+    const outline = await createCliTextOutlineProvider(document, resources)({ ...node, text: '' })
+    expect(outline).toBeNull()
   })
 })

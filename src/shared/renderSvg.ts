@@ -83,8 +83,9 @@ function gradientDefMarkup(paint: GradientPaint, id: string): string {
 
 /** Attribute value of a paint: the solid color itself, or a `url(#…)`
  * reference to the content-hashed gradient def — registered in `defs` once
- * per unique paint. */
-function paintAttribute(paint: Paint, defs: GradientDefs): string {
+ * per unique paint. Exported for the animated-SVG exporter, which emits the
+ * same gradient defs. */
+export function paintAttribute(paint: Paint, defs: GradientDefs): string {
   if (typeof paint === 'string') return paint
   const id = paintGradientId(paint)
   if (!defs.has(id)) defs.set(id, gradientDefMarkup(paint, id))

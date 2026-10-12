@@ -1,14 +1,27 @@
 import type { AnimatorDocument } from './model'
 import { documentDuration } from './document'
 
-/** Export output formats. PNG sequence ships as a ZIP of per-frame PNGs. */
-export type ExportFormat = 'png-sequence' | 'gif' | 'webm' | 'mp4'
+/** Export output formats. PNG sequence, dotLottie and spritesheet ship as
+ * ZIP archives; the vector formats have no raster resolution. */
+export type ExportFormat =
+  | 'png-sequence'
+  | 'gif'
+  | 'webm'
+  | 'mp4'
+  | 'lottie'
+  | 'dotlottie'
+  | 'svg-animation'
+  | 'spritesheet'
 
 export const EXPORT_FORMATS: Array<{ format: ExportFormat; label: string; extension: string }> = [
   { format: 'png-sequence', label: 'PNG sequence (ZIP, alpha)', extension: 'zip' },
   { format: 'gif', label: 'Animated GIF', extension: 'gif' },
   { format: 'webm', label: 'WebM video (VP9)', extension: 'webm' },
-  { format: 'mp4', label: 'MP4 video (H.264)', extension: 'mp4' }
+  { format: 'mp4', label: 'MP4 video (H.264)', extension: 'mp4' },
+  { format: 'lottie', label: 'Lottie (bodymovin JSON)', extension: 'json' },
+  { format: 'dotlottie', label: 'dotLottie (ZIP)', extension: 'lottie' },
+  { format: 'svg-animation', label: 'Animated SVG (CSS keyframes)', extension: 'svg' },
+  { format: 'spritesheet', label: 'Spritesheet (PNG atlas ZIP, alpha)', extension: 'zip' }
 ]
 
 export const EXPORT_LIMITS = {
@@ -51,35 +64,39 @@ function clampFps(fps: number): number {
 /**
  * Coerces untrusted export options (dialog fields, CLI flags, scripted
  * calls) into a valid, clamped set. Frame indices are clamped into the
- * document range and reordered; transparent is dropped for video formats,
- * which always render on an opaque background.
+ * document range and reordered; transparent is dropped for MP4 (no alpha
+ * codec), and the vector Lottie formats pin scale to 1 — their resolution is
+ * inherent to the consuming player.
  */
 export function sanitizeExportOptions(
   raw: Partial<ExportOptions> | undefined,
   document: AnimatorDocument
 ): ExportOptions {
   const defaults = defaultExportOptions(document)
+  const format = EXPORT_FORMATS.some((entry) => entry.format === raw?.format)
+    ? (raw!.format as ExportFormat)
+    : defaults.format
   const scaleNumber = Number(raw?.scale)
-  const scale = Number.isFinite(scaleNumber)
+  const clampedScale = Number.isFinite(scaleNumber)
     ? Math.min(
         EXPORT_LIMITS.scale.max,
         Math.max(EXPORT_LIMITS.scale.min, scaleNumber)
       )
     : defaults.scale
+  const scale = format === 'lottie' || format === 'dotlottie' ? 1 : clampedScale
   const lastFrame = documentDuration(document) - 1
   const from = clampFrame(Number(raw?.fromFrame), 0, lastFrame)
   const to = clampFrame(Number(raw?.toFrame), 0, lastFrame)
-  const format = EXPORT_FORMATS.some((entry) => entry.format === raw?.format)
-    ? (raw!.format as ExportFormat)
-    : defaults.format
   return {
     format,
     scale,
     fps: clampFps(Number(raw?.fps)),
     fromFrame: Math.min(from, to),
     toFrame: Math.max(from, to),
-    // Video codecs have no alpha: silently render on the background color.
-    transparent: format === 'png-sequence' || format === 'gif' ? Boolean(raw?.transparent) : false
+    // Only MP4 is opaque-by-codec: every other format can carry alpha
+    // (spritesheets and PNG sequences on empty areas, Lottie/SVG/WebM on
+    // supporting players/encoders).
+    transparent: format === 'mp4' ? false : Boolean(raw?.transparent)
   }
 }
 

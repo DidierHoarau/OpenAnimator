@@ -46,7 +46,9 @@ const mediabunny = vi.hoisted(() => {
     audioCodecs: [] as Array<string | null>,
     outputs: [] as FakeOutput[],
     videoCodecQueries: [] as Array<{ codecs: string[]; options: unknown }>,
-    audioCodecQueries: [] as string[][]
+    audioCodecQueries: [] as string[][],
+    alphaProbes: [] as Array<{ codec: string; options: unknown }>,
+    alphaProbeResults: [] as boolean[]
   }
 
   class BufferTarget {
@@ -128,6 +130,10 @@ const mediabunny = vi.hoisted(() => {
     getFirstEncodableAudioCodec: vi.fn(async (codecs: string[]): Promise<string | null> => {
       state.audioCodecQueries.push(codecs)
       return state.audioCodecs.shift() ?? null
+    }),
+    canEncodeVideo: vi.fn(async (codec: string, options: unknown): Promise<boolean> => {
+      state.alphaProbes.push({ codec, options })
+      return state.alphaProbeResults.shift() ?? false
     })
   }
 })
@@ -172,8 +178,11 @@ describe('encodeVideo', () => {
     mediabunny.state.outputs.length = 0
     mediabunny.state.videoCodecQueries.length = 0
     mediabunny.state.audioCodecQueries.length = 0
+    mediabunny.state.alphaProbes.length = 0
+    mediabunny.state.alphaProbeResults.length = 0
     mediabunny.getFirstEncodableVideoCodec.mockClear()
     mediabunny.getFirstEncodableAudioCodec.mockClear()
+    mediabunny.canEncodeVideo.mockClear()
   })
 
   it('adds the audio mix as a track and draws every frame of the range', async () => {
@@ -193,6 +202,63 @@ describe('encodeVideo', () => {
     expect(output.audioTracks[0].buffers).toEqual([buffer])
     expect(output.audioTracks[0].closed).toBe(true)
     expect(drawFrame.mock.calls.map((call) => call[1])).toEqual([0, 1, 2])
+  })
+
+  it('encodes transparent WebM with the VP9 alpha encoder when available', async () => {
+    mediabunny.state.alphaProbeResults = [true]
+    const result = await encodeVideo(options({ transparent: true }), SIZE, vi.fn(), {
+      canceled: false
+    })
+
+    expect(result.alphaIncluded).toBe(true)
+    expect(mediabunny.state.alphaProbes.at(-1)).toEqual({
+      codec: 'vp9',
+      options: { width: 320, height: 180, alpha: 'keep' }
+    })
+    expect(mediabunny.state.outputs.at(-1)!.videoTracks[0].source.options).toEqual({
+      codec: 'vp9',
+      quality: 'high',
+      alpha: 'keep'
+    })
+  })
+
+  it('falls back to opaque VP9 and reports the dropped alpha when the probe fails', async () => {
+    mediabunny.state.alphaProbeResults = [false]
+    const result = await encodeVideo(options({ transparent: true }), SIZE, vi.fn(), {
+      canceled: false
+    })
+
+    expect(result.alphaIncluded).toBe(false)
+    // Regular codec negotiation still runs and lands on plain VP9.
+    expect(mediabunny.state.videoCodecQueries.at(-1)).toEqual({
+      codecs: ['vp9', 'vp8'],
+      options: SIZE
+    })
+    expect(mediabunny.state.outputs.at(-1)!.videoTracks[0].source.options).toEqual({
+      codec: 'vp9',
+      quality: 'high'
+    })
+  })
+
+  it('does not probe alpha for opaque exports', async () => {
+    const result = await encodeVideo(options(), SIZE, vi.fn(), { canceled: false })
+
+    expect(result.alphaIncluded).toBe(true)
+    expect(mediabunny.state.alphaProbes).toHaveLength(0)
+  })
+
+  it('stays opaque for MP4 even when transparency was requested', async () => {
+    mediabunny.state.videoCodecs = ['avc']
+    const result = await encodeVideo(options({ format: 'mp4', transparent: true }), SIZE, vi.fn(), {
+      canceled: false
+    })
+
+    expect(result.alphaIncluded).toBe(true)
+    expect(mediabunny.state.alphaProbes).toHaveLength(0)
+    expect(mediabunny.state.outputs.at(-1)!.videoTracks[0].source.options).toEqual({
+      codec: 'avc',
+      quality: 'high'
+    })
   })
 
   it('writes a silent video when no audio codec is encodable', async () => {

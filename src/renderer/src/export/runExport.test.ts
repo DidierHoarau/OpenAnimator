@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
-import { unzipSync } from 'fflate'
+import { strFromU8, unzipSync } from 'fflate'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument, createDrawingLayer } from '@shared/document'
 import type { ExportOptions } from '@shared/exportOptions'
+import type { TextNode } from '@shared/model'
 import { Editor } from '../editor'
 
 import { runExport, type ExportRunnerDeps } from './runExport'
@@ -212,7 +213,8 @@ describe('runExport — audio in video exports', () => {
     videoEncoder.canEncodeVideo.mockReturnValue(true)
     videoEncoder.encodeVideo.mockResolvedValue({
       bytes: new Uint8Array([7, 7]),
-      audioIncluded: true
+      audioIncluded: true,
+      alphaIncluded: true
     })
     const mix = mixBuffer()
     const renderAudioMix = vi.fn(() => Promise.resolve(mix))
@@ -236,7 +238,8 @@ describe('runExport — audio in video exports', () => {
     videoEncoder.canEncodeVideo.mockReturnValue(true)
     videoEncoder.encodeVideo.mockResolvedValue({
       bytes: new Uint8Array([7]),
-      audioIncluded: false
+      audioIncluded: false,
+      alphaIncluded: true
     })
     const deps = fakeDeps({ renderAudioMix: () => Promise.resolve(mixBuffer()) })
 
@@ -264,7 +267,8 @@ describe('runExport — audio in video exports', () => {
     videoEncoder.canEncodeVideo.mockReturnValue(true)
     videoEncoder.encodeVideo.mockResolvedValue({
       bytes: new Uint8Array([7]),
-      audioIncluded: false
+      audioIncluded: false,
+      alphaIncluded: true
     })
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const deps = fakeDeps({
@@ -280,5 +284,118 @@ describe('runExport — audio in video exports', () => {
     expect(videoEncoder.encodeVideo.mock.calls[0][4]).toBeNull()
     expect(deps.messages).toEqual(['Exported to /tmp/out'])
     warn.mockRestore()
+  })
+
+  it('reports dropped transparency when the VP9 alpha encoder is unavailable', async () => {
+    videoEncoder.canEncodeVideo.mockReturnValue(true)
+    videoEncoder.encodeVideo.mockResolvedValue({
+      bytes: new Uint8Array([7]),
+      audioIncluded: true,
+      alphaIncluded: false
+    })
+    const deps = fakeDeps()
+
+    const result = await runExport(drawingEditor(), options({ format: 'webm', transparent: true }), deps, {
+      canceled: false
+    })
+
+    expect(result).toBe(true)
+    expect(deps.messages).toEqual([
+      'Exported to /tmp/out without transparency (no VP9 alpha encoder in this environment)'
+    ])
+  })
+})
+
+describe('runExport — vector and spritesheet formats', () => {
+  it('exports Lottie JSON directly, without WebCodecs or rasterization', async () => {
+    const editor = drawingEditor()
+    const deps = fakeDeps()
+    const result = await runExport(editor, options({ format: 'lottie' }), deps, { canceled: false })
+
+    expect(result).toBe(true)
+    expect(deps.picked[0].defaultName).toBe('demo.json')
+    const parsed = JSON.parse(strFromU8(deps.written[0].bytes)) as {
+      v: string
+      fr: number
+      layers: unknown[]
+    }
+    expect(parsed.v).toBe('5.7.4')
+    expect(parsed.fr).toBe(12)
+    expect(parsed.layers.length).toBeGreaterThan(0)
+    expect(deps.messages).toEqual(['Exported to /tmp/out'])
+  })
+
+  it('packs dotLottie archives with the app version in the manifest', async () => {
+    const editor = drawingEditor()
+    const deps = fakeDeps({ appVersion: () => Promise.resolve('9.9.9') })
+    const result = await runExport(editor, options({ format: 'dotlottie' }), deps, { canceled: false })
+
+    expect(result).toBe(true)
+    expect(deps.picked[0].defaultName).toBe('demo.lottie')
+    const entries = unzipSync(deps.written[0].bytes)
+    const manifest = JSON.parse(strFromU8(entries['manifest.json'])) as { generator: string }
+    expect(manifest.generator).toBe('OpenAnimator 9.9.9')
+    expect(entries['animations/animation.json']).toBeDefined()
+  })
+
+  it('writes the animated SVG as text', async () => {
+    const editor = drawingEditor()
+    const deps = fakeDeps()
+    const result = await runExport(editor, options({ format: 'svg-animation' }), deps, { canceled: false })
+
+    expect(result).toBe(true)
+    expect(deps.picked[0].defaultName).toBe('demo.svg')
+    const svg = new TextDecoder().decode(deps.written[0].bytes)
+    expect(svg.startsWith('<svg ')).toBe(true)
+    expect(deps.messages).toEqual(['Exported to /tmp/out'])
+  })
+
+  it('packs spritesheet atlases with metadata', async () => {
+    const editor = drawingEditor(6)
+    const deps = fakeDeps({ appVersion: () => Promise.resolve('9.9.9') })
+    const result = await runExport(
+      editor,
+      options({ format: 'spritesheet', toFrame: 5 }),
+      deps,
+      { canceled: false }
+    )
+
+    expect(result).toBe(true)
+    expect(deps.picked[0].defaultName).toBe('demo.zip')
+    const entries = unzipSync(deps.written[0].bytes)
+    expect(Array.from(entries['atlas.png'].slice(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47])
+    const metadata = JSON.parse(strFromU8(entries['atlas.json'])) as {
+      meta: { version: string }
+      openanimator: { frameCount: number }
+    }
+    expect(metadata.meta.version).toBe('9.9.9')
+    expect(metadata.openanimator.frameCount).toBe(6)
+  })
+
+  it('appends the export diagnostic count to the success message', async () => {
+    const editor = drawingEditor()
+    const layer = editor.document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    const text: TextNode = {
+      id: 't1',
+      type: 'text',
+      center: { x: 100, y: 90 },
+      width: 60,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Missing Font',
+      fontSize: 48,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    layer.keyframes[0].nodes.push(text)
+    const deps = fakeDeps()
+    const result = await runExport(editor, options({ format: 'lottie' }), deps, { canceled: false })
+
+    expect(result).toBe(true)
+    expect(deps.messages).toEqual(['Exported to /tmp/out (1 export diagnostic)'])
   })
 })

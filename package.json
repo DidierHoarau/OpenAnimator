@@ -1,7 +1,7 @@
 {
   "name": "openanimator",
   "productName": "OpenAnimator",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "OpenAnimator is an open-source vector-based animation tool.",
   "main": "./out/main/index.js",
   "bin": {
@@ -48,6 +48,7 @@
     "fflate": "^0.8.3",
     "gifenc": "^1.0.3",
     "happy-dom": "^20.14.6",
+    "lottie-web": "^5.13.0",
     "mediabunny": "^1.61.3",
     "opentype.js": "^2.0.0",
     "pngjs": "^7.0.0",
