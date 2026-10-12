@@ -11,6 +11,17 @@ import type { RenderLayer } from './render'
  */
 export type ResourceResolver = (resourceId: string) => string | null
 
+/**
+ * Optional render style. `outline` draws primitives and paths stroke-only in
+ * one flat color (the onion-skin outline approximation); groups keep their
+ * normal wrapper markup so their primitive/path children still outline, while
+ * symbols, images and text keep their normal markup. Absent ⇒ byte-identical
+ * markup to the historical renderer.
+ */
+export interface SvgRenderOptions {
+  outline?: { color: string }
+}
+
 /** Escapes a string for safe use inside a double- or single-quoted XML attribute. */
 export function escapeXmlAttribute(value: string): string {
   return value
@@ -32,7 +43,7 @@ function placementAttrs(center: { x: number; y: number }, rotation: number, opac
   )
 }
 
-function primitiveToSvgMarkup(node: PrimitiveNode): string {
+function primitiveToSvgMarkup(node: PrimitiveNode, outline: { color: string } | undefined): string {
   let markup: string
   if (node.primitive === 'ellipse') {
     markup = `<ellipse${attr('rx', node.width / 2)}${attr('ry', node.height / 2)}`
@@ -41,14 +52,26 @@ function primitiveToSvgMarkup(node: PrimitiveNode): string {
       `<rect${attr('x', -node.width / 2)}${attr('y', -node.height / 2)}` +
       `${attr('width', node.width)}${attr('height', node.height)}`
   }
-  markup += attr('fill', node.fill)
-  if (node.stroke !== undefined) markup += attr('stroke', node.stroke)
-  if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
+  if (outline) {
+    markup +=
+      attr('fill', 'none') +
+      attr('stroke', outline.color) +
+      attr('stroke-width', 1) +
+      attr('vector-effect', 'non-scaling-stroke')
+  } else {
+    markup += attr('fill', node.fill)
+    if (node.stroke !== undefined) markup += attr('stroke', node.stroke)
+    if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
+  }
   markup += placementAttrs(node.center, node.rotation, node.opacity)
   return `${markup}/>`
 }
 
-function groupToSvgMarkup(node: GroupNode, resolveResource: ResourceResolver | undefined): string {
+function groupToSvgMarkup(
+  node: GroupNode,
+  resolveResource: ResourceResolver | undefined,
+  options: SvgRenderOptions | undefined
+): string {
   const natural = groupNaturalSize(node.children)
   const sx = natural.width === 0 ? 1 : node.width / natural.width
   const sy = natural.height === 0 ? 1 : node.height / natural.height
@@ -57,7 +80,7 @@ function groupToSvgMarkup(node: GroupNode, resolveResource: ResourceResolver | u
     `translate(${node.center.x} ${node.center.y}) rotate(${node.rotation}) scale(${sx} ${sy})`
   )}${attr('opacity', node.opacity)}>`
   for (const child of node.children) {
-    markup += nodeToSvgMarkup(child, resolveResource)
+    markup += nodeToSvgMarkup(child, resolveResource, options)
   }
   return `${markup}</g>`
 }
@@ -94,7 +117,7 @@ function imageToSvgMarkup(node: ImageNode, resolveResource: ResourceResolver | u
  * is normalized to a (0,0)-centered bbox at creation, so scaling around the
  * origin keeps it centered).
  */
-function pathToSvgMarkup(node: PathNode): string {
+function pathToSvgMarkup(node: PathNode, outline: { color: string } | undefined): string {
   const natural = pathNaturalSize(node)
   const sx = natural.width === 0 ? 1 : node.width / natural.width
   const sy = natural.height === 0 ? 1 : node.height / natural.height
@@ -102,10 +125,18 @@ function pathToSvgMarkup(node: PathNode): string {
     `<g${attr(
       'transform',
       `translate(${node.center.x} ${node.center.y}) rotate(${node.rotation}) scale(${sx} ${sy})`
-    )}${attr('opacity', node.opacity)}><path${attr('d', node.d)}` +
-    attr('fill', node.fill ?? 'none')
-  if (node.stroke !== undefined) markup += attr('stroke', node.stroke)
-  if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
+    )}${attr('opacity', node.opacity)}><path${attr('d', node.d)}`
+  if (outline) {
+    markup +=
+      attr('fill', 'none') +
+      attr('stroke', outline.color) +
+      attr('stroke-width', 1) +
+      attr('vector-effect', 'non-scaling-stroke')
+  } else {
+    markup += attr('fill', node.fill ?? 'none')
+    if (node.stroke !== undefined) markup += attr('stroke', node.stroke)
+    if (node.strokeWidth !== undefined) markup += attr('stroke-width', node.strokeWidth)
+  }
   return `${markup}/></g>`
 }
 
@@ -148,19 +179,27 @@ function symbolToSvgMarkup(node: SymbolNode): string {
  * (no resolver, missing or corrupt resource); symbols stay dashed placeholder
  * boxes until the asset-library phase. Every attribute value is XML-escaped,
  * so document data can never inject markup.
+ *
+ * With `options.outline` set, primitives and paths (including those nested in
+ * groups) render stroke-only in the outline color; every other kind keeps its
+ * normal markup.
  */
-export function nodeToSvgMarkup(node: SceneNode, resolveResource?: ResourceResolver): string {
+export function nodeToSvgMarkup(
+  node: SceneNode,
+  resolveResource?: ResourceResolver,
+  options?: SvgRenderOptions
+): string {
   switch (node.type) {
     case 'group':
-      return groupToSvgMarkup(node, resolveResource)
+      return groupToSvgMarkup(node, resolveResource, options)
     case 'image':
       return imageToSvgMarkup(node, resolveResource)
     case 'symbol':
       return symbolToSvgMarkup(node)
     case 'primitive':
-      return primitiveToSvgMarkup(node)
+      return primitiveToSvgMarkup(node, options?.outline)
     case 'path':
-      return pathToSvgMarkup(node)
+      return pathToSvgMarkup(node, options?.outline)
     case 'text':
       return textToSvgMarkup(node)
   }
@@ -172,12 +211,13 @@ export function nodeToSvgMarkup(node: SceneNode, resolveResource?: ResourceResol
  */
 export function renderLayersToSvgMarkup(
   layers: RenderLayer[],
-  resolveResource?: ResourceResolver
+  resolveResource?: ResourceResolver,
+  options?: SvgRenderOptions
 ): string {
   let markup = ''
   for (const layer of layers) {
     for (const node of layer.nodes) {
-      markup += nodeToSvgMarkup(node, resolveResource)
+      markup += nodeToSvgMarkup(node, resolveResource, options)
     }
   }
   return markup

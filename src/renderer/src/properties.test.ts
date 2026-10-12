@@ -553,7 +553,10 @@ describe('PropertiesView — Layer move', () => {
     }
 
     const section = sectionByTitle(container, 'Layer')
-    const input = section.querySelector<HTMLInputElement>('input[type="number"]')!
+    const row = [...section.querySelectorAll('.panel-row')].find(
+      (candidate) => candidate.querySelector('label')?.textContent === 'Move to'
+    )!
+    const input = row.querySelector<HTMLInputElement>('input[type="number"]')!
     expect(input.disabled).toBe(false)
     expect(input.value).toBe('1')
 
@@ -569,5 +572,75 @@ describe('PropertiesView — Layer move', () => {
     // One undo step restores the original timing.
     editor.undo()
     expect(frames()).toEqual([0])
+  })
+})
+
+describe('PropertiesView — tween easing editor and motion path', () => {
+  let editor: Editor
+  let container: HTMLElement
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24))
+    container = document.createElement('aside')
+    document.body.appendChild(container)
+    new PropertiesView(editor, container)
+  })
+
+  const presetSelect = (): HTMLSelectElement =>
+    container.querySelector<HTMLSelectElement>('.easing-editor__preset')!
+  const pathSelect = (): HTMLSelectElement => {
+    const row = [...container.querySelectorAll('.panel-row')].find(
+      (candidate) => candidate.querySelector('label')?.textContent === 'Motion path'
+    )!
+    return row.querySelector('select')!
+  }
+  const field = (name: string): HTMLInputElement =>
+    container.querySelector<HTMLInputElement>(`.easing-editor__input[data-field="${name}"]`)!
+  const tweenAt = (frame: number) =>
+    editor.currentLayer!.keyframes.find((keyframe) => keyframe.frame === frame)?.tween
+
+  it('disables the easing controls until the selected object is tween-keyed', () => {
+    editor.addNode(rect('a', 0, 0))
+    // Keyed but not tweened: the whole editor is disabled.
+    expect(presetSelect().disabled).toBe(true)
+    expect(pathSelect().disabled).toBe(true)
+    expect(field('x1').disabled).toBe(true)
+
+    editor.toggleTweenHere()
+    expect(presetSelect().disabled).toBe(false)
+    expect(pathSelect().disabled).toBe(false)
+    expect(field('x1').disabled).toBe(false)
+  })
+
+  it('mirrors the keyframe tween and writes easing and path picks back', () => {
+    editor.addNode(rect('a', 0, 0))
+    editor.toggleTweenHere()
+    // Default tween: the ease-in-out preset on a linear path.
+    expect(presetSelect().value).toBe('ease-in-out')
+    expect(field('x1').value).toBe('0.42')
+    expect(field('y2').value).toBe('1')
+    expect(pathSelect().value).toBe('linear')
+
+    // A custom bezier syncs to the Custom entry with the exact fields.
+    editor.setTweenEasingHere({ x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4 })
+    expect(presetSelect().value).toBe('custom')
+    expect(field('x2').value).toBe('0.3')
+
+    // Picking a preset applies it and re-syncs the fields.
+    presetSelect().value = 'ease-out'
+    presetSelect().dispatchEvent(new Event('change', { bubbles: true }))
+    expect(tweenAt(0)).toEqual({ easing: 'ease-out' })
+    expect(field('x1').value).toBe('0')
+    expect(field('x2').value).toBe('0.58')
+
+    // The motion-path mode travels through its own select and is undoable.
+    pathSelect().value = 'smooth'
+    pathSelect().dispatchEvent(new Event('change', { bubbles: true }))
+    expect(tweenAt(0)).toEqual({ easing: 'ease-out', path: 'smooth' })
+    editor.undo()
+    expect(tweenAt(0)).toEqual({ easing: 'ease-out' })
+    expect(pathSelect().value).toBe('linear')
   })
 })

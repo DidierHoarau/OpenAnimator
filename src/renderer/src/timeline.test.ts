@@ -5,6 +5,8 @@ import { createDocument, getLayer } from '@shared/document'
 import type { DrawingLayer, PrimitiveNode, SceneNode } from '@shared/model'
 
 import { Editor } from './editor'
+import { registerKeyboard } from './keyboard'
+import { StageView } from './stage'
 import { TimelineView } from './timeline'
 
 function rect(id: string): PrimitiveNode {
@@ -527,5 +529,325 @@ describe('TimelineView — drawing layers', () => {
     // The cell operations exist for every layer but are hidden on objects.
     expect(insertCell.classList.contains('hidden')).toBe(true)
     expect(menu.querySelector('.tl-context-resolution')?.classList.contains('hidden')).toBe(true)
+  })
+})
+
+describe('TimelineView — keyframe markers, range copy/paste and options', () => {
+  let editor: Editor
+  let container: HTMLElement
+  let view: TimelineView
+
+  beforeEach(() => {
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24))
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    view = new TimelineView(editor, container)
+  })
+
+  const extend = (toFrame: number): void => {
+    while (editor.duration <= toFrame) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+  }
+  const expandFirstLayer = (): void => {
+    container.querySelector<HTMLElement>('.tl-toggle')!.click()
+  }
+  const markerFor = (shapeId: string, frame: number): HTMLElement =>
+    container.querySelector<HTMLElement>(
+      `.tl-shape-row[data-shape-id="${shapeId}"] .tl-key[data-frame="${frame}"]`
+    )!
+  const selectedFrames = (shapeId: string): (string | undefined)[] =>
+    [
+      ...container.querySelectorAll<HTMLElement>(
+        `.tl-shape-row[data-shape-id="${shapeId}"] .tl-key.selected`
+      )
+    ].map((marker) => marker.dataset.frame)
+  const nodeFrames = (id: string): number[] =>
+    getLayer(editor.document, editor.currentLayerId)!
+      .keyframes.filter((keyframe) => keyframe.nodes.some((node) => node.id === id))
+      .map((keyframe) => keyframe.frame)
+  const pressMarker = (shapeId: string, frame: number, shift = false): void => {
+    markerFor(shapeId, frame).dispatchEvent(
+      new MouseEvent('pointerdown', { clientX: 100, clientY: 50, bubbles: true, shiftKey: shift })
+    )
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 100, clientY: 50 }))
+  }
+
+  it('retimes a single keyframe marker by dragging it, as one undo step', () => {
+    editor.addNode(rect('a'))
+    extend(7)
+    editor.seekToFrame(4)
+    editor.ensureNodeKeyframe('a')
+    expandFirstLayer()
+
+    // Press-and-release without travel is a plain click: select and seek only.
+    pressMarker('a', 4)
+    expect(editor.currentFrame).toBe(4)
+    expect(selectedFrames('a')).toEqual(['4'])
+    expect(nodeFrames('a')).toEqual([0, 4])
+
+    // Dragging two frames right previews the offset and commits on release.
+    markerFor('a', 4).dispatchEvent(
+      new MouseEvent('pointerdown', { clientX: 100, clientY: 50, bubbles: true })
+    )
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 128, clientY: 50 }))
+    expect(markerFor('a', 4).style.transform).toBe('translateX(28px)')
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 128, clientY: 50 }))
+    expect(nodeFrames('a')).toEqual([0, 6])
+
+    // The whole drag is a single history entry.
+    editor.undo()
+    expect(nodeFrames('a')).toEqual([0, 4])
+    editor.redo()
+    expect(nodeFrames('a')).toEqual([0, 6])
+
+    // Overshooting the timeline end clamps the move to the last frame.
+    markerFor('a', 6).dispatchEvent(
+      new MouseEvent('pointerdown', { clientX: 100, clientY: 50, bubbles: true })
+    )
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 900, clientY: 50 }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 900, clientY: 50 }))
+    expect(nodeFrames('a')).toEqual([0, 7])
+  })
+
+  it('shift-click multi-selects markers and drags them in one undo step', () => {
+    editor.addNode(rect('a'))
+    editor.addNode(rect('b'))
+    extend(7)
+    editor.seekToFrame(2)
+    editor.ensureNodeKeyframe('a')
+    editor.seekToFrame(4)
+    editor.ensureNodeKeyframe('b')
+    expandFirstLayer()
+
+    pressMarker('a', 2)
+    expect(selectedFrames('a')).toEqual(['2'])
+    pressMarker('b', 4, true)
+    expect(selectedFrames('a')).toEqual(['2'])
+    expect(selectedFrames('b')).toEqual(['4'])
+
+    // Shift-clicking again drops the marker from the selection.
+    pressMarker('b', 4, true)
+    expect(selectedFrames('b')).toEqual([])
+    pressMarker('b', 4, true)
+
+    // Dragging one selected marker moves the whole selection by one frame.
+    markerFor('a', 2).dispatchEvent(
+      new MouseEvent('pointerdown', { clientX: 100, clientY: 50, bubbles: true })
+    )
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 114, clientY: 50 }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 114, clientY: 50 }))
+    expect(nodeFrames('a')).toEqual([0, 3])
+    expect(nodeFrames('b')).toEqual([0, 5])
+
+    editor.undo()
+    expect(nodeFrames('a')).toEqual([0, 2])
+    expect(nodeFrames('b')).toEqual([0, 4])
+    editor.redo()
+    expect(nodeFrames('a')).toEqual([0, 3])
+    expect(nodeFrames('b')).toEqual([0, 5])
+  })
+
+  it('drags a copy range on the ruler and clears it with a plain click', () => {
+    const ruler = container.querySelector<HTMLElement>('.tl-ruler')!
+    const band = (): HTMLElement => container.querySelector<HTMLElement>('.tl-range')!
+    const at = (frame: number): number => 180 + frame * 14 + 7
+
+    ruler.dispatchEvent(new MouseEvent('pointerdown', { clientX: at(2), clientY: 5, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: at(5), clientY: 5 }))
+    expect(band().classList.contains('hidden')).toBe(false)
+    expect(band().style.left).toBe(`${180 + 2 * 14}px`)
+    expect(band().style.width).toBe(`${4 * 14}px`)
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: at(5), clientY: 5 }))
+    expect(band().classList.contains('hidden')).toBe(false)
+
+    // A plain click (no travel) clears the band.
+    ruler.dispatchEvent(new MouseEvent('pointerdown', { clientX: at(1), clientY: 5, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: at(1), clientY: 5 }))
+    expect(band().classList.contains('hidden')).toBe(true)
+  })
+
+  it('copies the ruler range and pastes it at the playhead with the carried tween', () => {
+    editor.addNode(rect('a'))
+    extend(9)
+    editor.seekToFrame(0)
+    editor.toggleTweenHere()
+    editor.seekToFrame(3)
+    editor.ensureNodeKeyframe('a')
+    expandFirstLayer()
+
+    const messages: string[] = []
+    editor.onMessage((message) => messages.push(message))
+    const last = (): string => messages[messages.length - 1]
+
+    // Paste first: the empty clipboard is reported, not applied.
+    view.pasteKeyframes()
+    expect(last()).toBe('Paste keyframes: the clipboard is empty')
+
+    // Drag frames 1–4 (0-based 0–3) on the ruler, then copy the band.
+    const ruler = container.querySelector<HTMLElement>('.tl-ruler')!
+    const at = (frame: number): number => 180 + frame * 14 + 7
+    ruler.dispatchEvent(new MouseEvent('pointerdown', { clientX: at(0), clientY: 5, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: at(3), clientY: 5 }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: at(3), clientY: 5 }))
+    view.copyKeyframes()
+    expect(last()).toBe('Copied 2 keyframe entries')
+
+    editor.seekToFrame(5)
+    view.pasteKeyframes()
+    expect(last()).toBe('Pasted 2 keyframe entries')
+    expect(nodeFrames('a')).toEqual([0, 3, 5, 8])
+    // The tween rode along to the first pasted keyframe only.
+    const tweenAt = (frame: number) =>
+      getLayer(editor.document, editor.currentLayerId)!.keyframes.find(
+        (keyframe) => keyframe.frame === frame
+      )?.tween
+    expect(tweenAt(5)).toEqual({ easing: 'ease-in-out' })
+    expect(tweenAt(8)).toBeUndefined()
+
+    // One undo step for the whole paste.
+    editor.undo()
+    expect(nodeFrames('a')).toEqual([0, 3])
+    editor.redo()
+    expect(nodeFrames('a')).toEqual([0, 3, 5, 8])
+  })
+
+  it('copies the focused marker and wires Ctrl+C / Ctrl+V to the timeline', () => {
+    editor.addNode(rect('a'))
+    extend(7)
+    editor.seekToFrame(3)
+    editor.ensureNodeKeyframe('a')
+    expandFirstLayer()
+
+    const host = document.createElement('main')
+    document.body.appendChild(host)
+    const stageView = new StageView(editor, host)
+    registerKeyboard(editor, stageView, view)
+
+    const messages: string[] = []
+    editor.onMessage((message) => messages.push(message))
+    const last = (): string => messages[messages.length - 1]
+
+    pressMarker('a', 3)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }))
+    expect(last()).toBe('Copied 1 keyframe entry')
+
+    editor.seekToFrame(5)
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true }))
+    expect(last()).toBe('Pasted 1 keyframe entry')
+    expect(nodeFrames('a')).toEqual([0, 3, 5])
+
+    // Inside text fields the shortcut stays native: nothing is copied.
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true }))
+    expect(last()).toBe('Pasted 1 keyframe entry')
+  })
+
+  it('offers keyframe actions on a marker right-click', () => {
+    editor.addNode(rect('a'))
+    extend(7)
+    editor.seekToFrame(4)
+    editor.ensureNodeKeyframe('a')
+    editor.seekToFrame(6)
+    editor.updateSelectedNode((node) => {
+      if (node.type === 'primitive') node.center.x = 50
+    })
+    expandFirstLayer()
+
+    const messages: string[] = []
+    editor.onMessage((message) => messages.push(message))
+    const last = (): string => messages[messages.length - 1]
+    const menu = container.querySelector<HTMLElement>('.tl-context-menu')!
+    const menuButton = (label: string): HTMLButtonElement =>
+      [...menu.querySelectorAll<HTMLButtonElement>('button')].find(
+        (button) => button.textContent === label
+      )!
+
+    // The object row's menu hides the keyframe actions entirely.
+    container
+      .querySelector<HTMLElement>('.tl-shape-row .tl-head')!
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }))
+    expect(menuButton('Copy Keyframe / Frame Range').classList.contains('hidden')).toBe(true)
+
+    // A marker's menu shows them; paste starts disabled without a clipboard.
+    markerFor('a', 4).dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 })
+    )
+    expect(menu.classList.contains('hidden')).toBe(false)
+    expect(menuButton('Copy Keyframe / Frame Range').classList.contains('hidden')).toBe(false)
+    expect(menuButton('Paste Keyframe here').disabled).toBe(true)
+
+    menuButton('Copy Keyframe / Frame Range').click()
+    expect(last()).toBe('Copied 1 keyframe entry')
+    expect(selectedFrames('a')).toEqual(['4'])
+
+    // Paste the copied pose onto the keyframe at frame 6 through the menu.
+    markerFor('a', 6).dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 })
+    )
+    expect(menuButton('Paste Keyframe here').disabled).toBe(false)
+    menuButton('Paste Keyframe here').click()
+    expect(last()).toBe('Pasted 1 keyframe entry')
+    const poseAt = (frame: number): number => {
+      const keyframe = getLayer(editor.document, editor.currentLayerId)!.keyframes.find(
+        (candidate) => candidate.frame === frame
+      )!
+      return (keyframe.nodes.find((node) => node.id === 'a') as PrimitiveNode).center.x
+    }
+    expect(poseAt(6)).toBe(0)
+
+    editor.undo()
+    expect(poseAt(6)).toBe(50)
+  })
+
+  it('drives the hold step and onion options from the options row', () => {
+    const select = container.querySelector<HTMLSelectElement>('.tl-options select')!
+    expect(select.value).toBe('1')
+    select.value = '3'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(editor.holdStep).toBe(3)
+    expect(editor.document.holdStep).toBe(3)
+
+    // Undoing mirrors the reverted value back onto the control.
+    editor.undo()
+    expect(editor.holdStep).toBe(1)
+    expect(select.value).toBe('1')
+
+    const [onionCheckbox, tintCheckbox, outlineCheckbox] = [
+      ...container.querySelectorAll<HTMLInputElement>('.tl-options .tl-check')
+    ]
+    onionCheckbox.click()
+    expect(editor.onionSkin).toBe(true)
+    onionCheckbox.click()
+    expect(editor.onionSkin).toBe(false)
+
+    const [beforeInput, afterInput] = [
+      ...container.querySelectorAll<HTMLInputElement>('.tl-options .tl-number')
+    ]
+    beforeInput.value = '4'
+    beforeInput.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(editor.onionBefore).toBe(4)
+    afterInput.value = '9'
+    afterInput.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(editor.onionAfter).toBe(5)
+
+    tintCheckbox.click()
+    expect(editor.onionTint).toBe(true)
+    const [tintBefore, tintAfter] = [
+      ...container.querySelectorAll<HTMLInputElement>('.tl-options .tl-color')
+    ]
+    tintBefore.value = '#123456'
+    tintBefore.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(editor.onionTintBefore).toBe('#123456')
+    tintAfter.value = '#654321'
+    tintAfter.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(editor.onionTintAfter).toBe('#654321')
+
+    outlineCheckbox.click()
+    expect(editor.onionOutline).toBe(true)
   })
 })

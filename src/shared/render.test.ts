@@ -33,7 +33,7 @@ function layer(id: string, overrides: Partial<ObjectLayer> = {}): ObjectLayer {
 describe('evaluateDocumentAtFrame', () => {
   it('returns layers in paint order (bottom of the stack first)', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -61,7 +61,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('skips hidden layers but keeps empty visible ones', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -82,7 +82,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('hides a node after its last keyframe (per-object span)', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -107,7 +107,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('interpolates a tweened node toward the next keyframe containing it', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -134,7 +134,7 @@ describe('evaluateDocumentAtFrame', () => {
 
   it('returns an empty tree for a document without layers', () => {
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -174,7 +174,7 @@ describe('evaluateDocumentAtFrame', () => {
       opacity: 0.75
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -206,7 +206,7 @@ describe('evaluateDocumentAtFrame', () => {
       opacity: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -252,7 +252,7 @@ describe('evaluateDocumentAtFrame', () => {
       createdAt: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -294,7 +294,7 @@ describe('evaluateDocumentAtFrame', () => {
       createdAt: 1
     }
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 100,
@@ -322,7 +322,7 @@ describe('evaluateDocumentAtFrame', () => {
 describe('evaluateDocumentAtFrame — drawing layers', () => {
   const docWithDrawing = (): { doc: AnimatorDocument; drawingId: string } => {
     const doc: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 't',
       width: 100,
       height: 50,
@@ -380,5 +380,93 @@ describe('evaluateDocumentAtFrame — drawing layers', () => {
     const hidden = docWithDrawing()
     ;(hidden.doc.layers[1] as { visible: boolean }).visible = false
     expect(evaluateDocumentAtFrame(hidden.doc, 5).map((entry) => entry.layerId)).toEqual(['obj'])
+  })
+})
+
+describe('evaluateDocumentAtFrame — hold step', () => {
+  const movingDoc = (holdStep?: number): AnimatorDocument => ({
+    schemaVersion: 4,
+    name: 't',
+    width: 100,
+    height: 100,
+    fps: 24,
+    background: '#000',
+    assets: [],
+    ...(holdStep !== undefined ? { holdStep } : {}),
+    layers: [
+      layer('l', {
+        keyframes: [
+          { frame: 0, nodes: [rect('a', 0)], tween: { easing: 'linear' } },
+          { frame: 10, nodes: [rect('a', 100)] }
+        ]
+      })
+    ]
+  })
+
+  it('evaluates frames at frame - frame % holdStep', () => {
+    const doc = movingDoc(2)
+    // Stepped frames: 0, 2, 4, 6, 8, 10 — a tween at 50% per segment step.
+    expect(evaluateDocumentAtFrame(doc, 0)[0].nodes[0].center.x).toBe(0)
+    expect(evaluateDocumentAtFrame(doc, 1)[0].nodes[0].center.x).toBe(0)
+    expect(evaluateDocumentAtFrame(doc, 3)[0].nodes[0].center.x).toBe(20)
+    expect(evaluateDocumentAtFrame(doc, 5)[0].nodes[0].center.x).toBe(40)
+    expect(evaluateDocumentAtFrame(doc, 10)[0].nodes[0].center.x).toBe(100)
+  })
+
+  it('steps further with larger hold values', () => {
+    const doc = movingDoc(5)
+    expect(evaluateDocumentAtFrame(doc, 4)[0].nodes[0].center.x).toBe(0)
+    expect(evaluateDocumentAtFrame(doc, 7)[0].nodes[0].center.x).toBe(50)
+  })
+
+  it('is evaluation-time only: the document itself keeps every frame', () => {
+    const doc = movingDoc(4)
+    const snapshot = JSON.stringify(doc.layers)
+    evaluateDocumentAtFrame(doc, 7)
+    // No frames duplicated or rewritten: the same two keyframes remain.
+    expect(JSON.stringify(doc.layers)).toBe(snapshot)
+    expect((doc.layers[0] as ObjectLayer).keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 10])
+  })
+
+  it('leaves evaluation untouched when the step is absent or 1', () => {
+    expect(evaluateDocumentAtFrame(movingDoc(), 5)[0].nodes[0].center.x).toBe(50)
+    expect(evaluateDocumentAtFrame(movingDoc(1), 5)[0].nodes[0].center.x).toBe(50)
+    // A zero/out-of-band step degrades to no stepping instead of dividing.
+    const zeroStep = movingDoc()
+    zeroStep.holdStep = 0
+    expect(evaluateDocumentAtFrame(zeroStep, 5)[0].nodes[0].center.x).toBe(50)
+  })
+
+  it('steps drawing cells through the same evaluation', () => {
+    const doc: AnimatorDocument = {
+      schemaVersion: 4,
+      name: 't',
+      width: 100,
+      height: 50,
+      fps: 24,
+      background: '#000',
+      assets: [],
+      holdStep: 3,
+      layers: [
+        {
+          kind: 'drawing',
+          id: 'draw',
+          name: 'Draw',
+          visible: true,
+          locked: false,
+          resolutionScale: 1,
+          cells: [
+            { frame: 0, resourceId: 'res-a' },
+            { frame: 4, resourceId: 'res-b' }
+          ]
+        }
+      ]
+    }
+    // Frame 5 steps to 3: cell 'res-b' (frame 4) is not reached yet.
+    const atThree = evaluateDocumentAtFrame(doc, 5)[0].nodes[0]
+    expect(atThree.type === 'image' && atThree.resourceId).toBe('res-a')
+    // Frame 6 steps to 6: now the second cell holds.
+    const atSix = evaluateDocumentAtFrame(doc, 6)[0].nodes[0]
+    expect(atSix.type === 'image' && atSix.resourceId).toBe('res-b')
   })
 })

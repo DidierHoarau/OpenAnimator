@@ -26,10 +26,10 @@ function primitive(id: string, overrides: Partial<PrimitiveNode> & { primitive: 
   }
 }
 
-/** Hand-written v2 equivalent of `fixtures/v1/tweened-strokes.json`. */
+/** Hand-written current-schema equivalent of `fixtures/v1/tweened-strokes.json`. */
 function expectedTweenedStrokesDocument(): AnimatorDocument {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     name: 'Tween demo',
     width: 960,
     height: 540,
@@ -110,7 +110,7 @@ describe('migrateDocument — v1 fixtures', () => {
   it('migrates the multi-layer fixture including hidden/locked flags', () => {
     const raw = loadFixture('multi-layer')
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(3)
+    expect(migrated.schemaVersion).toBe(4)
     expect(migrated.layers).toHaveLength(2)
     expect(migrated.layers[0]).toMatchObject({
       id: 'layer-fx',
@@ -141,7 +141,7 @@ describe('migrateDocument — v1 fixtures', () => {
     const raw = loadFixture('minimal')
     const migrated = migrateDocument(raw)
     expect(migrated).toEqual({
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 'Untitled',
       width: 960,
       height: 540,
@@ -391,6 +391,89 @@ describe('migrateDocument — assets', () => {
     }
     const migrated = migrateDocument(cyclic)
     expect(migrated.assets).toHaveLength(1)
+    expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+})
+
+describe('migrateDocument — v4 pass-through', () => {
+  const v4Base = () => ({
+    schemaVersion: 4,
+    name: 'x',
+    width: 100,
+    height: 100,
+    fps: 24,
+    background: '#000000',
+    layers: [{ id: 'l', name: 'L', visible: true, locked: false, keyframes: [{ frame: 0, nodes: [] }] }]
+  })
+
+  it('keeps holdStep, tween path and bezier easings through deep validation', () => {
+    const raw = {
+      ...v4Base(),
+      holdStep: 3,
+      layers: [
+        {
+          kind: 'object',
+          id: 'l',
+          name: 'L',
+          visible: true,
+          locked: false,
+          keyframes: [
+            {
+              frame: 0,
+              nodes: [],
+              tween: { easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 }, path: 'smooth' }
+            }
+          ]
+        }
+      ]
+    }
+    const migrated = migrateDocument(raw)
+    expect(migrated.schemaVersion).toBe(4)
+    expect(migrated.holdStep).toBe(3)
+    expect((migrated.layers[0] as ObjectLayer).keyframes[0].tween).toEqual({
+      easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 },
+      path: 'smooth'
+    })
+    expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+
+  it('rejects out-of-bounds holdSteps and malformed tween paths', () => {
+    expect(() => migrateDocument({ ...v4Base(), holdStep: 17 })).toThrow(MigrationError)
+    expect(() => migrateDocument({ ...v4Base(), holdStep: 0 })).toThrow(MigrationError)
+    const badPath = {
+      ...v4Base(),
+      layers: [
+        {
+          kind: 'object',
+          id: 'l',
+          name: 'L',
+          visible: true,
+          locked: false,
+          keyframes: [{ frame: 0, nodes: [], tween: { easing: 'linear', path: 'wobbly' } }]
+        }
+      ]
+    }
+    expect(() => migrateDocument(badPath)).toThrow(MigrationError)
+    const badBezier = {
+      ...v4Base(),
+      layers: [
+        {
+          kind: 'object',
+          id: 'l',
+          name: 'L',
+          visible: true,
+          locked: false,
+          keyframes: [{ frame: 0, nodes: [], tween: { easing: { x1: 2, y1: 0, x2: 0.5, y2: 1 } } }]
+        }
+      ]
+    }
+    expect(() => migrateDocument(badBezier)).toThrow(MigrationError)
+  })
+
+  it('restamps a v3 document to v4', () => {
+    const raw = { ...v4Base(), schemaVersion: 3 }
+    const migrated = migrateDocument(JSON.parse(JSON.stringify(raw)))
+    expect(migrated.schemaVersion).toBe(4)
     expect(isAnimatorDocument(migrated)).toBe(true)
   })
 })

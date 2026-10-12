@@ -1,10 +1,12 @@
 import {
   cellRangeAtFrame,
+  extractKeyframeChunk,
   findKeyframeAtFrame,
   findNearestNodeKeyframeIndex,
   getLayer,
   resolveCellAtFrame
 } from '@shared/document'
+import type { KeyframeChunkEntry } from '@shared/document'
 import { isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { DrawingLayer, Layer, ObjectLayer, SceneNode } from '@shared/model'
 
@@ -15,6 +17,9 @@ const FRAME_WIDTH = 14
 const HEAD_WIDTH = 180
 const MIN_FRAMES = 40
 const ROW_HEIGHT = 28
+/** Pointer travel (px) before a keyframe-marker press becomes a drag. */
+const DRAG_THRESHOLD = 3
+const HOLD_STEPS = [1, 2, 3, 4, 5, 6, 8, 12] as const
 const NODE_KIND_LABELS: Record<string, string> = {
   rect: 'Rectangle',
   ellipse: 'Ellipse',
@@ -69,6 +74,24 @@ function filmstripSpans(
 interface MenuTarget {
   layerId: string
   nodeId: string | null
+  /** Set when the menu was opened on a keyframe marker at that frame. */
+  keyframeFrame?: number
+}
+
+/** Identity of one keyframe marker in the timeline selection. */
+interface MarkerRef {
+  layerId: string
+  nodeId: string
+  frame: number
+}
+
+function markerKey(layerId: string, nodeId: string, frame: number): string {
+  return `${layerId}\u0000${nodeId}\u0000${frame}`
+}
+
+function parseMarkerKey(key: string): MarkerRef {
+  const [layerId, nodeId, frame] = key.split('\u0000')
+  return { layerId, nodeId, frame: Number(frame) }
 }
 
 /**
@@ -93,19 +116,40 @@ export class TimelineView {
   private readonly content: HTMLDivElement
   private readonly rowsHost: HTMLDivElement
   private readonly playhead: HTMLDivElement
+  private readonly rangeBand: HTMLDivElement
   private readonly frameLabel: HTMLSpanElement
   private readonly playButton: HTMLButtonElement
   private readonly loopButton: HTMLButtonElement
   private readonly fpsInput: HTMLInputElement
+  private readonly holdSelect: HTMLSelectElement
+  private readonly onionCheckbox: HTMLInputElement
+  private readonly onionBeforeInput: HTMLInputElement
+  private readonly onionAfterInput: HTMLInputElement
+  private readonly onionTintCheckbox: HTMLInputElement
+  private readonly onionTintBeforeInput: HTMLInputElement
+  private readonly onionTintAfterInput: HTMLInputElement
+  private readonly onionOutlineCheckbox: HTMLInputElement
   private readonly menu: HTMLDivElement
   private readonly menuRenameButton: HTMLButtonElement
   private readonly menuDeleteButton: HTMLButtonElement
   private readonly menuCellButtons: HTMLButtonElement[]
+  private readonly menuKeyframeButtons: HTMLButtonElement[]
+  private readonly menuPasteKeyframeButton: HTMLButtonElement
   private readonly menuResolutionRow: HTMLDivElement
   private readonly menuResolutionInput: HTMLInputElement
   private readonly menuMoveRow: HTMLDivElement
   private readonly menuMoveInput: HTMLInputElement
   private readonly expandedLayers = new Set<string>()
+  /** Selected keyframe markers, keyed by `markerKey` (layer, node, frame). */
+  private selectedMarkers = new Set<string>()
+  /** Last marker press: the copy fallback and the keyboard-focus anchor. */
+  private focusedMarker: MarkerRef | null = null
+  /** Frame range dragged on the ruler, inclusive; wins over markers on copy. */
+  private rangeSelection: { start: number; end: number } | null = null
+  /** Copied keyframe chunk (session clipboard for Ctrl+C / Ctrl+V). */
+  private clipboard: { entries: KeyframeChunkEntry[] } | null = null
+  private markerDrag: { layerId: string; startX: number; startY: number; pointerId: number; dragging: boolean } | null = null
+  private rulerDrag: { startFrame: number; pointerId: number; active: boolean } | null = null
   private nodeKeyframeButtons: HTMLButtonElement[] = []
   private nodeTweenButtons: HTMLButtonElement[] = []
   private menuTarget: MenuTarget | null = null
@@ -153,6 +197,87 @@ export class TimelineView {
     this.frameLabel = el('span', 'tl-frame-label')
     controls.append(playbackGroup, fpsGroup, frameGroup, this.frameLabel)
 
+    // Options row: hold step (play on n's) and the onion-skin display options.
+    const options = el('div', 'tl-options')
+    const holdGroup = el('div', 'tl-group')
+    holdGroup.appendChild(el('span', 'tl-label', 'Hold'))
+    this.holdSelect = el('select', 'tl-select') as HTMLSelectElement
+    this.holdSelect.title =
+      'Hold step: play every frame, or animate on n\u2019s (non-destructive — playback, onion skin and export all step)'
+    for (const step of HOLD_STEPS) {
+      const option = document.createElement('option')
+      option.value = String(step)
+      option.textContent = step === 1 ? '1 (off)' : String(step)
+      this.holdSelect.appendChild(option)
+    }
+    this.holdSelect.addEventListener('change', () => editor.setHoldStep(Number(this.holdSelect.value)))
+    holdGroup.appendChild(this.holdSelect)
+
+    const onionGroup = el('div', 'tl-group')
+    this.onionCheckbox = el('input', 'tl-check') as HTMLInputElement
+    this.onionCheckbox.type = 'checkbox'
+    this.onionCheckbox.title = 'Toggle onion skinning (ghosted neighbouring frames)'
+    this.onionCheckbox.addEventListener('change', () => {
+      if (this.onionCheckbox.checked !== editor.onionSkin) editor.toggleOnionSkin()
+    })
+    const onionLabel = el('span', 'tl-label', 'Onion')
+    onionLabel.addEventListener('click', () => this.onionCheckbox.click())
+    onionGroup.append(this.onionCheckbox, onionLabel)
+    const onionCount = (title: string, apply: (value: number) => void): HTMLInputElement => {
+      const input = el('input', 'tl-number') as HTMLInputElement
+      input.type = 'number'
+      input.min = '0'
+      input.max = '5'
+      input.step = '1'
+      input.title = title
+      input.addEventListener('change', () => apply(Number(input.value)))
+      return input
+    }
+    this.onionBeforeInput = onionCount('Ghosts shown before the playhead (0\u20135)', (value) =>
+      editor.setOnionOptions({ onionBefore: value })
+    )
+    this.onionAfterInput = onionCount('Ghosts shown after the playhead (0\u20135)', (value) =>
+      editor.setOnionOptions({ onionAfter: value })
+    )
+    onionGroup.append(this.onionBeforeInput, this.onionAfterInput)
+    this.onionTintCheckbox = el('input', 'tl-check') as HTMLInputElement
+    this.onionTintCheckbox.type = 'checkbox'
+    this.onionTintCheckbox.title = 'Tint ghosts with the before/after colors'
+    this.onionTintCheckbox.addEventListener('change', () =>
+      editor.setOnionOptions({ onionTint: this.onionTintCheckbox.checked })
+    )
+    const tintLabel = el('span', 'tl-label', 'Tint')
+    tintLabel.addEventListener('click', () => this.onionTintCheckbox.click())
+    this.onionTintBeforeInput = el('input', 'tl-color') as HTMLInputElement
+    this.onionTintBeforeInput.type = 'color'
+    this.onionTintBeforeInput.title = 'Tint of the ghosts before the playhead'
+    this.onionTintBeforeInput.addEventListener('input', () =>
+      editor.setOnionOptions({ onionTintBefore: this.onionTintBeforeInput.value })
+    )
+    this.onionTintAfterInput = el('input', 'tl-color') as HTMLInputElement
+    this.onionTintAfterInput.type = 'color'
+    this.onionTintAfterInput.title = 'Tint of the ghosts after the playhead'
+    this.onionTintAfterInput.addEventListener('input', () =>
+      editor.setOnionOptions({ onionTintAfter: this.onionTintAfterInput.value })
+    )
+    this.onionOutlineCheckbox = el('input', 'tl-check') as HTMLInputElement
+    this.onionOutlineCheckbox.type = 'checkbox'
+    this.onionOutlineCheckbox.title = 'Draw ghosts as outlines only'
+    this.onionOutlineCheckbox.addEventListener('change', () =>
+      editor.setOnionOptions({ onionOutline: this.onionOutlineCheckbox.checked })
+    )
+    const outlineLabel = el('span', 'tl-label', 'Outline')
+    outlineLabel.addEventListener('click', () => this.onionOutlineCheckbox.click())
+    onionGroup.append(
+      this.onionTintCheckbox,
+      tintLabel,
+      this.onionTintBeforeInput,
+      this.onionTintAfterInput,
+      this.onionOutlineCheckbox,
+      outlineLabel
+    )
+    options.append(holdGroup, onionGroup)
+
     // Context menu shared by every layer and object row. Drawing layers get
     // the cell operations; object layers keep rename/delete only.
     this.menu = el('div', 'tl-context-menu hidden')
@@ -183,6 +308,45 @@ export class TimelineView {
       cellOp('Clear Cell', () => void this.editor.clearCellHere()),
       cellOp('Remove Cell', () => this.editor.removeCellHere())
     ]
+    // Keyframe actions, shown when the menu was opened on a marker.
+    const keyframeOp = (label: string, action: (target: MenuTarget, frame: number) => void): HTMLButtonElement => {
+      const button = el('button', 'tl-context-item', label)
+      button.addEventListener('click', () => {
+        const target = this.menuTarget
+        this.closeContextMenu()
+        if (target && target.nodeId && target.keyframeFrame !== undefined) {
+          action(target, target.keyframeFrame)
+        }
+      })
+      return button
+    }
+    const seekToMarker = (target: MenuTarget, frame: number): void => {
+      this.editor.setCurrentLayer(target.layerId)
+      this.editor.seekToFrame(frame)
+      if (target.nodeId) this.editor.selectNodes([target.nodeId], 'replace')
+    }
+    this.menuKeyframeButtons = [
+      keyframeOp('Insert Keyframe (F6)', (target, frame) => {
+        seekToMarker(target, frame)
+        this.editor.insertKeyframeHere()
+      }),
+      keyframeOp('Remove Keyframe', (target, frame) => {
+        seekToMarker(target, frame)
+        this.editor.removeKeyframeHere()
+      }),
+      keyframeOp('Copy Keyframe / Frame Range', (target, frame) => {
+        if (target.nodeId) {
+          this.selectedMarkers = new Set([markerKey(target.layerId, target.nodeId, frame)])
+          this.focusedMarker = { layerId: target.layerId, nodeId: target.nodeId, frame }
+          this.render()
+        }
+        this.copyKeyframes()
+      })
+    ]
+    this.menuPasteKeyframeButton = keyframeOp('Paste Keyframe here', (target, frame) => {
+      seekToMarker(target, frame)
+      this.pasteKeyframes()
+    })
     this.menuResolutionRow = el('div', 'tl-context-item tl-context-resolution')
     this.menuResolutionRow.appendChild(el('span', undefined, 'Cell resolution'))
     this.menuResolutionInput = el('input', 'tl-number') as HTMLInputElement
@@ -230,6 +394,8 @@ export class TimelineView {
     this.menu.append(
       this.menuRenameButton,
       this.menuMoveRow,
+      ...this.menuKeyframeButtons,
+      this.menuPasteKeyframeButton,
       ...this.menuCellButtons,
       this.menuResolutionRow,
       this.menuDeleteButton
@@ -244,16 +410,18 @@ export class TimelineView {
     })
 
     const ruler = el('div', 'tl-ruler')
+    ruler.addEventListener('pointerdown', (event) => this.onRulerPointerDown(event))
     this.rowsHost = el('div', 'tl-rows')
     this.playhead = el('div', 'tl-playhead')
+    this.rangeBand = el('div', 'tl-range hidden')
     this.content = el('div', 'tl-content')
-    this.content.append(ruler, this.rowsHost, this.playhead)
+    this.content.append(ruler, this.rowsHost, this.playhead, this.rangeBand)
 
     const scroll = el('div', 'tl-scroll')
     scroll.appendChild(this.content)
     scroll.addEventListener('pointerdown', (event) => this.onTrackPointerDown(event))
 
-    container.append(controls, scroll, this.menu)
+    container.append(controls, options, scroll, this.menu)
 
     editor.onDocChange(() => this.render())
     editor.onFrameChange(() => {
@@ -310,6 +478,220 @@ export class TimelineView {
     this.editor.seekToFrame(frame)
   }
 
+  /**
+   * Marker press: plain click (re)selects and seeks, shift+click toggles the
+   * marker in the selection. Past a small pointer threshold the press becomes
+   * a drag that previews a uniform frame delta and, on release, moves every
+   * selected entry of this layer in one undo step (clamped to the timeline).
+   */
+  private onMarkerPointerDown(event: PointerEvent, layerId: string, nodeId: string, frame: number): void {
+    if (event.button !== 0) return
+    event.stopPropagation()
+    event.preventDefault()
+    const key = markerKey(layerId, nodeId, frame)
+    if (event.shiftKey) {
+      if (this.selectedMarkers.has(key)) this.selectedMarkers.delete(key)
+      else this.selectedMarkers.add(key)
+    } else if (!this.selectedMarkers.has(key)) {
+      this.selectedMarkers.clear()
+      this.selectedMarkers.add(key)
+    }
+    this.focusedMarker = { layerId, nodeId, frame }
+    this.editor.setCurrentLayer(layerId)
+    this.editor.selectNodes([nodeId], 'replace')
+    this.editor.seekToFrame(frame)
+
+    const drag = { layerId, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId, dragging: false }
+    this.markerDrag = drag
+    const onMove = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== event.pointerId || this.markerDrag !== drag) return
+      const dx = moveEvent.clientX - drag.startX
+      const dy = moveEvent.clientY - drag.startY
+      if (!drag.dragging && Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
+      drag.dragging = true
+      this.previewMarkerDrag(drag.layerId, this.clampMarkerDelta(drag.layerId, Math.round(dx / FRAME_WIDTH)))
+    }
+    const onUp = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== event.pointerId) return
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      if (this.markerDrag !== drag) return
+      this.markerDrag = null
+      const delta = this.clampMarkerDelta(drag.layerId, Math.round((upEvent.clientX - drag.startX) / FRAME_WIDTH))
+      if (drag.dragging && delta !== 0) this.applyMarkerDrag(drag.layerId, delta)
+      this.render()
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    this.render()
+  }
+
+  /** Uniformly clamped frame delta for the selected markers of one layer. */
+  private clampMarkerDelta(layerId: string, delta: number): number {
+    let min = Infinity
+    let max = -Infinity
+    for (const key of this.selectedMarkers) {
+      const marker = parseMarkerKey(key)
+      if (marker.layerId !== layerId) continue
+      min = Math.min(min, marker.frame)
+      max = Math.max(max, marker.frame)
+    }
+    if (min === Infinity) return 0
+    return Math.min(this.editor.duration - 1 - max, Math.max(-min, delta))
+  }
+
+  /** Live drag feedback: slides the selected markers of one layer by `delta`. */
+  private previewMarkerDrag(layerId: string, delta: number): void {
+    for (const element of this.rowsHost.querySelectorAll<HTMLElement>('.tl-key')) {
+      const elementLayer = element.dataset.layerId
+      const elementNode = element.dataset.shapeId
+      const elementFrame = Number(element.dataset.frame)
+      if (!elementLayer || !elementNode || !Number.isFinite(elementFrame)) continue
+      const selected = this.selectedMarkers.has(markerKey(elementLayer, elementNode, elementFrame))
+      element.style.transform =
+        selected && elementLayer === layerId ? `translateX(${delta * FRAME_WIDTH}px)` : ''
+    }
+  }
+
+  /** Moves every selected entry of one layer by the uniform delta, one undo step. */
+  private applyMarkerDrag(layerId: string, delta: number): void {
+    const moves: Array<{ nodeId: string; fromFrame: number; toFrame: number }> = []
+    for (const key of this.selectedMarkers) {
+      const marker = parseMarkerKey(key)
+      if (marker.layerId !== layerId) continue
+      moves.push({ nodeId: marker.nodeId, fromFrame: marker.frame, toFrame: marker.frame + delta })
+    }
+    if (moves.length === 0) return
+    if (this.editor.moveNodeKeyframeEntries(moves, layerId)) {
+      this.selectedMarkers = new Set(moves.map((move) => markerKey(layerId, move.nodeId, move.toFrame)))
+      if (this.focusedMarker?.layerId === layerId) {
+        this.focusedMarker = { ...this.focusedMarker, frame: this.focusedMarker.frame + delta }
+      }
+    }
+  }
+
+  /**
+   * Ruler press-drag defines the copy range (an inclusive frame band shown as
+   * `.tl-range`); a plain click clears the band.
+   */
+  private onRulerPointerDown(event: PointerEvent): void {
+    if (event.button !== 0) return
+    event.preventDefault()
+    const ruler = event.currentTarget as HTMLElement
+    const bounds = ruler.getBoundingClientRect()
+    const frames = Math.max(this.editor.duration, MIN_FRAMES)
+    const frameAt = (clientX: number): number =>
+      Math.max(0, Math.min(frames - 1, Math.floor((clientX - bounds.left - HEAD_WIDTH) / FRAME_WIDTH)))
+    const drag = { startFrame: frameAt(event.clientX), pointerId: event.pointerId, active: false }
+    this.rulerDrag = drag
+    const onMove = (moveEvent: PointerEvent): void => {
+      if (moveEvent.pointerId !== event.pointerId || this.rulerDrag !== drag) return
+      const end = frameAt(moveEvent.clientX)
+      if (!drag.active && end === drag.startFrame) return
+      drag.active = true
+      this.rangeSelection = {
+        start: Math.min(drag.startFrame, end),
+        end: Math.max(drag.startFrame, end)
+      }
+      this.updateRangeBand()
+    }
+    const onUp = (upEvent: PointerEvent): void => {
+      if (upEvent.pointerId !== event.pointerId) return
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      if (this.rulerDrag !== drag) return
+      this.rulerDrag = null
+      if (!drag.active) this.rangeSelection = null
+      this.updateRangeBand()
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
+  private updateRangeBand(): void {
+    const range = this.rangeSelection
+    if (!range) {
+      this.rangeBand.classList.add('hidden')
+      return
+    }
+    this.rangeBand.classList.remove('hidden')
+    this.rangeBand.style.left = `${HEAD_WIDTH + range.start * FRAME_WIDTH}px`
+    this.rangeBand.style.width = `${(range.end - range.start + 1) * FRAME_WIDTH}px`
+  }
+
+  /**
+   * Copies keyframes of the current layer to the session clipboard (Ctrl+C):
+   * the range is the ruler band when one is dragged, otherwise the bounding
+   * range of the selected markers (of the selected nodes), otherwise the
+   * focused marker. The chunk keeps each pose's relative timing and the tween
+   * of its first keyframe.
+   */
+  copyKeyframes(): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    if (!layer || !isObjectLayer(layer)) {
+      editor.showMessage('Copy keyframes: select an object layer first')
+      return
+    }
+    let start: number
+    let end: number
+    let nodeIds: string[] | undefined
+    if (this.rangeSelection) {
+      start = this.rangeSelection.start
+      end = this.rangeSelection.end
+    } else {
+      const ownedMarkers = [...this.selectedMarkers]
+        .map(parseMarkerKey)
+        .filter(
+          (marker) =>
+            marker.layerId === layer.id &&
+            layer.keyframes.some(
+              (keyframe) =>
+                keyframe.frame === marker.frame &&
+                keyframe.nodes.some((node) => node.id === marker.nodeId)
+            )
+        )
+      if (ownedMarkers.length > 0) {
+        start = Math.min(...ownedMarkers.map((marker) => marker.frame))
+        end = Math.max(...ownedMarkers.map((marker) => marker.frame))
+        nodeIds = [...new Set(ownedMarkers.map((marker) => marker.nodeId))]
+      } else if (this.focusedMarker?.layerId === layer.id) {
+        start = this.focusedMarker.frame
+        end = this.focusedMarker.frame
+        nodeIds = [this.focusedMarker.nodeId]
+      } else {
+        editor.showMessage('Copy keyframes: select keyframe markers or drag a range on the ruler')
+        return
+      }
+    }
+    const entries = extractKeyframeChunk(layer, start, end, nodeIds)
+    if (entries.length === 0) {
+      editor.showMessage(`Copy keyframes: nothing in frames ${start + 1}\u2013${end + 1} on "${layer.name}"`)
+      return
+    }
+    this.clipboard = { entries }
+    editor.showMessage(`Copied ${entries.length} keyframe ${entries.length === 1 ? 'entry' : 'entries'}`)
+  }
+
+  /**
+   * Pastes the copied chunk at the playhead on the current layer (Ctrl+V):
+   * poses keep their offsets, merge into existing keyframes and restore a
+   * carried tween only where none exists. One undo step.
+   */
+  pasteKeyframes(): void {
+    const editor = this.editor
+    if (!this.clipboard) {
+      editor.showMessage('Paste keyframes: the clipboard is empty')
+      return
+    }
+    const count = this.clipboard.entries.length
+    if (!editor.copyKeyframeChunk(editor.currentLayerId, this.clipboard.entries, editor.currentFrame)) {
+      editor.showMessage('Paste keyframes: nothing lands at the playhead on this layer')
+      return
+    }
+    editor.showMessage(`Pasted ${count} keyframe ${count === 1 ? 'entry' : 'entries'}`)
+  }
+
   render(): void {
     const editor = this.editor
     const doc = editor.document
@@ -343,10 +725,36 @@ export class TimelineView {
     this.playButton.textContent = editor.playing ? 'Pause' : 'Play'
     this.loopButton.classList.toggle('active', editor.loop)
     if (document.activeElement !== this.fpsInput) this.fpsInput.value = String(doc.fps)
+    this.refreshOptionsRow()
 
     this.refreshNodeKeyframeButtons()
     this.refreshNodeTweenButtons()
     this.updatePlayhead()
+    this.updateRangeBand()
+  }
+
+  /** Mirrors the hold step and the onion-skin options onto the options row. */
+  private refreshOptionsRow(): void {
+    const editor = this.editor
+    const step = String(editor.holdStep)
+    if (!Array.from(this.holdSelect.options).some((option) => option.value === step)) {
+      const option = document.createElement('option')
+      option.value = step
+      option.textContent = step
+      this.holdSelect.appendChild(option)
+    }
+    this.holdSelect.value = step
+    this.onionCheckbox.checked = editor.onionSkin
+    if (document.activeElement !== this.onionBeforeInput) {
+      this.onionBeforeInput.value = String(editor.onionBefore)
+    }
+    if (document.activeElement !== this.onionAfterInput) {
+      this.onionAfterInput.value = String(editor.onionAfter)
+    }
+    this.onionTintCheckbox.checked = editor.onionTint
+    this.onionTintBeforeInput.value = editor.onionTintBefore
+    this.onionTintAfterInput.value = editor.onionTintAfter
+    this.onionOutlineCheckbox.checked = editor.onionOutline
   }
 
   /** A layer row, followed by its child rows while expanded: per-object rows
@@ -646,7 +1054,20 @@ export class TimelineView {
       const marker = el('div', 'tl-key')
       marker.style.left = `${keyframe.frame * FRAME_WIDTH + FRAME_WIDTH / 2}px`
       marker.dataset.frame = String(keyframe.frame)
-      marker.title = `Keyframe ${keyframe.frame + 1}${keyframe.tween ? ' · tween' : ''}`
+      marker.dataset.layerId = layer.id
+      marker.dataset.shapeId = node.id
+      marker.title = `Keyframe ${keyframe.frame + 1}${keyframe.tween ? ' · tween' : ''} — drag to retime, shift-click to multi-select, right-click for actions`
+      if (this.selectedMarkers.has(markerKey(layer.id, node.id, keyframe.frame))) {
+        marker.classList.add('selected')
+      }
+      marker.addEventListener('pointerdown', (event) =>
+        this.onMarkerPointerDown(event, layer.id, node.id, keyframe.frame)
+      )
+      marker.addEventListener('contextmenu', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        this.openContextMenu({ layerId: layer.id, nodeId: node.id, keyframeFrame: keyframe.frame }, event)
+      })
       track.appendChild(marker)
     }
     return track
@@ -727,6 +1148,11 @@ export class TimelineView {
     for (const button of this.menuCellButtons) button.classList.toggle('hidden', !drawing)
     this.menuResolutionRow.classList.toggle('hidden', !drawing)
     if (drawing) this.menuResolutionInput.value = String(layer.resolutionScale)
+    // Keyframe actions only make sense when the menu was opened on a marker.
+    const onMarker = target.nodeId !== null && target.keyframeFrame !== undefined
+    for (const button of this.menuKeyframeButtons) button.classList.toggle('hidden', !onMarker)
+    this.menuPasteKeyframeButton.classList.toggle('hidden', !onMarker)
+    this.menuPasteKeyframeButton.disabled = this.clipboard === null
     // "Move to frame" applies to object rows and to drawing layers (their
     // cell at the playhead); plain object-layer rows have nothing to move.
     const movable = target.nodeId !== null || drawing

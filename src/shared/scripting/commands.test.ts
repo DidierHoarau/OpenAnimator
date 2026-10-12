@@ -59,13 +59,45 @@ describe('validateScriptPayload', () => {
     expect(validateScriptPayload({ commands: 'nope' }).errors.length).toBeGreaterThan(0)
   })
 
-  it('restricts setTween easing to the named easings or null', () => {
+  it('restricts setTween easing to named easings, bezier objects or null', () => {
     const ok = validateScriptPayload({ commands: [{ op: 'setTween', easing: 'ease-in-out' }] })
     expect(ok.errors).toEqual([])
     const clear = validateScriptPayload({ commands: [{ op: 'setTween', easing: null }] })
     expect(clear.errors).toEqual([])
+    const bezier = validateScriptPayload({
+      commands: [{ op: 'setTween', easing: { x1: 0.25, y1: 0.1, x2: 0.25, y2: 1 } }]
+    })
+    expect(bezier.errors).toEqual([])
     const bad = validateScriptPayload({ commands: [{ op: 'setTween', easing: 'wobbly' }] })
     expect(bad.errors.length).toBeGreaterThan(0)
+    const badBezier = validateScriptPayload({
+      commands: [{ op: 'setTween', easing: { x1: 2, y1: 0, x2: 0.5, y2: 1 } }]
+    })
+    expect(badBezier.errors.join('\n')).toContain('/x1')
+  })
+
+  it('accepts the new keyframe-move and hold-step ops and rejects their bad shapes', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        { op: 'moveKeyframe', nodeId: 'ball', fromFrame: 0, toFrame: 12 },
+        { op: 'copyKeyframes', nodeId: 'ball', fromFrame: 0, toFrame: 12, targetFrame: 30 },
+        { op: 'setHoldStep', step: 3 },
+        { op: 'setTween', path: 'smooth' }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+    const bad = validateScriptPayload({
+      commands: [
+        { op: 'moveKeyframe', nodeId: 'ball', fromFrame: -1 },
+        { op: 'copyKeyframes', nodeId: 'ball', targetFrame: 1.5 },
+        { op: 'setHoldStep', step: 17 },
+        { op: 'setTween', path: 'wavy' }
+      ]
+    })
+    expect(bad.errors.join('\n')).toContain('/commands/0')
+    expect(bad.errors.join('\n')).toContain('/commands/1')
+    expect(bad.errors.join('\n')).toContain('/commands/2/step')
+    expect(bad.errors.join('\n')).toContain('/commands/3/path')
   })
 })
 
@@ -145,6 +177,27 @@ describe('hand-rolled validator vs JSON Schema', () => {
     { commands: [{ op: 'addNode', node: { type: 'group', children: [{ type: 'rect' }] } }] },
     { commands: [{ op: 'setTween', easing: 'wobbly' }] },
     { commands: [{ op: 'setTween', easing: null }] },
+    { commands: [{ op: 'setTween', easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 } }] },
+    { commands: [{ op: 'setTween', easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 }, path: 'smooth' }] },
+    { commands: [{ op: 'setTween', easing: { x1: 2, y1: 0, x2: 0.58, y2: 1 } }] },
+    { commands: [{ op: 'setTween', easing: { x1: 0.42, y1: 0, x2: 0.58 } }] },
+    { commands: [{ op: 'setTween', easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1, extra: 0 } }] },
+    { commands: [{ op: 'setTween', easing: { x1: 'a', y1: 0, x2: 0.58, y2: 1 } }] },
+    { commands: [{ op: 'setTween', easing: ['ease'] }] },
+    { commands: [{ op: 'setTween', path: 'smooth' }] },
+    { commands: [{ op: 'setTween', path: 'wavy' }] },
+    { commands: [{ op: 'moveKeyframe', nodeId: 'x', fromFrame: 0, toFrame: 10 }] },
+    { commands: [{ op: 'moveKeyframe', nodeId: 'x', fromFrame: 0 }] },
+    { commands: [{ op: 'moveKeyframe', nodeId: 'x', fromFrame: -1, toFrame: 10 }] },
+    { commands: [{ op: 'moveKeyframe', nodeId: 'x', fromFrame: 0, toFrame: 10, tween: true }] },
+    { commands: [{ op: 'copyKeyframes', nodeId: 'x', fromFrame: 0, toFrame: 5, targetFrame: 20 }] },
+    { commands: [{ op: 'copyKeyframes', nodeId: 'x', fromFrame: 0, targetFrame: 20 }] },
+    { commands: [{ op: 'copyKeyframes', nodeId: 'x', fromFrame: 2.5, targetFrame: 20 }] },
+    { commands: [{ op: 'setHoldStep', step: 4 }] },
+    { commands: [{ op: 'setHoldStep', step: 0 }] },
+    { commands: [{ op: 'setHoldStep', step: 17 }] },
+    { commands: [{ op: 'setHoldStep', step: 2.5 }] },
+    { commands: [{ op: 'setHoldStep' }] },
     { commands: [{ op: 'setFps', fps: 0 }] },
     { commands: [{ op: 'setDuration', frames: 1.5 }] },
     { commands: [{ op: 'seek', frame: -1 }] },

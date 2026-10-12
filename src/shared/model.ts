@@ -1,5 +1,5 @@
 import type { Vec2 } from './geometry'
-import type { EasingName } from './easing'
+import type { Easing } from './easing'
 
 export type PrimitiveKind = 'rect' | 'ellipse'
 
@@ -104,7 +104,13 @@ export interface Asset {
 
 /** Classic tween attached to a keyframe: interpolates toward the next keyframe. */
 export interface KeyframeTween {
-  easing: EasingName
+  easing: Easing
+  /**
+   * Spatial behavior of the tweened center. Absent ≡ `'linear'` (the center
+   * lerps straight toward the target); `'smooth'` follows a Catmull-Rom
+   * derived bezier through the node's neighbouring keyframe centers.
+   */
+  path?: 'linear' | 'smooth'
 }
 
 /** A keyframe holds layer content starting at its `frame` until the next keyframe. */
@@ -156,7 +162,7 @@ export function isDrawingLayer(layer: Layer): layer is DrawingLayer {
 
 /** The authoring document. `layers[0]` is the topmost layer. */
 export interface AnimatorDocument {
-  schemaVersion: 3
+  schemaVersion: 4
   name: string
   width: number
   height: number
@@ -168,6 +174,13 @@ export interface AnimatorDocument {
    * this field existed; when absent the duration is derived from keyframes.
    */
   frames?: number
+  /**
+   * Non-destructive "animate on 2s/3s…" hold step: playback, onion skinning,
+   * export and the stage evaluate the document at `frame - frame % holdStep`.
+   * Absent ≡ 1 (every frame is addressed). Frames are never duplicated in the
+   * document — the setting is consumed at evaluation time only.
+   */
+  holdStep?: number
   /** Document asset library (symbols and images); empty in migrated documents. */
   assets: Asset[]
 }

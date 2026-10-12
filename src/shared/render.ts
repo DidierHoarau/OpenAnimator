@@ -1,4 +1,4 @@
-import { evaluateLayerAtFrame, resolveCellAtFrame } from './document'
+import { evaluateLayerAtFrame, holdStepOf, resolveCellAtFrame } from './document'
 import type { AnimatorDocument, SceneNode } from './model'
 import { isObjectLayer } from './model'
 import { resolveSceneNodes } from './symbols'
@@ -26,20 +26,27 @@ export function drawingCellNodeId(layerId: string): string {
  * full-stage image node — which also makes onion skinning work for cells
  * through the same pipeline. This single pipeline feeds the stage, onion
  * skinning and thumbnails.
+ *
+ * The document's non-destructive hold step is consumed here: with
+ * `holdStep: n` every frame evaluates at `frame - frame % n`, so playback,
+ * onion skinning, export and the CLI all animate on n's without any frame
+ * being duplicated in the document.
  */
 export function evaluateDocumentAtFrame(
   document: AnimatorDocument,
   frame: number
 ): RenderLayer[] {
+  const step = holdStepOf(document)
+  const evaluated = step > 1 && frame >= 0 ? frame - (frame % step) : frame
   const layers: RenderLayer[] = []
   for (let i = document.layers.length - 1; i >= 0; i--) {
     const layer = document.layers[i]
     if (!layer.visible) continue
     let nodes: SceneNode[]
     if (isObjectLayer(layer)) {
-      nodes = resolveSceneNodes(evaluateLayerAtFrame(layer, frame), document.assets)
+      nodes = resolveSceneNodes(evaluateLayerAtFrame(layer, evaluated), document.assets)
     } else {
-      const resourceId = resolveCellAtFrame(layer, frame)
+      const resourceId = resolveCellAtFrame(layer, evaluated)
       nodes = resourceId
         ? [
             {

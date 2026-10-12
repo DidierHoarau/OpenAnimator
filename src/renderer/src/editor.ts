@@ -1,6 +1,7 @@
 import {
   addLayer as addLayerOp,
   addNodeToLayer,
+  applyKeyframeChunk,
   cellRangeAtFrame,
   cloneDocument,
   createDocument,
@@ -14,10 +15,12 @@ import {
   findNextCellFrame,
   findPreviousCellFrame,
   getLayer,
+  holdStepOf,
   insertBlankKeyframe,
   insertCell as insertCellOp,
   insertFrame,
   moveCell as moveCellOp,
+  moveKeyframeEntries,
   moveLayer as moveLayerOp,
   moveNodeKeyframes,
   removeCell as removeCellOp,
@@ -33,6 +36,7 @@ import {
   setKeyframeTween,
   updateNodeInLayer
 } from '@shared/document'
+import type { KeyframeChunkEntry, KeyframeEntryMove } from '@shared/document'
 import {
   assetNaturalSize,
   countAssetInstances as countAssetInstancesOp,
@@ -41,14 +45,14 @@ import {
   instanceToGroup,
   symbolContentFromGroup
 } from '@shared/assets'
-import type { EasingName } from '@shared/easing'
+import type { Easing } from '@shared/easing'
 import { fitImagePlacement } from '@shared/imagePlacement'
 import { nodeBounds } from '@shared/hitTesting'
 import type { Rect } from '@shared/hitTesting'
 import { groupNaturalSize, groupNodes, ungroupNode } from '@shared/groups'
 import type { Vec2 } from '@shared/geometry'
 import { cloneNode, isDrawingLayer, isObjectLayer } from '@shared/model'
-import type { AnimatorDocument, Asset, DrawingLayer, GroupNode, ImageNode, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
+import type { AnimatorDocument, Asset, DrawingLayer, GroupNode, ImageNode, KeyframeTween, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
 import { validateAssetGraph } from '@shared/symbols'
 import { createId } from '@shared/document'
 import { measureLineWidthCanvas } from '@shared/textModel'
@@ -83,6 +87,17 @@ export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): b
         tool === 'pen' ||
         tool === 'text'
     : tool === 'brush' || tool === 'eraser'
+}
+
+function clampOnionCount(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(5, Math.max(0, Math.round(value)))
+}
+
+/** Structural equality of two easing definitions. */
+function easingsEqual(a: Easing, b: Easing): boolean {
+  if (typeof a === 'string' || typeof b === 'string') return a === b
+  return a.x1 === b.x1 && a.y1 === b.y1 && a.x2 === b.x2 && a.y2 === b.y2
 }
 
 /** Injectable side effects for environments without a DOM (tests). */
@@ -123,6 +138,15 @@ export class Editor {
   playing = false
   loop = true
   onionSkin = false
+  /** Number of previous/next onion ghosts shown (session state, 0–5). */
+  onionBefore = 2
+  onionAfter = 2
+  /** Tint onion ghosts with their before/after colors instead of plain. */
+  onionTint = false
+  onionTintBefore = '#e05050'
+  onionTintAfter = '#4a90d9'
+  /** Draw onion ghosts as outlines only (no fills). */
+  onionOutline = false
   /** Path of the project file the document was loaded from / saved to. */
   filePath: string | null = null
   dirty = false
@@ -1488,14 +1512,151 @@ export class Editor {
     this.uiChanged()
   }
 
-  setTweenEasingHere(easing: EasingName): void {
+  /**
+   * Replaces the tween easing of the keyframe at the playhead, preserving its
+   * motion-path mode. Accepts a named easing or a custom cubic bezier; one
+   * undo step, no-op when unchanged.
+   */
+  setTweenEasingHere(easing: Easing): void {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked) return
     const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
     if (!keyframe?.tween) return
+    if (easingsEqual(keyframe.tween.easing, easing)) return
     this.pushHistory()
-    setKeyframeTween(layer, this.currentFrame, { easing })
+    const next: KeyframeTween = keyframe.tween.path
+      ? { easing, path: keyframe.tween.path }
+      : { easing }
+    setKeyframeTween(layer, this.currentFrame, next)
     this.docChanged()
+  }
+
+  /**
+   * Sets the motion-path mode of the tween at the playhead: `'smooth'`
+   * evaluates the center along a Catmull-Rom curve through the node's
+   * neighbouring keyframe poses; `'linear'` (the default) removes the field
+   * so the center lerps straight. One undo step; no-op when unchanged.
+   */
+  setTweenPathHere(path: 'linear' | 'smooth'): void {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer) || layer.locked) return
+    const keyframe = findKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe?.tween) return
+    if ((keyframe.tween.path ?? 'linear') === path) return
+    this.pushHistory()
+    const next: KeyframeTween = { easing: keyframe.tween.easing }
+    if (path === 'smooth') next.path = 'smooth'
+    setKeyframeTween(layer, this.currentFrame, next)
+    this.docChanged()
+  }
+
+  /**
+   * Moves one node's keyframe entry from `fromFrame` to `toFrame` (the
+   * timeline's single-marker drag). Returns true when the entry moved.
+   */
+  moveNodeKeyframeEntry(
+    nodeId: string,
+    fromFrame: number,
+    toFrame: number,
+    layerId = this.currentLayerId
+  ): boolean {
+    return this.moveNodeKeyframeEntries([{ nodeId, fromFrame, toFrame }], layerId)
+  }
+
+  /**
+   * Moves a batch of keyframe entries in one undo entry (a multi-marker
+   * drag): all entries detach, re-attach at their target frames and merge
+   * into keyframes already there. Refuses (with a message) when any target
+   * is outside the timeline; returns false when nothing actually moves.
+   */
+  moveNodeKeyframeEntries(moves: readonly KeyframeEntryMove[], layerId = this.currentLayerId): boolean {
+    const layer = getLayer(this.document, layerId)
+    if (!layer || !isObjectLayer(layer) || layer.locked || moves.length === 0) return false
+    const totalFrames = this.duration
+    if (moves.some((move) => move.toFrame < 0 || move.toFrame > totalFrames - 1)) {
+      this.showMessage('Move keyframe: the target frame is outside the timeline')
+      return false
+    }
+    const effective = moves.some((move) => {
+      if (move.fromFrame === move.toFrame) return false
+      const keyframe = findKeyframeAtFrame(layer, move.fromFrame)
+      return keyframe !== undefined && keyframe.nodes.some((node) => node.id === move.nodeId)
+    })
+    if (!effective) return false
+    this.pushHistory()
+    moveKeyframeEntries(layer, moves, totalFrames)
+    this.docChanged()
+    return true
+  }
+
+  /**
+   * Applies a copied keyframe chunk (the clipboard) at `targetFrame` on the
+   * given layer: entries land on `targetFrame + offset`, out-of-range entries
+   * are skipped, existing keyframes and their nodes survive and an existing
+   * tween is never cleared. Does not require the layer to be current. Used by
+   * the timeline paste and the script `copyKeyframes` command. One undo step;
+   * returns false when nothing lands.
+   */
+  copyKeyframeChunk(
+    layerId: string,
+    entries: readonly KeyframeChunkEntry[],
+    targetFrame: number
+  ): boolean {
+    const layer = getLayer(this.document, layerId)
+    if (!layer || !isObjectLayer(layer) || layer.locked) return false
+    const totalFrames = this.duration
+    const lands = entries.some((entry) => {
+      const frame = targetFrame + entry.offset
+      return frame >= 0 && frame <= totalFrames - 1
+    })
+    if (!lands) return false
+    this.pushHistory()
+    applyKeyframeChunk(layer, entries, targetFrame, totalFrames)
+    this.docChanged()
+    return true
+  }
+
+  /**
+   * Sets the non-destructive hold step (animation on n's): every frame
+   * evaluates at `frame - frame % step`, so `3` plays the document on threes
+   * without duplicating anything. `1` turns stepping off (the field is
+   * removed). Undoable document state; accepts only integers 1–16.
+   */
+  setHoldStep(step: number): void {
+    if (!Number.isInteger(step) || step < 1 || step > 16) return
+    if (this.holdStep === step) return
+    this.pushHistory()
+    if (step === 1) delete this.document.holdStep
+    else this.document.holdStep = step
+    this.docChanged()
+    this.uiChanged()
+  }
+
+  /** Current hold step (1 = off). */
+  get holdStep(): number {
+    return holdStepOf(this.document)
+  }
+
+  /** Updates the session-only onion-skin display options and repaints. */
+  setOnionOptions(options: {
+    onionBefore?: number
+    onionAfter?: number
+    onionTint?: boolean
+    onionTintBefore?: string
+    onionTintAfter?: string
+    onionOutline?: boolean
+  }): void {
+    if (options.onionBefore !== undefined) {
+      this.onionBefore = clampOnionCount(options.onionBefore)
+    }
+    if (options.onionAfter !== undefined) {
+      this.onionAfter = clampOnionCount(options.onionAfter)
+    }
+    if (options.onionTint !== undefined) this.onionTint = options.onionTint
+    if (options.onionTintBefore !== undefined) this.onionTintBefore = options.onionTintBefore
+    if (options.onionTintAfter !== undefined) this.onionTintAfter = options.onionTintAfter
+    if (options.onionOutline !== undefined) this.onionOutline = options.onionOutline
+    this.uiChanged()
   }
 
   setCurrentLayer(layerId: string): void {

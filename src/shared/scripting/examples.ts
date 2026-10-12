@@ -92,4 +92,42 @@ const titleCardFadeIn: ScriptExample = {
   ]
 }
 
-export const SCRIPT_EXAMPLES: readonly ScriptExample[] = [bouncingBall, titleCardFadeIn]
+/** A three-pose slide retimed after the fact: the middle pose is moved,
+ * the arc along the path is smoothed and playback runs on twos. */
+const retimedSlide: ScriptExample = {
+  name: 'Retimed slide (moved keyframe + hold step)',
+  description:
+    'A square slides across with a smooth arc; the middle pose is retimed and playback runs on twos.',
+  commands: [
+    { op: 'addLayer', kind: 'object', name: 'Square' },
+    {
+      op: 'addNode',
+      frame: 0,
+      node: {
+        type: 'primitive',
+        id: 'square',
+        primitive: 'rect',
+        name: 'Square',
+        width: 80,
+        height: 80,
+        center: { x: 120, y: 270 },
+        rotation: 0,
+        opacity: 1,
+        fill: '#38bdf8'
+      }
+    },
+    // A custom ease plus a smooth motion path through the three poses.
+    { op: 'setTween', frame: 0, easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 }, path: 'smooth' },
+    { op: 'updateNode', nodeId: 'square', frame: 11, patch: { center: { x: 480, y: 150 } } },
+    { op: 'updateNode', nodeId: 'square', frame: 23, patch: { center: { x: 840, y: 270 } } },
+    { op: 'moveKeyframe', nodeId: 'square', fromFrame: 11, toFrame: 9 },
+    { op: 'setHoldStep', step: 2 },
+    { op: 'setDuration', frames: 24 }
+  ]
+}
+
+export const SCRIPT_EXAMPLES: readonly ScriptExample[] = [
+  bouncingBall,
+  titleCardFadeIn,
+  retimedSlide
+]

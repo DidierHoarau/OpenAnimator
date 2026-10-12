@@ -1,6 +1,6 @@
 import Ajv, { type ValidateFunction } from 'ajv'
 
-import { DOCUMENT_SCHEMA, EASING_VALUES, sceneNodeSchema } from './documentSchema'
+import { DOCUMENT_SCHEMA, EASING_VALUES, easingSchema, sceneNodeSchema } from './documentSchema'
 
 /**
  * The scripting command contract: a JSON list of atomic commands applied in
@@ -29,7 +29,16 @@ export type ScriptCommand =
   | { op: 'deleteNode'; nodeId: string; layerId?: string }
   | { op: 'setKeyframe'; nodeId: string; layerId?: string; frame?: number; patch?: Record<string, unknown> }
   | { op: 'removeNodeKeyframe'; nodeId: string; layerId?: string; frame?: number }
-  | { op: 'setTween'; layerId?: string; frame?: number; easing?: string | null }
+  | {
+      op: 'setTween'
+      layerId?: string
+      frame?: number
+      easing?: string | null | { x1: number; y1: number; x2: number; y2: number }
+      path?: 'linear' | 'smooth'
+    }
+  | { op: 'moveKeyframe'; nodeId: string; layerId?: string; fromFrame: number; toFrame: number }
+  | { op: 'copyKeyframes'; nodeId: string; layerId?: string; fromFrame: number; toFrame?: number; targetFrame: number }
+  | { op: 'setHoldStep'; step: number }
   | { op: 'setCell'; layerId?: string; frame?: number; resourceId: string }
   | { op: 'setDuration'; frames: number }
   | { op: 'setFps'; fps: number }
@@ -59,7 +68,9 @@ export const COMMANDS_SCHEMA = {
       required: ['x', 'y'],
       properties: { x: { type: 'number' }, y: { type: 'number' } }
     },
-    easing: { enum: [...EASING_VALUES] },
+    easing: easingSchema(),
+    /** setTween's easing also accepts null, which turns the tween off. */
+    tweenEasing: { anyOf: [{ $ref: '#/definitions/easing' }, { type: 'null' }] },
     sceneNode: sceneNodeSchema(false),
     /** Loose structural patch of a node: only known fields, no deep shape. */
     nodePatch: {
@@ -99,6 +110,9 @@ export const COMMANDS_SCHEMA = {
             'setKeyframe',
             'removeNodeKeyframe',
             'setTween',
+            'moveKeyframe',
+            'copyKeyframes',
+            'setHoldStep',
             'setCell',
             'setDuration',
             'setFps',
@@ -112,10 +126,15 @@ export const COMMANDS_SCHEMA = {
         node: { $ref: '#/definitions/sceneNode' },
         patch: { $ref: '#/definitions/nodePatch' },
         frame: { $ref: '#/definitions/frameNumber' },
+        fromFrame: { $ref: '#/definitions/frameNumber' },
+        toFrame: { $ref: '#/definitions/frameNumber' },
+        targetFrame: { $ref: '#/definitions/frameNumber' },
+        step: { type: 'integer', minimum: 1, maximum: 16 },
+        path: { enum: ['linear', 'smooth'] },
         resourceId: { type: 'string' },
         frames: { type: 'integer', minimum: 1 },
         fps: { type: 'number', exclusiveMinimum: 0 },
-        easing: { type: ['string', 'null'] }
+        easing: { $ref: '#/definitions/tweenEasing' }
       },
       allOf: [
         {
@@ -152,7 +171,36 @@ export const COMMANDS_SCHEMA = {
         },
         {
           if: { properties: { op: { const: 'setTween' } }, required: ['op'] },
-          then: { additionalProperties: false, properties: { op: {}, layerId: {}, frame: {}, easing: { type: ['string', 'null'], enum: [...EASING_VALUES, null] } } }
+          then: {
+            additionalProperties: false,
+            properties: {
+              op: {},
+              layerId: {},
+              frame: {},
+              easing: { $ref: '#/definitions/tweenEasing' },
+              path: { enum: ['linear', 'smooth'] }
+            }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'moveKeyframe' } }, required: ['op'] },
+          then: {
+            required: ['nodeId', 'fromFrame', 'toFrame'],
+            additionalProperties: false,
+            properties: { op: {}, nodeId: {}, layerId: {}, fromFrame: {}, toFrame: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'copyKeyframes' } }, required: ['op'] },
+          then: {
+            required: ['nodeId', 'fromFrame', 'targetFrame'],
+            additionalProperties: false,
+            properties: { op: {}, nodeId: {}, layerId: {}, fromFrame: {}, toFrame: {}, targetFrame: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'setHoldStep' } }, required: ['op'] },
+          then: { required: ['step'], additionalProperties: false, properties: { op: {}, step: {} } }
         },
         {
           if: { properties: { op: { const: 'setCell' } }, required: ['op'] },
@@ -184,6 +232,8 @@ interface FieldSpec {
   exclusiveMin?: number
   enum?: readonly string[]
   nullable?: boolean
+  /** String field that may also be a closed cubic bezier object. */
+  bezier?: boolean
 }
 
 const OPS = [
@@ -196,6 +246,9 @@ const OPS = [
   'setKeyframe',
   'removeNodeKeyframe',
   'setTween',
+  'moveKeyframe',
+  'copyKeyframes',
+  'setHoldStep',
   'setCell',
   'setDuration',
   'setFps',
@@ -238,8 +291,23 @@ const OP_FIELDS: Record<(typeof OPS)[number], Record<string, FieldSpec>> = {
   setTween: {
     layerId: { type: 'string' },
     frame: { type: 'integer', min: 0 },
-    easing: { type: 'string', enum: EASING_VALUES, nullable: true }
+    easing: { type: 'string', enum: EASING_VALUES, nullable: true, bezier: true },
+    path: { type: 'string', enum: ['linear', 'smooth'] }
   },
+  moveKeyframe: {
+    nodeId: { type: 'string', required: true },
+    layerId: { type: 'string' },
+    fromFrame: { type: 'integer', min: 0, required: true },
+    toFrame: { type: 'integer', min: 0, required: true }
+  },
+  copyKeyframes: {
+    nodeId: { type: 'string', required: true },
+    layerId: { type: 'string' },
+    fromFrame: { type: 'integer', min: 0, required: true },
+    toFrame: { type: 'integer', min: 0 },
+    targetFrame: { type: 'integer', min: 0, required: true }
+  },
+  setHoldStep: { step: { type: 'integer', min: 1, max: 16, required: true } },
   setCell: {
     layerId: { type: 'string' },
     frame: { type: 'integer', min: 0 },
@@ -322,6 +390,10 @@ function describeType(value: unknown): string {
 function checkField(collector: Collector, path: string, spec: FieldSpec, value: unknown): void {
   if (value === null && spec.nullable) return
   const kind = describeType(value)
+  if (spec.bezier && kind === 'object') {
+    checkBezierEasing(collector, path, value)
+    return
+  }
   if (spec.type === 'boolean') {
     if (kind !== 'boolean') collector.at(path, 'must be boolean')
     return
@@ -377,6 +449,30 @@ function checkVec2(collector: Collector, path: string, value: unknown): void {
   }
   for (const key of Object.keys(vec)) {
     if (key !== 'x' && key !== 'y') collector.at(`${path}/${key}`, 'must not have additional properties')
+  }
+}
+
+/** Closed cubic bezier `{x1,y1,x2,y2}`: finite numbers, control-point x ∈ [0,1]. */
+function checkBezierEasing(collector: Collector, path: string, value: unknown): void {
+  const bezier = value as Record<string, unknown>
+  for (const key of ['x1', 'y1', 'x2', 'y2'] as const) {
+    const entry = bezier[key]
+    if (entry === undefined) {
+      collector.at(`${path}/${key}`, 'is required')
+      continue
+    }
+    if (typeof entry !== 'number' || !Number.isFinite(entry)) {
+      collector.at(`${path}/${key}`, 'must be number')
+      continue
+    }
+    if ((key === 'x1' || key === 'x2') && (entry < 0 || entry > 1)) {
+      collector.at(`${path}/${key}`, 'must be >= 0 and <= 1')
+    }
+  }
+  for (const key of Object.keys(bezier)) {
+    if (key !== 'x1' && key !== 'y1' && key !== 'x2' && key !== 'y2') {
+      collector.at(`${path}/${key}`, 'must not have additional properties')
+    }
   }
 }
 

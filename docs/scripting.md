@@ -43,7 +43,10 @@ layer. Frames are 0-based.
 | `deleteNode` | `nodeId`, `layerId?` | Removes the node from the layer. |
 | `setKeyframe` | `nodeId`, `layerId?`, `frame?`, `patch?` | Ensures the node has its own pose at the frame, optionally patching it. Warns if a pose already exists there. |
 | `removeNodeKeyframe` | `nodeId`, `layerId?`, `frame?` | Removes the node's own pose at the frame. |
-| `setTween` | `layerId?`, `frame?`, `easing` | Turns a classic tween on the keyframe at `frame` on/off (`easing: null` removes it). Easings: `linear`, `ease-in`, `ease-out`, `ease-in-out`. |
+| `setTween` | `layerId?`, `frame?`, `easing`, `path?` | Turns a classic tween on the keyframe at `frame` on/off (`easing: null` removes it). Easings: `linear`, `ease-in`, `ease-out`, `ease-in-out`, or a custom cubic bezier `{x1, y1, x2, y2}` (x ∈ 0..1). `path: 'smooth'` swings the tweened center along a curve through the neighbouring poses; `'linear'` (default) keeps it straight. |
+| `moveKeyframe` | `nodeId`, `layerId?`, `fromFrame`, `toFrame` | Moves the node's own pose from one frame to another (the timeline drag). Keyframes emptied by the move are dropped; the destination keeps its tween. |
+| `copyKeyframes` | `nodeId`, `layerId?`, `fromFrame`, `toFrame?`, `targetFrame` | Copies the node's poses in `[fromFrame, toFrame]` (default: `fromFrame` only) to `targetFrame + offset`, merging into existing keyframes; a copied tween is restored only where none exists. |
+| `setHoldStep` | `step` (1–16) | Sets the non-destructive hold step: playback, onion skinning and export evaluate every frame at `frame - frame % step` ("animation on n's"). `1` turns it off. |
 | `setCell` | `layerId?`, `frame?`, `resourceId` | Places a raster cell on a drawing layer. |
 | `setDuration` | `frames` | Sets the authored timeline length. |
 | `setFps` | `fps` | Sets frames per second. |
@@ -82,13 +85,15 @@ The same loop works without a running editor via the CLI `validate` command.
 
 ## Examples
 
-Two complete payloads ship in `src/shared/scripting/examples.ts` and are
+Three complete payloads ship in `src/shared/scripting/examples.ts` and are
 loadable in the script console:
 
 - **Bouncing ball** — a layer, an ellipse, poses at frames 0/11/23 via
   `updateNode`, tweens with `ease-in` (fall) and `ease-out` (rise).
 - **Title card fade-in** — a text node at `opacity: 0` tweened linearly to
   `opacity: 1`.
+- **Retimed slide** — a custom bezier tween with `path: 'smooth'`, a middle
+  pose retimed with `moveKeyframe`, and `setHoldStep: 2` playback on twos.
 
 ## Headless CLI
 

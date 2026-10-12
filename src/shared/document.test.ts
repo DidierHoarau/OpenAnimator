@@ -3,13 +3,16 @@ import { describe, expect, it } from 'vitest'
 import {
   addLayer,
   addNodeToLayer,
+  applyKeyframeChunk,
   cellRangeAtFrame,
   cloneDocument,
   createDocument,
   createDrawingLayer,
   documentDuration,
   evaluateLayerAtFrame,
+  extractKeyframeChunk,
   findKeyframeAtFrame,
+  holdStepOf,
   insertBlankKeyframe,
   insertCell,
   insertFrame,
@@ -18,6 +21,8 @@ import {
   isAsset,
   isSceneNode,
   moveCell,
+  moveKeyframeEntries,
+  moveNodeKeyframeEntry,
   moveNodeKeyframes,
   removeCell,
   removeFrame,
@@ -58,7 +63,7 @@ function firstLayer(doc: AnimatorDocument): ObjectLayer {
 describe('document operations', () => {
   it('creates a document with one empty layer and keyframe at 0', () => {
     const doc = createDocument('test', 960, 540, 24)
-    expect(doc.schemaVersion).toBe(3)
+    expect(doc.schemaVersion).toBe(4)
     expect(doc.layers).toHaveLength(1)
     expect(firstLayer(doc).keyframes).toEqual([{ frame: 0, nodes: [] }])
     expect(documentDuration(doc)).toBe(1)
@@ -214,15 +219,15 @@ describe('document operations', () => {
     expect(documentDuration(doc)).toBe(41)
   })
 
-  it('isAnimatorDocument requires schemaVersion 3 and validates deeply', () => {
+  it('isAnimatorDocument requires schemaVersion 4 and validates deeply', () => {
     const valid = createDocument('test', 960, 540, 24)
     firstLayer(valid).keyframes[0].nodes.push(rect('a', 0, 0))
     expect(isAnimatorDocument(valid)).toBe(true)
     expect(isAnimatorDocument(cloneDocument(valid))).toBe(true)
 
-    // Anything without schemaVersion 3 (e.g. a v1 document) is rejected here;
+    // Anything without schemaVersion 4 (e.g. a v1 document) is rejected here;
     // those go through migrateDocument instead.
-    const v1 = valid as unknown as Record<string, unknown>
+    const v1 = { ...valid } as Record<string, unknown>
     delete v1.schemaVersion
     expect(isAnimatorDocument(v1)).toBe(false)
 
@@ -238,6 +243,14 @@ describe('document operations', () => {
     expect(isAnimatorDocument(fractionalFrames)).toBe(false)
     const stringFrames = { ...valid, frames: '12' }
     expect(isAnimatorDocument(stringFrames)).toBe(false)
+
+    // Hold step: an integer in [1, 16] when present.
+    expect(isAnimatorDocument({ ...valid, holdStep: 2 })).toBe(true)
+    expect(isAnimatorDocument({ ...valid, holdStep: 16 })).toBe(true)
+    expect(isAnimatorDocument({ ...valid, holdStep: 0 })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, holdStep: 17 })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, holdStep: 1.5 })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, holdStep: '2' })).toBe(false)
   })
 
   it('isAnimatorDocument rejects malformed layers, keyframes and nodes', () => {
@@ -663,6 +676,190 @@ describe('drawing layers and cells', () => {
     expect(moveNodeKeyframes(layer, 'a', 0, 10)).toBe(false)
   })
 
+  it('holdStepOf defaults to 1 (every frame) and passes explicit values through', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    expect(holdStepOf(doc)).toBe(1)
+    doc.holdStep = 3
+    expect(holdStepOf(doc)).toBe(3)
+  })
+})
+
+describe('keyframe entry moves', () => {
+  it('moves one node entry to a target frame and replaces the same node there', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    // Frame 0: { a, b }; frame 4: { a, b }; frame 8: { c }.
+    addNodeToLayer(layer, 0, rect('a', 0, 0))
+    addNodeToLayer(layer, 0, rect('b', 0, 0))
+    insertKeyframe(layer, 4)
+    insertBlankKeyframe(layer, 8)
+    addNodeToLayer(layer, 8, rect('c', 0, 0))
+
+    // Move a@0 → 4: 'a' is replaced at 4 (other nodes untouched), 'b' stays at 0.
+    expect(moveNodeKeyframeEntry(layer, 'a', 0, 4, 20)).toBe(true)
+    const at = (frame: number): string[] | undefined =>
+      layer.keyframes.find((keyframe) => keyframe.frame === frame)?.nodes.map((node) => node.id).sort()
+    expect(at(0)).toEqual(['b'])
+    expect(at(4)).toEqual(['a', 'b'])
+    expect(at(8)).toEqual(['c'])
+  })
+
+  it('drops a keyframe emptied by the move together with its tween', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    addNodeToLayer(layer, 0, rect('a', 0, 0))
+    setKeyframeTween(layer, 0, { easing: 'ease-in' })
+    insertKeyframe(layer, 5)
+    insertBlankKeyframe(layer, 10)
+    addNodeToLayer(layer, 10, rect('b', 0, 0))
+    setKeyframeTween(layer, 5, { easing: 'linear' })
+
+    // 0 holds only 'a': moving it to 2 empties frame 0, tween dies with it.
+    expect(moveNodeKeyframeEntry(layer, 'a', 0, 2, 20)).toBe(true)
+    expect(layer.keyframes.map((keyframe) => keyframe.frame)).toEqual([2, 5, 10])
+    expect(layer.keyframes.find((keyframe) => keyframe.frame === 2)?.tween).toBeUndefined()
+    // The destination keyframe (5) keeps its own tween untouched.
+    expect(layer.keyframes.find((keyframe) => keyframe.frame === 5)?.tween).toEqual({ easing: 'linear' })
+  })
+
+  it('applies several moves atomically with replace semantics', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    addNodeToLayer(layer, 0, rect('a', 0, 0))
+    addNodeToLayer(layer, 0, rect('b', 0, 0))
+    insertKeyframe(layer, 6)
+    // Swap the two entries: a@0→6, b@6→0 — a chain that sequential single
+    // moves could not perform without clobbering intermediate state.
+    expect(
+      moveKeyframeEntries(
+        layer,
+        [
+          { nodeId: 'a', fromFrame: 0, toFrame: 6 },
+          { nodeId: 'b', fromFrame: 6, toFrame: 0 }
+        ],
+        20
+      )
+    ).toBe(true)
+    expect(layer.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 6])
+    const at = (frame: number): string[] =>
+      layer.keyframes.find((keyframe) => keyframe.frame === frame)!.nodes.map((node) => node.id).sort()
+    expect(at(0)).toEqual(['b'])
+    expect(at(6)).toEqual(['a'])
+  })
+
+  it('ignores no-ops, out-of-range targets and unknown sources without touching the layer', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    addNodeToLayer(layer, 0, rect('a', 0, 0))
+    insertKeyframe(layer, 3)
+    const snapshot = JSON.stringify(layer.keyframes)
+
+    expect(moveNodeKeyframeEntry(layer, 'a', 0, 0, 10)).toBe(false)
+    expect(moveNodeKeyframeEntry(layer, 'a', 0, 10, 10)).toBe(false)
+    expect(moveNodeKeyframeEntry(layer, 'a', 0, -1, 10)).toBe(false)
+    expect(moveNodeKeyframeEntry(layer, 'ghost', 0, 2, 10)).toBe(false)
+    expect(moveNodeKeyframeEntry(layer, 'a', 7, 2, 10)).toBe(false)
+    expect(JSON.stringify(layer.keyframes)).toBe(snapshot)
+
+    // A batch with only ineffective moves changes nothing either.
+    expect(
+      moveKeyframeEntries(
+        layer,
+        [
+          { nodeId: 'a', fromFrame: 0, toFrame: 0 },
+          { nodeId: 'ghost', fromFrame: 3, toFrame: 4 }
+        ],
+        10
+      )
+    ).toBe(false)
+    expect(JSON.stringify(layer.keyframes)).toBe(snapshot)
+  })
+})
+
+describe('keyframe chunks (clipboard)', () => {
+  function chunkLayer(): ObjectLayer {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    addNodeToLayer(layer, 0, rect('a', 0, 0))
+    addNodeToLayer(layer, 0, rect('b', 0, 0))
+    setKeyframeTween(layer, 0, { easing: 'ease-out' })
+    insertKeyframe(layer, 4)
+    removeNodeFromLayer(layer, 4, 'b')
+    return layer
+  }
+
+  it('extracts entries at frame offsets and carries the tween exactly once', () => {
+    const chunk = extractKeyframeChunk(chunkLayer(), 0, 4)
+    expect(chunk.map((entry) => [entry.nodeId, entry.offset])).toEqual([
+      ['a', 0],
+      ['b', 0],
+      ['a', 4]
+    ])
+    // The tween of keyframe 0 rides its first entry only.
+    expect(chunk[0].tween).toEqual({ easing: 'ease-out' })
+    expect(chunk[1].tween).toBeUndefined()
+    expect(chunk[2].tween).toBeUndefined()
+    // Entries hold clones, detached from the layer.
+    expect(chunk[2].node).not.toBe(chunk[0].node)
+
+    // A node filter keeps only that node's entries.
+    const onlyB = extractKeyframeChunk(chunkLayer(), 0, 4, ['b'])
+    expect(onlyB.map((entry) => [entry.nodeId, entry.offset])).toEqual([['b', 0]])
+    // An empty range extracts nothing.
+    expect(extractKeyframeChunk(chunkLayer(), 9, 12)).toEqual([])
+  })
+
+  it('applies a chunk at a target frame, creating and merging keyframes', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    insertBlankKeyframe(layer, 10)
+    addNodeToLayer(layer, 10, rect('c', 0, 0))
+    const chunk = extractKeyframeChunk(chunkLayer(), 0, 4)
+
+    expect(applyKeyframeChunk(layer, chunk, 10, 30)).toBe(true)
+    const at = (frame: number): string[] | undefined =>
+      layer.keyframes.find((keyframe) => keyframe.frame === frame)?.nodes.map((node) => node.id).sort()
+    // Target 10 already held 'c': the pasted 'a'/'b' join it.
+    expect(at(10)).toEqual(['a', 'b', 'c'])
+    expect(at(14)).toEqual(['a'])
+    // The source tween restores onto the merged keyframe at 10.
+    expect(layer.keyframes.find((keyframe) => keyframe.frame === 10)?.tween).toEqual({ easing: 'ease-out' })
+  })
+
+  it('never clobbers an existing tween and skips out-of-range entries', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    insertBlankKeyframe(layer, 20)
+    addNodeToLayer(layer, 20, rect('z', 0, 0))
+    setKeyframeTween(layer, 20, { easing: 'linear' })
+    const chunk = extractKeyframeChunk(chunkLayer(), 0, 4)
+
+    // Target 19 + offsets 0/4: frames 19, 19, 23 all land inside a 24-frame
+    // timeline.
+    expect(applyKeyframeChunk(layer, chunk, 19, 24)).toBe(true)
+    expect(layer.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 19, 20, 23])
+    expect(layer.keyframes.find((keyframe) => keyframe.frame === 23)?.nodes.map((node) => node.id)).toEqual(['a'])
+
+    // Pasting the offset-0 'a' entry onto 20 merges with 'z'; the existing
+    // tween stays.
+    expect(applyKeyframeChunk(layer, [chunk[0]], 20, 24)).toBe(true)
+    expect(layer.keyframes.find((keyframe) => keyframe.frame === 20)?.tween).toEqual({ easing: 'linear' })
+    expect(layer.keyframes.find((keyframe) => keyframe.frame === 20)?.nodes.map((node) => node.id).sort()).toEqual(['a', 'z'])
+  })
+
+  it('skips every out-of-range entry and reports no change', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(doc)
+    const chunk = extractKeyframeChunk(chunkLayer(), 0, 4)
+    expect(applyKeyframeChunk(layer, chunk, -5, 10)).toBe(false)
+    expect(applyKeyframeChunk(layer, chunk, 99, 10)).toBe(false)
+    expect(applyKeyframeChunk(layer, [], 0, 10)).toBe(false)
+    expect(layer.keyframes).toHaveLength(1)
+    expect(layer.keyframes[0]).toEqual({ frame: 0, nodes: [] })
+  })
+})
+
+describe('drawing frame ops and layer validation', () => {
   it('insertFrame shifts cells later and removeFrame shifts them back', () => {
     const doc = createDocument('test', 960, 540, 24)
     const layer = createDrawingLayer('Draw')

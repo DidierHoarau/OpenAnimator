@@ -329,3 +329,79 @@ describe('renderSvg', () => {
     expect(markup).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
   })
 })
+
+describe('renderSvg — outline option', () => {
+  const outline = { outline: { color: '#e05050' } }
+
+  it('renders primitives stroke-only in the outline color', () => {
+    const markup = nodeToSvgMarkup(shape({ fill: '#38bdf8', stroke: '#ffffff', strokeWidth: 4 }), undefined, outline)
+    expect(markup).toContain('fill="none"')
+    expect(markup).toContain('stroke="#e05050"')
+    expect(markup).toContain('stroke-width="1"')
+    expect(markup).toContain('vector-effect="non-scaling-stroke"')
+    // The node's own paints are suppressed.
+    expect(markup).not.toContain('#38bdf8')
+    expect(markup).not.toContain('stroke-width="4"')
+    // Placement stays.
+    expect(markup).toContain('transform="translate(120 80) rotate(0)"')
+  })
+
+  it('renders ellipses stroke-only and paths inside their placed transform', () => {
+    const ellipse = nodeToSvgMarkup(shape({ primitive: 'ellipse' }), undefined, outline)
+    expect(ellipse.startsWith('<ellipse rx="50" ry="25" fill="none" stroke="#e05050"')).toBe(true)
+
+    const path: PathNode = {
+      type: 'path',
+      id: 'p1',
+      center: { x: 100, y: 50 },
+      width: 40,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      d: 'M-20 -10L20 10',
+      fill: '#22d3ee',
+      stroke: '#f59e0b',
+      strokeWidth: 3
+    }
+    const markup = nodeToSvgMarkup(path, undefined, outline)
+    expect(markup).toContain('<path d="M-20 -10L20 10" fill="none" stroke="#e05050" stroke-width="1" vector-effect="non-scaling-stroke"/>')
+    expect(markup).not.toContain('#f59e0b')
+    expect(markup).not.toContain('#22d3ee')
+  })
+
+  it('threads the option into group children while keeping the normal wrapper', () => {
+    const markup = nodeToSvgMarkup(group(), undefined, outline)
+    expect(markup.startsWith('<g transform="translate(100 60) rotate(0) scale(1 1)" opacity="1">')).toBe(true)
+    expect(markup).toContain('fill="none" stroke="#e05050"')
+  })
+
+  it('keeps text, images and symbols on their normal markup', () => {
+    const text: TextNode = {
+      type: 'text',
+      id: 't1',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+    expect(nodeToSvgMarkup(text, undefined, outline)).toBe(nodeToSvgMarkup(text))
+    expect(nodeToSvgMarkup(image(), undefined, outline)).toBe(nodeToSvgMarkup(image()))
+    expect(nodeToSvgMarkup(symbol(), undefined, outline)).toBe(nodeToSvgMarkup(symbol()))
+  })
+
+  it('leaves the default markup byte-identical when the option is absent', () => {
+    const layers: RenderLayer[] = [
+      { layerId: 'l1', name: 'l', nodes: [shape(), shape({ primitive: 'ellipse' })] }
+    ]
+    expect(renderLayersToSvgMarkup(layers)).toBe(renderLayersToSvgMarkup(layers, undefined, undefined))
+    // And the outline variant really differs.
+    expect(renderLayersToSvgMarkup(layers, undefined, outline)).not.toBe(renderLayersToSvgMarkup(layers))
+  })
+})
