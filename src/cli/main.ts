@@ -100,7 +100,15 @@ async function runRender(args: CliArgs): Promise<string> {
     document
   )
   await withEmbeddedFontFiles(document, resources, (fontFiles) =>
-    renderToFile(document, options, createResourceResolver(resources), outPath, fontFiles)
+    renderToFile(
+      document,
+      options,
+      createResourceResolver(resources),
+      outPath,
+      fontFiles,
+      undefined,
+      resources
+    )
   )
   const size = exportPixelSize(document, options)
   return `Wrote ${outPath} — ${exportFrameCount(options)} frame(s) ${size.width}x${size.height} at ${options.fps} fps`

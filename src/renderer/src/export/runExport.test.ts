@@ -1,12 +1,28 @@
 // @vitest-environment happy-dom
 import { unzipSync } from 'fflate'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument, createDrawingLayer } from '@shared/document'
 import type { ExportOptions } from '@shared/exportOptions'
 import { Editor } from '../editor'
 
 import { runExport, type ExportRunnerDeps } from './runExport'
+
+// The real encoder needs WebCodecs (absent here), so the video path is driven
+// through controllable stubs; everything else stays the actual module.
+const videoEncoder = vi.hoisted(() => ({
+  canEncodeVideo: vi.fn(() => false),
+  encodeVideo: vi.fn()
+}))
+
+vi.mock('./videoEncoder', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./videoEncoder')>()
+  return {
+    ...actual,
+    canEncodeVideo: videoEncoder.canEncodeVideo,
+    encodeVideo: videoEncoder.encodeVideo
+  }
+})
 
 const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 
@@ -180,5 +196,89 @@ describe('runExport', () => {
     expect(order[0]).toBe('reconcile')
     expect(order).toContain('raster')
     expect(deps.messages).toEqual(['Exported to /tmp/out'])
+  })
+})
+
+describe('runExport — audio in video exports', () => {
+  beforeEach(() => {
+    videoEncoder.canEncodeVideo.mockReset()
+    videoEncoder.canEncodeVideo.mockReturnValue(false)
+    videoEncoder.encodeVideo.mockReset()
+  })
+
+  const mixBuffer = (): AudioBuffer => ({ duration: 0.5 }) as unknown as AudioBuffer
+
+  it('mixes the audible audio into webm exports and hands it to the encoder', async () => {
+    videoEncoder.canEncodeVideo.mockReturnValue(true)
+    videoEncoder.encodeVideo.mockResolvedValue({
+      bytes: new Uint8Array([7, 7]),
+      audioIncluded: true
+    })
+    const mix = mixBuffer()
+    const renderAudioMix = vi.fn(() => Promise.resolve(mix))
+    const deps = fakeDeps({ renderAudioMix })
+    const opts = options({ format: 'webm' })
+
+    const result = await runExport(drawingEditor(), opts, deps, { canceled: false })
+
+    expect(result).toBe(true)
+    expect(renderAudioMix).toHaveBeenCalledWith(opts)
+    expect(videoEncoder.encodeVideo).toHaveBeenCalledTimes(1)
+    const call = videoEncoder.encodeVideo.mock.calls[0]
+    expect(call[0]).toBe(opts)
+    expect(call[1]).toEqual({ width: 320, height: 180 })
+    expect(call[4]).toEqual({ buffer: mix })
+    expect(deps.written[0].bytes).toEqual(new Uint8Array([7, 7]))
+    expect(deps.messages).toEqual(['Exported to /tmp/out'])
+  })
+
+  it('reports the dropped track when the encoder cannot include the mix', async () => {
+    videoEncoder.canEncodeVideo.mockReturnValue(true)
+    videoEncoder.encodeVideo.mockResolvedValue({
+      bytes: new Uint8Array([7]),
+      audioIncluded: false
+    })
+    const deps = fakeDeps({ renderAudioMix: () => Promise.resolve(mixBuffer()) })
+
+    const result = await runExport(drawingEditor(), options({ format: 'webm' }), deps, {
+      canceled: false
+    })
+
+    expect(result).toBe(true)
+    expect(deps.messages).toEqual(['Exported to /tmp/out without audio (no encoder available)'])
+  })
+
+  it('never mixes audio for the silent formats', async () => {
+    const renderAudioMix = vi.fn()
+    const editor = drawingEditor()
+    const deps = fakeDeps({ renderAudioMix })
+
+    await runExport(editor, options(), deps, { canceled: false })
+    await runExport(editor, options({ format: 'gif' }), deps, { canceled: false })
+
+    expect(renderAudioMix).not.toHaveBeenCalled()
+    expect(deps.written).toHaveLength(2)
+  })
+
+  it('exports the video silently when the mixdown itself fails', async () => {
+    videoEncoder.canEncodeVideo.mockReturnValue(true)
+    videoEncoder.encodeVideo.mockResolvedValue({
+      bytes: new Uint8Array([7]),
+      audioIncluded: false
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const deps = fakeDeps({
+      renderAudioMix: () => Promise.reject(new Error('no decodable audio'))
+    })
+
+    const result = await runExport(drawingEditor(), options({ format: 'webm' }), deps, {
+      canceled: false
+    })
+
+    expect(result).toBe(true)
+    expect(warn).toHaveBeenCalled()
+    expect(videoEncoder.encodeVideo.mock.calls[0][4]).toBeNull()
+    expect(deps.messages).toEqual(['Exported to /tmp/out'])
+    warn.mockRestore()
   })
 })

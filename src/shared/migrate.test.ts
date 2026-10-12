@@ -29,7 +29,7 @@ function primitive(id: string, overrides: Partial<PrimitiveNode> & { primitive: 
 /** Hand-written current-schema equivalent of `fixtures/v1/tweened-strokes.json`. */
 function expectedTweenedStrokesDocument(): AnimatorDocument {
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     name: 'Tween demo',
     width: 960,
     height: 540,
@@ -112,7 +112,7 @@ describe('migrateDocument — v1 fixtures', () => {
   it('migrates the multi-layer fixture including hidden/locked flags', () => {
     const raw = loadFixture('multi-layer')
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(6)
+    expect(migrated.schemaVersion).toBe(7)
     expect(migrated.layers).toHaveLength(2)
     expect(migrated.layers[0]).toMatchObject({
       id: 'layer-fx',
@@ -143,7 +143,7 @@ describe('migrateDocument — v1 fixtures', () => {
     const raw = loadFixture('minimal')
     const migrated = migrateDocument(raw)
     expect(migrated).toEqual({
-      schemaVersion: 6,
+      schemaVersion: 7,
       name: 'Untitled',
       width: 960,
       height: 540,
@@ -175,7 +175,7 @@ describe('migrateDocument — v1 fixtures', () => {
       )
     }
     // And a tweened midpoint really interpolates (the render pipeline works).
-    const atSix = evaluateDocumentAtFrame(migrated, 6)[0].nodes.find((node) => node.id === 'ball')
+    const atSix = evaluateDocumentAtFrame(migrated, 6).layers[0].nodes.find((node) => node.id === 'ball')
     expect(atSix?.center.x).toBeCloseTo(290)
   })
 
@@ -432,7 +432,7 @@ describe('migrateDocument — v4 documents', () => {
       ]
     }
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(6)
+    expect(migrated.schemaVersion).toBe(7)
     expect(migrated.palette).toEqual([])
     expect(migrated.holdStep).toBe(3)
     expect((migrated.layers[0] as ObjectLayer).keyframes[0].tween).toEqual({
@@ -475,10 +475,10 @@ describe('migrateDocument — v4 documents', () => {
     expect(() => migrateDocument(badBezier)).toThrow(MigrationError)
   })
 
-  it('restamps a v3 document to v6', () => {
+  it('restamps a v3 document to v7', () => {
     const raw = { ...v4Base(), schemaVersion: 3 }
     const migrated = migrateDocument(JSON.parse(JSON.stringify(raw)))
-    expect(migrated.schemaVersion).toBe(6)
+    expect(migrated.schemaVersion).toBe(7)
     expect(migrated.palette).toEqual([])
     expect(isAnimatorDocument(migrated)).toBe(true)
   })
@@ -581,7 +581,7 @@ describe('migrateDocument — v4 documents', () => {
 
   it('injects fonts: [] into pre-v6 documents and keeps valid font lists through migration', () => {
     const injected = migrateDocument({ ...v4Base(), schemaVersion: 5 })
-    expect(injected.schemaVersion).toBe(6)
+    expect(injected.schemaVersion).toBe(7)
     expect(injected.fonts).toEqual([])
     expect(isAnimatorDocument(injected)).toBe(true)
 
@@ -671,5 +671,88 @@ describe('migrateDocument — drawing layers', () => {
       cells: [{ frame: 0 }]
     })
     expect(() => migrateDocument(badCell)).toThrow(MigrationError)
+  })
+})
+
+describe('migrateDocument — camera and audio layers', () => {
+  const v6Base = () => ({
+    schemaVersion: 6,
+    name: 'x',
+    width: 100,
+    height: 100,
+    fps: 24,
+    background: '#000000',
+    assets: [],
+    palette: [],
+    fonts: [],
+    layers: [{ kind: 'object', id: 'l', name: 'L', visible: true, locked: false, keyframes: [{ frame: 0, nodes: [] }] }]
+  })
+
+  const cameraLayer = () => ({
+    kind: 'camera',
+    id: 'cam',
+    name: 'Camera',
+    visible: true,
+    locked: false,
+    keyframes: [
+      { frame: 0, pose: { center: { x: 10, y: 20 }, zoom: 1.5, rotation: 0 }, tween: { easing: 'linear', path: 'smooth' } },
+      { frame: 12, pose: { center: { x: 90, y: 80 }, zoom: 3, rotation: 45 } }
+    ]
+  })
+
+  const audioLayer = () => ({
+    kind: 'audio',
+    id: 'sound',
+    name: 'Sound',
+    visible: true,
+    locked: false,
+    resourceId: 'a'.repeat(64),
+    startFrame: 6,
+    volume: 0.5
+  })
+
+  it('restamps a v6 document to v7 and keeps camera and audio layers verbatim', () => {
+    const raw = { ...v6Base(), layers: [...v6Base().layers, cameraLayer(), audioLayer()] }
+    const migrated = migrateDocument(raw)
+    expect(migrated.schemaVersion).toBe(7)
+    expect(migrated.layers[1]).toEqual(cameraLayer())
+    expect(migrated.layers[2]).toEqual(audioLayer())
+    expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+
+  it('rejects malformed camera keyframes with their location', () => {
+    const badZoom = { ...v6Base(), layers: [cameraLayer()] }
+    badZoom.layers[0].keyframes[0].pose.zoom = 0
+    expect(() => migrateDocument(badZoom)).toThrow(/layer 1: malformed camera keyframe 1/)
+    expect(() => migrateDocument(badZoom)).toThrow(MigrationError)
+
+    const badCenter = { ...v6Base(), layers: [cameraLayer()] }
+    badCenter.layers[0].keyframes[1].pose.center = { x: Number.NaN, y: 0 }
+    expect(() => migrateDocument(badCenter)).toThrow(MigrationError)
+
+    const badTween = { ...v6Base(), layers: [cameraLayer()] }
+    badTween.layers[0].keyframes[0].tween!.easing = 'wobble'
+    expect(() => migrateDocument(badTween)).toThrow(MigrationError)
+  })
+
+  it('rejects malformed audio layers with their location', () => {
+    const badResource = { ...v6Base(), layers: [audioLayer()] }
+    delete (badResource.layers[0] as { resourceId?: unknown }).resourceId
+    expect(() => migrateDocument(badResource)).toThrow(/layer 1: "resourceId" must be a string/)
+    expect(() => migrateDocument(badResource)).toThrow(MigrationError)
+
+    const badStart = { ...v6Base(), layers: [audioLayer()] }
+    badStart.layers[0].startFrame = -1
+    expect(() => migrateDocument(badStart)).toThrow(/"startFrame" must be an integer ≥ 0/)
+
+    const badVolume = { ...v6Base(), layers: [audioLayer()] }
+    badVolume.layers[0].volume = 1.5
+    expect(() => migrateDocument(badVolume)).toThrow(/"volume" must be a number between 0 and 1/)
+  })
+
+  it('rejects an unknown layer kind', () => {
+    const raw = { ...v6Base(), layers: [{ ...v6Base().layers[0], kind: 'video' }] }
+    expect(() => migrateDocument(raw)).toThrow(MigrationError)
+    expect(() => migrateDocument(raw)).toThrow('This file is not a valid OpenAnimator project.')
   })
 })

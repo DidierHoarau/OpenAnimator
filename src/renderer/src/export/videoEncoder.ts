@@ -1,12 +1,15 @@
 import {
+  AudioBufferSource,
   BufferTarget,
   CanvasSource,
   Mp4OutputFormat,
   Output,
   QUALITY_HIGH,
   WebMOutputFormat,
+  getFirstEncodableAudioCodec,
   getFirstEncodableVideoCodec
 } from 'mediabunny'
+import type { AudioCodec } from 'mediabunny'
 import type { ExportOptions } from '@shared/exportOptions'
 
 /**
@@ -29,6 +32,12 @@ const CODEC_CANDIDATES = {
   mp4: ['avc']
 } as const
 
+/** Preferred audio codecs per container, first encodable wins. */
+const AUDIO_CODEC_CANDIDATES: { webm: AudioCodec[]; mp4: AudioCodec[] } = {
+  webm: ['opus', 'vorbis'],
+  mp4: ['aac', 'mp3']
+}
+
 async function codecFor(format: 'webm' | 'mp4', width: number, height: number): Promise<string> {
   const codec = await getFirstEncodableVideoCodec([...CODEC_CANDIDATES[format]], {
     width,
@@ -40,17 +49,28 @@ async function codecFor(format: 'webm' | 'mp4', width: number, height: number): 
   return codec
 }
 
+/** Rendered video plus whether the requested audio track could be encoded. */
+export interface EncodeVideoResult {
+  bytes: Uint8Array
+  /** False when a requested audio mix was dropped (no encodable codec). */
+  audioIncluded: boolean
+}
+
 /**
  * Renders and encodes the export frame range into a video file. `drawFrame`
  * is called once per frame with a reusable canvas; the caller (export runner)
- * rasterizes through the shared FrameRasterizer.
+ * rasterizes through the shared FrameRasterizer. When `audio` is given its
+ * mix buffer is encoded as an audio track — except when the environment has
+ * no encodable audio codec, in which case the video is written silent and
+ * `audioIncluded` reports false.
  */
 export async function encodeVideo(
   options: ExportOptions,
   pixelSize: { width: number; height: number },
   drawFrame: VideoFrameDrawer,
-  signal: { canceled: boolean }
-): Promise<Uint8Array> {
+  signal: { canceled: boolean },
+  audio: { buffer: AudioBuffer } | null = null
+): Promise<EncodeVideoResult> {
   const { width, height } = pixelSize
   const container = options.format === 'mp4' ? 'mp4' : 'webm'
   const codec = await codecFor(container, width, height)
@@ -64,11 +84,23 @@ export async function encodeVideo(
   canvas.height = height
   const source = new CanvasSource(canvas, { codec: codec as 'vp9', quality: QUALITY_HIGH })
   output.addVideoTrack(source, { frameRate: options.fps })
+  let audioSource: AudioBufferSource | null = null
+  if (audio) {
+    const audioCodec = await getFirstEncodableAudioCodec(AUDIO_CODEC_CANDIDATES[container])
+    if (audioCodec) {
+      audioSource = new AudioBufferSource({ codec: audioCodec, quality: QUALITY_HIGH })
+      output.addAudioTrack(audioSource)
+    }
+  }
   await output.start()
 
   const frameCount = options.toFrame - options.fromFrame + 1
   const secondsPerFrame = 1 / options.fps
   try {
+    if (audio && audioSource) {
+      await audioSource.add(audio.buffer)
+      audioSource.close()
+    }
     for (let index = 0; index < frameCount; index++) {
       if (signal.canceled) throw new CanceledError()
       const canvas2d = canvas.getContext('2d')
@@ -83,7 +115,7 @@ export async function encodeVideo(
   }
   const buffer = output.target.buffer
   if (!buffer) throw new Error('Video encoding produced no data')
-  return new Uint8Array(buffer)
+  return { bytes: new Uint8Array(buffer), audioIncluded: audioSource !== null }
 }
 
 /** Thrown when the user cancels a running export. */

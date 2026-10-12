@@ -28,6 +28,31 @@ export function sniffResourceMime(bytes: Uint8Array): string {
   ) {
     return 'image/webp'
   }
+  // Audio clips are resources too (timeline playback, audio in exports): the
+  // decoded Blob type drives `decodeAudioData`, so it must be exact.
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x41 &&
+    bytes[10] === 0x56 &&
+    bytes[11] === 0x45
+  ) {
+    return 'audio/wav'
+  }
+  if (bytes.length >= 4 && bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) {
+    return 'audio/ogg'
+  }
+  if (bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
+    return 'audio/mpeg'
+  }
+  // Bare MPEG audio frame sync (files without an ID3 tag).
+  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0) {
+    return 'audio/mpeg'
+  }
   // Embedded font subsets live in the resource store too; they are Blobs the
   // stage font registration reads, never images for `<image href>`.
   if (bytes.length >= 4 && bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) {
@@ -161,9 +186,10 @@ export class ResourceCache {
     if (!this.decode) return
     for (const [resourceId, entry] of [...this.entries]) {
       if (only !== undefined && resourceId !== only) continue
-      // Font blobs are not images: the image decoder can never accept them,
-      // so validating them would wrongly flag and drop every embedded subset.
-      if (entry.blob.type.startsWith('font/')) continue
+      // Only images go through the image decoder: font subsets and audio
+      // clips can never decode as images, so validating them would wrongly
+      // flag and drop every one of them.
+      if (!entry.blob.type.startsWith('image/')) continue
       void this.decode(entry.blob)
         .then(() => {
           if (this.corrupt.delete(resourceId)) this.notify()

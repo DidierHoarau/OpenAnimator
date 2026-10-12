@@ -4,32 +4,43 @@ import {
   addLayer,
   addNodeToLayer,
   applyKeyframeChunk,
+  audioClipEndFrame,
+  cameraLayerOf,
   cellRangeAtFrame,
   cloneDocument,
+  createAudioLayer,
+  createCameraLayer,
   createDocument,
   createDrawingLayer,
+  defaultCameraPose,
   documentDuration,
+  evaluateCameraAtFrame,
   evaluateLayerAtFrame,
   extractKeyframeChunk,
+  findCameraKeyframeAtFrame,
   findKeyframeAtFrame,
   holdStepOf,
   insertBlankKeyframe,
+  insertCameraKeyframe,
   insertCell,
   insertFrame,
   insertKeyframe,
   isAnimatorDocument,
   isAsset,
   isSceneNode,
+  moveCameraKeyframes,
   moveCell,
   moveKeyframeEntries,
   moveNodeKeyframeEntry,
   moveNodeKeyframes,
+  removeCameraKeyframe,
   removeCell,
   removeFrame,
   removeKeyframe,
   removeLayer,
   removeNodeFromLayer,
   resolveCellAtFrame,
+  setAudioClipStart,
   setCellContent,
   setCellEnd,
   setKeyframeTween,
@@ -37,7 +48,16 @@ import {
 } from './document'
 import { createStarterDocument } from './starterDocument'
 import { cloneNode, isObjectLayer } from './model'
-import type { AnimatorDocument, EmbeddedFont, GroupNode, ObjectLayer, PrimitiveNode, SceneNode } from './model'
+import type {
+  AnimatorDocument,
+  AudioLayer,
+  CameraLayer,
+  EmbeddedFont,
+  GroupNode,
+  ObjectLayer,
+  PrimitiveNode,
+  SceneNode
+} from './model'
 
 function rect(id: string, x: number, y: number, overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
   return {
@@ -74,7 +94,7 @@ function embeddedFont(): EmbeddedFont {
 describe('document operations', () => {
   it('creates a document with one empty layer and keyframe at 0', () => {
     const doc = createDocument('test', 960, 540, 24)
-    expect(doc.schemaVersion).toBe(6)
+    expect(doc.schemaVersion).toBe(7)
     expect(doc.palette).toEqual([])
     expect(doc.fonts).toEqual([])
     expect(doc.layers).toHaveLength(1)
@@ -969,5 +989,199 @@ describe('drawing frame ops and layer validation', () => {
     const junkCell = cloneDocument(valid)
     ;(junkCell.layers[1] as unknown as { cells: unknown[] }).cells = [{ frame: 0 }]
     expect(isAnimatorDocument(junkCell)).toBe(false)
+  })
+})
+
+describe('camera and audio layers', () => {
+  function docWithCamera(): { doc: AnimatorDocument; camera: CameraLayer } {
+    const doc = createDocument('test', 960, 540, 24)
+    const camera = createCameraLayer('Camera')
+    doc.layers.push(camera)
+    return { doc, camera }
+  }
+
+  it('creates a camera layer that evaluates to no camera until keyed', () => {
+    const { doc, camera } = docWithCamera()
+    expect(camera).toMatchObject({ kind: 'camera', name: 'Camera', visible: true, locked: false })
+    expect(camera.keyframes).toEqual([])
+    expect(cameraLayerOf(doc)).toBe(camera)
+    expect(defaultCameraPose(doc)).toEqual({ center: { x: 480, y: 270 }, zoom: 1, rotation: 0 })
+    expect(evaluateCameraAtFrame(doc, 0)).toBeNull()
+  })
+
+  it('seeds the first keyframe with the evaluated (default) pose', () => {
+    const { doc, camera } = docWithCamera()
+    const keyframe = insertCameraKeyframe(doc, 3)
+    expect(keyframe).toEqual({
+      frame: 3,
+      pose: { center: { x: 480, y: 270 }, zoom: 1, rotation: 0 }
+    })
+    expect(camera.keyframes).toHaveLength(1)
+    // Hold-first: before its first keyframe the camera holds that first pose.
+    expect(evaluateCameraAtFrame(doc, 0)).toEqual(keyframe!.pose)
+  })
+
+  it('copies the tween-sampled pose when keying at the playhead', () => {
+    const { doc } = docWithCamera()
+    const first = insertCameraKeyframe(doc, 0, { center: { x: 0, y: 0 }, zoom: 1, rotation: 0 })!
+    first.tween = { easing: 'linear' }
+    insertCameraKeyframe(doc, 10, { center: { x: 100, y: 50 }, zoom: 2, rotation: 80 })
+    const mid = insertCameraKeyframe(doc, 5)!
+    expect(mid.pose.zoom).toBeCloseTo(1.5)
+    expect(mid.pose.center.x).toBeCloseTo(50)
+    expect(mid.pose.rotation).toBeCloseTo(40)
+  })
+
+  it('clones explicit poses and refuses duplicates and camera-less documents', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    expect(insertCameraKeyframe(doc, 0)).toBeNull()
+    const { doc: withCamera } = docWithCamera()
+    const pose = { center: { x: 1, y: 2 }, zoom: 3, rotation: 4 }
+    const keyframe = insertCameraKeyframe(withCamera, 1, pose)!
+    expect(keyframe.pose).toEqual(pose)
+    expect(keyframe.pose).not.toBe(pose)
+    expect(keyframe.pose.center).not.toBe(pose.center)
+    expect(insertCameraKeyframe(withCamera, 1)).toBeNull()
+  })
+
+  it('removes camera keyframes by frame', () => {
+    const { doc, camera } = docWithCamera()
+    insertCameraKeyframe(doc, 4)
+    expect(removeCameraKeyframe(doc, 4)).toBe(true)
+    expect(camera.keyframes).toEqual([])
+    expect(removeCameraKeyframe(doc, 4)).toBe(false)
+    const noCamera = createDocument('test', 960, 540, 24)
+    expect(removeCameraKeyframe(noCamera, 0)).toBe(false)
+  })
+
+  it('retimes camera keyframes, merging over occupied targets', () => {
+    const { doc, camera } = docWithCamera()
+    insertCameraKeyframe(doc, 0, { center: { x: 0, y: 0 }, zoom: 1, rotation: 0 })
+    insertCameraKeyframe(doc, 4, { center: { x: 1, y: 1 }, zoom: 2, rotation: 0 })
+    insertCameraKeyframe(doc, 8, { center: { x: 2, y: 2 }, zoom: 3, rotation: 0 })
+    expect(moveCameraKeyframes(camera, [{ fromFrame: 4, toFrame: 12 }], 20)).toBe(true)
+    expect(camera.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 8, 12])
+    // The moved keyframe wins over the one already at the target.
+    expect(moveCameraKeyframes(camera, [{ fromFrame: 12, toFrame: 8 }], 20)).toBe(true)
+    expect(camera.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 8])
+    expect(camera.keyframes[1].pose.zoom).toBe(2)
+  })
+
+  it('refuses no-op, unknown-source and out-of-range camera retimes', () => {
+    const { doc, camera } = docWithCamera()
+    insertCameraKeyframe(doc, 4)
+    const before = JSON.stringify(camera.keyframes)
+    expect(moveCameraKeyframes(camera, [{ fromFrame: 4, toFrame: 4 }], 20)).toBe(false)
+    expect(moveCameraKeyframes(camera, [{ fromFrame: 7, toFrame: 9 }], 20)).toBe(false)
+    expect(moveCameraKeyframes(camera, [{ fromFrame: 4, toFrame: 20 }], 20)).toBe(false)
+    expect(moveCameraKeyframes(camera, [{ fromFrame: 4, toFrame: -1 }], 20)).toBe(false)
+    expect(JSON.stringify(camera.keyframes)).toBe(before)
+  })
+
+  it('evaluates camera tween/hold at the document level', () => {
+    const { doc } = docWithCamera()
+    const first = insertCameraKeyframe(doc, 0, { center: { x: 0, y: 0 }, zoom: 1, rotation: 0 })!
+    first.tween = { easing: 'linear' }
+    insertCameraKeyframe(doc, 10, { center: { x: 100, y: 50 }, zoom: 2, rotation: 90 })
+    const mid = evaluateCameraAtFrame(doc, 5)!
+    expect(mid.center).toEqual({ x: 50, y: 25 })
+    expect(mid.zoom).toBeCloseTo(1.5)
+    expect(mid.rotation).toBeCloseTo(45)
+    // Hold-last after the final keyframe; the returned pose is a copy.
+    const last = evaluateCameraAtFrame(doc, 99)!
+    expect(last).toEqual({ center: { x: 100, y: 50 }, zoom: 2, rotation: 90 })
+    last.zoom = 9
+    expect(evaluateCameraAtFrame(doc, 99)!.zoom).toBe(2)
+  })
+
+  it('creates audio layers and clamps clip nudges', () => {
+    const audio = createAudioLayer('res-1', 'Sound')
+    expect(audio).toMatchObject({
+      kind: 'audio',
+      name: 'Sound',
+      resourceId: 'res-1',
+      startFrame: 0,
+      volume: 1,
+      visible: true,
+      locked: false
+    })
+    expect(setAudioClipStart(audio, 12.6)).toBe(true)
+    expect(audio.startFrame).toBe(13)
+    expect(setAudioClipStart(audio, -5)).toBe(true)
+    expect(audio.startFrame).toBe(0)
+    expect(setAudioClipStart(audio, 0)).toBe(false)
+  })
+
+  it('computes audio clip end frames from decoded seconds', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const audio = createAudioLayer('res-1', 'Sound')
+    doc.layers.push(audio)
+    expect(audioClipEndFrame(doc, audio, 1.5)).toBe(36)
+    setAudioClipStart(audio, 10)
+    expect(audioClipEndFrame(doc, audio, 1.5)).toBe(46)
+    expect(audioClipEndFrame(doc, audio, -3)).toBe(10)
+  })
+
+  it('documentDuration counts camera keyframes and audio clip starts', () => {
+    const { doc } = docWithCamera()
+    insertCameraKeyframe(doc, 30)
+    expect(documentDuration(doc)).toBe(31)
+    const audio = createAudioLayer('res-1', 'Sound')
+    setAudioClipStart(audio, 40)
+    doc.layers.push(audio)
+    expect(documentDuration(doc)).toBe(41)
+  })
+
+  it('addLayer creates camera and audio layers', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const camera = addLayer(doc, 'Cam', 'bottom', 'camera')
+    expect(camera.kind).toBe('camera')
+    expect(camera.keyframes).toEqual([])
+    const audio = addLayer(doc, 'Sound', 'bottom', 'audio', 'res-1')
+    expect(audio.kind).toBe('audio')
+    expect(audio.resourceId).toBe('res-1')
+    expect(audio.startFrame).toBe(0)
+  })
+
+  it('isAnimatorDocument validates camera and audio layers deeply', () => {
+    const { doc } = docWithCamera()
+    insertCameraKeyframe(doc, 0)
+    doc.layers.push(createAudioLayer('res-1', 'Sound'))
+    expect(isAnimatorDocument(doc)).toBe(true)
+
+    const badZoom = cloneDocument(doc)
+    ;(badZoom.layers[1] as CameraLayer).keyframes[0].pose.zoom = 0
+    expect(isAnimatorDocument(badZoom)).toBe(false)
+
+    const badCenter = cloneDocument(doc)
+    ;(badCenter.layers[1] as CameraLayer).keyframes[0].pose.center.x = Number.NaN
+    expect(isAnimatorDocument(badCenter)).toBe(false)
+
+    const badTween = cloneDocument(doc)
+    ;(badTween.layers[1] as CameraLayer).keyframes[0].tween = { easing: 'wobble' } as never
+    expect(isAnimatorDocument(badTween)).toBe(false)
+
+    const badVolume = cloneDocument(doc)
+    ;(badVolume.layers[2] as AudioLayer).volume = 1.5
+    expect(isAnimatorDocument(badVolume)).toBe(false)
+
+    const badStart = cloneDocument(doc)
+    ;(badStart.layers[2] as AudioLayer).startFrame = -1
+    expect(isAnimatorDocument(badStart)).toBe(false)
+
+    const badResource = cloneDocument(doc)
+    ;(badResource.layers[2] as unknown as Record<string, unknown>).resourceId = 42
+    expect(isAnimatorDocument(badResource)).toBe(false)
+
+    const missingResource = cloneDocument(doc)
+    delete (missingResource.layers[2] as unknown as Record<string, unknown>).resourceId
+    expect(isAnimatorDocument(missingResource)).toBe(false)
+  })
+
+  it('keeps camera keyframes at exact frames only', () => {
+    const { doc, camera } = docWithCamera()
+    insertCameraKeyframe(doc, 5)
+    expect(findCameraKeyframeAtFrame(camera, 5)).toBeDefined()
+    expect(findCameraKeyframeAtFrame(camera, 6)).toBeUndefined()
   })
 })

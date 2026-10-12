@@ -583,7 +583,7 @@ describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
-      schemaVersion: 6,
+      schemaVersion: 7,
       name: 'test',
       width: 100,
       height: 100,

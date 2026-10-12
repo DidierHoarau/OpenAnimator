@@ -7,7 +7,7 @@ import {
   getLayer,
   resolveCellAtFrame
 } from '@shared/document'
-import type { Asset, DrawingLayer, GroupNode, ImageNode, ObjectLayer, PrimitiveNode, SceneNode, SymbolNode } from '@shared/model'
+import type { Asset, AudioLayer, DrawingLayer, GroupNode, ImageNode, ObjectLayer, PrimitiveNode, SceneNode, SymbolNode } from '@shared/model'
 
 import { Editor } from './editor'
 import type { EditorDeps } from './editor'
@@ -1006,5 +1006,165 @@ describe('Editor — addNodeWithAssets', () => {
     doc.layers[1].locked = true
     editor.addNodeWithAssets(rect('x'), [])
     expect(editor.canUndo).toBe(false)
+  })
+})
+
+const AUDIO_BYTES = new Uint8Array([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
+
+/** Live audio layer of the editor's current document (undo replaces it). */
+function liveAudioLayer(editor: Editor, id: string): AudioLayer {
+  const layer = getLayer(editor.document, id)
+  if (!layer || layer.kind !== 'audio') throw new Error('audio layer vanished')
+  return layer
+}
+
+describe('Editor — audio playback bridge', () => {
+  function stubAudio() {
+    return { start: vi.fn(), stop: vi.fn(), sync: vi.fn(), scrub: vi.fn() }
+  }
+
+  /** Manual animation-frame pump for the playback loop (node environment). */
+  function stubAnimationFrames(): { pump: (time: number) => void; restore: () => void } {
+    let scheduled: ((time: number) => void) | null = null
+    vi.stubGlobal('window', {
+      requestAnimationFrame: (callback: (time: number) => void) => {
+        scheduled = callback
+        return 1
+      },
+      cancelAnimationFrame: () => {
+        scheduled = null
+      }
+    })
+    return {
+      pump: (time: number) => {
+        const callback = scheduled
+        if (!callback) throw new Error('no animation frame was scheduled')
+        scheduled = null
+        callback(time)
+      },
+      restore: () => vi.unstubAllGlobals()
+    }
+  }
+
+  it('play/pause drive the bridge and a loop wrap re-syncs it to frame 0', () => {
+    const audio = stubAudio()
+    const raf = stubAnimationFrames()
+    try {
+      const editor = new Editor(createDocument('test', 960, 540, 24), { audio })
+      editor.insertFrameHere() // duration 2: playable, wraps on frame 1
+      editor.play()
+      expect(editor.playing).toBe(true)
+      expect(audio.start).toHaveBeenCalledWith(editor.document, 0, 24)
+      editor.play()
+      expect(audio.start).toHaveBeenCalledTimes(1) // already playing
+
+      // Seeking during playback re-aligns the mix to the new position.
+      editor.seekToFrame(1)
+      expect(audio.sync).toHaveBeenLastCalledWith(editor.document, 1, 24)
+
+      // Pump the loop one frame: 1 + 1 >= duration wraps back to frame 0.
+      raf.pump(1000)
+      raf.pump(1000 + 1000 / 24)
+      expect(editor.currentFrame).toBe(0)
+      expect(audio.sync).toHaveBeenLastCalledWith(editor.document, 0, 24)
+      expect(audio.sync).toHaveBeenCalledTimes(2)
+
+      editor.pause()
+      expect(editor.playing).toBe(false)
+      expect(audio.stop).toHaveBeenCalledTimes(1)
+      // Paused seeks never touch the mix.
+      audio.sync.mockClear()
+      editor.seekToFrame(1)
+      expect(audio.sync).not.toHaveBeenCalled()
+    } finally {
+      raf.restore()
+    }
+  })
+
+  it('the paused scrub blip fires only while the flag is on', () => {
+    const audio = stubAudio()
+    const editor = new Editor(createDocument('test', 960, 540, 24), { audio })
+    editor.insertFrameHere()
+    editor.seekToFrame(1)
+    expect(audio.scrub).not.toHaveBeenCalled() // off by default
+
+    editor.setScrubAudio(true)
+    expect(editor.scrubAudio).toBe(true)
+    editor.seekToFrame(0)
+    expect(audio.scrub).toHaveBeenCalledWith(editor.document, 0, 24)
+
+    editor.toggleScrubAudio()
+    expect(editor.scrubAudio).toBe(false)
+    audio.scrub.mockClear()
+    editor.seekToFrame(1)
+    expect(audio.scrub).not.toHaveBeenCalled()
+  })
+})
+
+describe('Editor — camera and audio mutations', () => {
+  it('audio creation, clip moves, volume clamping and mute are one undo step each', () => {
+    const editor = new Editor(createDocument('test', 960, 540, 24))
+    editor.resources.put('res-audio', AUDIO_BYTES)
+
+    // Unknown resources are refused without a history entry.
+    expect(editor.addAudioLayer('missing', 'Ghost')).toBeNull()
+    expect(editor.canUndo).toBe(false)
+
+    const created = editor.addAudioLayer('res-audio', 'Score', 3)
+    if (!created) throw new Error('expected the audio layer')
+    expect(liveAudioLayer(editor, created.id).startFrame).toBe(3)
+    expect(editor.currentLayerId).toBe(created.id)
+
+    // Volume clamps to 0..1; clamping to the current value adds no history.
+    editor.setAudioLayerVolume(created.id, 1.5)
+    expect(liveAudioLayer(editor, created.id).volume).toBe(1)
+    editor.setAudioLayerVolume(created.id, 0.25)
+    expect(liveAudioLayer(editor, created.id).volume).toBe(0.25)
+    expect(editor.setAudioClipStart(created.id, 6.4)).toBe(true)
+    expect(liveAudioLayer(editor, created.id).startFrame).toBe(6)
+    expect(editor.setAudioClipStart(created.id, -5)).toBe(true)
+    expect(liveAudioLayer(editor, created.id).startFrame).toBe(0)
+    editor.toggleAudioMute(created.id)
+    expect(liveAudioLayer(editor, created.id).visible).toBe(false)
+
+    // Walk the history back: one entry per mutation (the no-op clamp pushed
+    // nothing), ending at the layer creation.
+    editor.undo()
+    expect(liveAudioLayer(editor, created.id).visible).toBe(true)
+    editor.undo()
+    expect(liveAudioLayer(editor, created.id).startFrame).toBe(6)
+    editor.undo()
+    expect(liveAudioLayer(editor, created.id).startFrame).toBe(3)
+    editor.undo()
+    expect(liveAudioLayer(editor, created.id).volume).toBe(1)
+    editor.undo()
+    expect(editor.document.layers.some((entry) => entry.id === created.id)).toBe(false)
+    expect(editor.canUndo).toBe(false)
+  })
+
+  it('camera retimes coalesce into a single undo step', () => {
+    const editor = new Editor(createDocument('test', 960, 540, 24))
+    while (editor.duration <= 15) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+    if (!editor.addCameraLayer()) throw new Error('expected the camera layer')
+    editor.setFrame(6)
+    editor.ensureCameraKeyframe()
+    editor.setFrame(12)
+    editor.ensureCameraKeyframe()
+    expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 6, 12])
+
+    expect(
+      editor.moveCameraKeyframes([
+        { fromFrame: 6, toFrame: 7 },
+        { fromFrame: 12, toFrame: 13 }
+      ])
+    ).toBe(true)
+    expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 7, 13])
+    editor.undo()
+    expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 6, 12])
+    editor.redo()
+    expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 7, 13])
   })
 })

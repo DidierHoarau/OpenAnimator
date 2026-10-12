@@ -1,15 +1,15 @@
 import type { AnimatorDocument, Asset, SceneNode } from './model'
-import { isObjectLayer } from './model'
+import { isAudioLayer, isObjectLayer } from './model'
 
 /**
  * Counts how many times each resource is referenced by the document: one walk
  * over every object layer's keyframes (recursing into group children), one
- * over every drawing layer's cells, one over the document assets (image
- * assets reference their resource; symbol assets reference the images inside
- * their content, including through nested symbol instances, guarded against
- * cycles) and one over the embedded font subsets. Used by the main process to
- * write only referenced resources into the project file and for the explicit
- * purge-unused command.
+ * over every drawing layer's cells, one over audio layers' clips, one over
+ * the document assets (image assets reference their resource; symbol assets
+ * reference the images inside their content, including through nested symbol
+ * instances, guarded against cycles) and one over the embedded font subsets.
+ * Used by the main process to write only referenced resources into the
+ * project file and for the explicit purge-unused command.
  */
 export function collectResourceCounts(document: AnimatorDocument): Map<string, number> {
   const counts = new Map<string, number>()
@@ -30,7 +30,9 @@ export function collectResourceCounts(document: AnimatorDocument): Map<string, n
       for (const keyframe of layer.keyframes) {
         for (const node of keyframe.nodes) visit(node)
       }
-    } else {
+    } else if (isAudioLayer(layer)) {
+      if (layer.resourceId.length > 0) count(layer.resourceId)
+    } else if (layer.kind === 'drawing') {
       for (const cell of layer.cells) count(cell.resourceId)
     }
   }

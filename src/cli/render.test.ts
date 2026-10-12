@@ -13,6 +13,7 @@ import { subsetFont } from '../shared/fontSubset'
 import type { AnimatorDocument } from '../shared/model'
 import { sanitizeExportOptions } from '../shared/exportOptions'
 import {
+  buildFfmpegArgs,
   createResourceResolver,
   loadDocumentAndResources,
   renderDocument,
@@ -22,7 +23,7 @@ import {
 } from './render'
 
 const DOCUMENT: AnimatorDocument = {
-  schemaVersion: 6,
+  schemaVersion: 7,
   name: 'CLI test',
   width: 96,
   height: 64,
@@ -194,8 +195,76 @@ describe('renderToFile', () => {
   })
 })
 
-const NOTO_400 = 'node_modules/@expo-google-fonts/noto-sans/400Regular/NotoSans_400Regular.ttf'
+describe('buildFfmpegArgs', () => {
+  const framesPattern = 'frames/frame_%04d.png'
+  const windowOptions = (format: 'webm' | 'mp4') =>
+    sanitizeExportOptions({ format, fromFrame: 0, toFrame: 3, fps: 10 }, DOCUMENT)
 
+  it('keeps the silent argument list when the plan is empty', () => {
+    const args = buildFfmpegArgs([], windowOptions('webm'), {
+      framesPattern,
+      audioFiles: [],
+      outPath: 'out.webm'
+    })
+    expect(args).toEqual([
+      '-y', '-framerate', '10', '-i', framesPattern,
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', 'out.webm'
+    ])
+  })
+
+  it('maps a single clip directly with atrim, adelay and apad', () => {
+    const args = buildFfmpegArgs(
+      [{ resourceId: 'r1', startFrame: 6, startSeconds: 0.6, volume: 0.5 }],
+      windowOptions('webm'),
+      { framesPattern, audioFiles: ['audio_0.wav'], outPath: 'out.webm' }
+    )
+    expect(args).toEqual([
+      '-y', '-framerate', '10', '-i', framesPattern,
+      '-i', 'audio_0.wav',
+      '-filter_complex',
+      '[1:a]atrim=start=0:end=0.4,asetpts=PTS-STARTPTS,adelay=600|600,volume=0.5,apad[a0]',
+      '-map', '0:v', '-map', '[a0]',
+      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', '-c:a', 'libopus',
+      '-shortest', 'out.webm'
+    ])
+  })
+
+  it('seeks into clips that started before the export range', () => {
+    const args = buildFfmpegArgs(
+      [{ resourceId: 'r1', startFrame: 2, startSeconds: -0.2, volume: 1 }],
+      windowOptions('mp4'),
+      { framesPattern, audioFiles: ['audio_0.mp3'], outPath: 'out.mp4' }
+    )
+    const filter = args[args.indexOf('-filter_complex') + 1]
+    expect(filter).toBe(
+      '[1:a]atrim=start=0.2:end=0.6,asetpts=PTS-STARTPTS,adelay=0|0,volume=1,apad[a0]'
+    )
+  })
+
+  it('sums several clips through amix with normalization off', () => {
+    const args = buildFfmpegArgs(
+      [
+        { resourceId: 'r1', startFrame: 0, startSeconds: 0, volume: 1 },
+        { resourceId: 'r2', startFrame: 12, startSeconds: 1.2, volume: 0.25 }
+      ],
+      windowOptions('mp4'),
+      { framesPattern, audioFiles: ['audio_0.wav', 'audio_1.mp3'], outPath: 'out.mp4' }
+    )
+    expect(args[args.indexOf('-filter_complex') + 1]).toBe(
+      '[1:a]atrim=start=0:end=0.4,asetpts=PTS-STARTPTS,adelay=0|0,volume=1[a0];' +
+        '[2:a]atrim=start=0:end=0.4,asetpts=PTS-STARTPTS,adelay=1200|1200,volume=0.25[a1];' +
+        '[a0][a1]amix=inputs=2:normalize=0,apad[amix]'
+    )
+    // mp4 encodes with libx264/aac; the output length follows the video.
+    expect(args).toContain('libx264')
+    expect(args).toContain('aac')
+    expect(args).toContain('-shortest')
+    expect(args[args.indexOf('-map') + 1]).toBe('0:v')
+    expect(args[args.indexOf('-map', args.indexOf('-map') + 1) + 1]).toBe('[amix]')
+  })
+})
+
+const NOTO_400 = 'node_modules/@expo-google-fonts/noto-sans/400Regular/NotoSans_400Regular.ttf'
 function loadSubsetBytes(chars: readonly string[]): Uint8Array {
   const source = new Uint8Array(readFileSync(NOTO_400))
   return subsetFont(source, chars, embeddedFontId('Lato', 400))

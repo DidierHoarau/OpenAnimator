@@ -32,7 +32,14 @@ import {
  */
 
 export type ScriptCommand =
-  | { op: 'addLayer'; kind?: 'object' | 'drawing'; name?: string }
+  | {
+      op: 'addLayer'
+      kind?: 'object' | 'drawing' | 'camera' | 'audio'
+      name?: string
+      /** Required for `kind: 'audio'` (an existing session resource). */
+      resourceId?: string
+      startFrame?: number
+    }
   | { op: 'renameLayer'; layerId: string; name: string }
   | { op: 'removeLayer'; layerId: string }
   | { op: 'addNode'; node: Record<string, unknown>; layerId?: string; frame?: number }
@@ -55,6 +62,17 @@ export type ScriptCommand =
   | { op: 'setFps'; fps: number }
   | { op: 'setPalette'; colors: string[] }
   | { op: 'seek'; frame: number }
+  | {
+      op: 'setCameraKeyframe'
+      frame: number
+      center?: { x: number; y: number }
+      zoom?: number
+      rotation?: number
+      /** When given, ensures (true) or removes (false) the tween on the keyframe. */
+      tween?: boolean
+    }
+  | { op: 'removeCameraKeyframe'; frame: number }
+  | { op: 'setAudio'; layerId: string; startFrame?: number; volume?: number; muted?: boolean }
 
 /** One validation or application outcome, designed to be fed back to a model. */
 export interface ScriptIssue {
@@ -136,10 +154,13 @@ export const COMMANDS_SCHEMA = {
             'setDuration',
             'setFps',
             'setPalette',
-            'seek'
+            'seek',
+            'setCameraKeyframe',
+            'removeCameraKeyframe',
+            'setAudio'
           ]
         },
-        kind: { enum: ['object', 'drawing'] },
+        kind: { enum: ['object', 'drawing', 'camera', 'audio'] },
         name: { type: 'string' },
         layerId: { type: 'string' },
         nodeId: { type: 'string' },
@@ -149,11 +170,18 @@ export const COMMANDS_SCHEMA = {
         fromFrame: { $ref: '#/definitions/frameNumber' },
         toFrame: { $ref: '#/definitions/frameNumber' },
         targetFrame: { $ref: '#/definitions/frameNumber' },
+        startFrame: { $ref: '#/definitions/frameNumber' },
         step: { type: 'integer', minimum: 1, maximum: 16 },
         path: { enum: ['linear', 'smooth'] },
         resourceId: { type: 'string' },
         frames: { type: 'integer', minimum: 1 },
         fps: { type: 'number', exclusiveMinimum: 0 },
+        center: { $ref: '#/definitions/vec2' },
+        zoom: { type: 'number', exclusiveMinimum: 0 },
+        rotation: { type: 'number' },
+        tween: { type: 'boolean' },
+        volume: { type: 'number', minimum: 0, maximum: 1 },
+        muted: { type: 'boolean' },
         colors: {
           type: 'array',
           maxItems: MAX_PALETTE_COLORS,
@@ -164,7 +192,17 @@ export const COMMANDS_SCHEMA = {
       allOf: [
         {
           if: { properties: { op: { const: 'addLayer' } }, required: ['op'] },
-          then: { additionalProperties: false, properties: { op: {}, kind: {}, name: {} } }
+          then: {
+            additionalProperties: false,
+            properties: { op: {}, kind: {}, name: {}, resourceId: {}, startFrame: {} }
+          }
+        },
+        {
+          if: {
+            properties: { op: { const: 'addLayer' }, kind: { const: 'audio' } },
+            required: ['op', 'kind']
+          },
+          then: { required: ['resourceId'] }
         },
         {
           if: { properties: { op: { const: 'renameLayer' } }, required: ['op'] },
@@ -246,6 +284,26 @@ export const COMMANDS_SCHEMA = {
         {
           if: { properties: { op: { const: 'seek' } }, required: ['op'] },
           then: { required: ['frame'], additionalProperties: false, properties: { op: {}, frame: {} } }
+        },
+        {
+          if: { properties: { op: { const: 'setCameraKeyframe' } }, required: ['op'] },
+          then: {
+            required: ['frame'],
+            additionalProperties: false,
+            properties: { op: {}, frame: {}, center: {}, zoom: {}, rotation: {}, tween: {} }
+          }
+        },
+        {
+          if: { properties: { op: { const: 'removeCameraKeyframe' } }, required: ['op'] },
+          then: { required: ['frame'], additionalProperties: false, properties: { op: {}, frame: {} } }
+        },
+        {
+          if: { properties: { op: { const: 'setAudio' } }, required: ['op'] },
+          then: {
+            required: ['layerId'],
+            additionalProperties: false,
+            properties: { op: {}, layerId: {}, startFrame: {}, volume: {}, muted: {} }
+          }
         }
       ]
     }
@@ -289,13 +347,18 @@ const OPS = [
   'setDuration',
   'setFps',
   'setPalette',
-  'seek'
+  'seek',
+  'setCameraKeyframe',
+  'removeCameraKeyframe',
+  'setAudio'
 ] as const
 
 const OP_FIELDS: Record<(typeof OPS)[number], Record<string, FieldSpec>> = {
   addLayer: {
-    kind: { type: 'string', enum: ['object', 'drawing'] },
-    name: { type: 'string' }
+    kind: { type: 'string', enum: ['object', 'drawing', 'camera', 'audio'] },
+    name: { type: 'string' },
+    resourceId: { type: 'string' },
+    startFrame: { type: 'integer', min: 0 }
   },
   renameLayer: {
     layerId: { type: 'string', required: true },
@@ -353,7 +416,21 @@ const OP_FIELDS: Record<(typeof OPS)[number], Record<string, FieldSpec>> = {
   setDuration: { frames: { type: 'integer', min: 1, required: true } },
   setFps: { fps: { type: 'number', exclusiveMin: 0, required: true } },
   setPalette: { colors: { type: 'array', hexColors: true, maxItems: MAX_PALETTE_COLORS, required: true } },
-  seek: { frame: { type: 'integer', min: 0, required: true } }
+  seek: { frame: { type: 'integer', min: 0, required: true } },
+  setCameraKeyframe: {
+    frame: { type: 'integer', min: 0, required: true },
+    center: { type: 'object' },
+    zoom: { type: 'number', exclusiveMin: 0 },
+    rotation: { type: 'number' },
+    tween: { type: 'boolean' }
+  },
+  removeCameraKeyframe: { frame: { type: 'integer', min: 0, required: true } },
+  setAudio: {
+    layerId: { type: 'string', required: true },
+    startFrame: { type: 'integer', min: 0 },
+    volume: { type: 'number', min: 0, max: 1 },
+    muted: { type: 'boolean' }
+  }
 }
 
 /** Base node fields every scene node may carry (relaxed: all optional). */
@@ -740,6 +817,9 @@ export function validateScriptPayload(value: unknown): { commands: ScriptCommand
       if (key !== 'op' && !(key in fields)) {
         collector.at(`${path}/${key}`, 'must not have additional properties')
       }
+    }
+    if (op === 'addLayer' && command.kind === 'audio' && command.resourceId === undefined) {
+      collector.at(`${path}/resourceId`, 'is required when kind is "audio"')
     }
   })
   if (collector.errors.length > 0) return { commands: [], errors: collector.errors }

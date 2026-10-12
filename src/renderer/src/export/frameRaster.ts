@@ -137,12 +137,15 @@ export class FrameRasterizer {
     return this.embeddedFontCache || undefined
   }
 
-  /** Every resource id the document can render, warmed once per export. */
+  /** Every resource id the document references, warmed once per export. */
   private collectResourceIds(): Set<string> {
     const ids = new Set<string>()
     for (const layer of this.document.layers) {
-      if (layer.kind !== 'drawing') continue
-      for (const cell of layer.cells) if (cell.resourceId) ids.add(cell.resourceId)
+      if (layer.kind === 'drawing') {
+        for (const cell of layer.cells) if (cell.resourceId) ids.add(cell.resourceId)
+      } else if (layer.kind === 'audio') {
+        ids.add(layer.resourceId)
+      }
     }
     for (const asset of this.document.assets) {
       if (asset.resourceId) ids.add(asset.resourceId)

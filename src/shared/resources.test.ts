@@ -178,4 +178,72 @@ describe('collectResourceCounts', () => {
     ]
     expect(collectResourceCounts(document)).toEqual(new Map())
   })
+
+  it('counts audio layer clips (the .oanim refcount walk keeps them)', () => {
+    const document = documentWithLayers([createLayer('A')])
+    document.layers.push({
+      kind: 'audio',
+      id: 'sound',
+      name: 'Sound',
+      visible: true,
+      locked: false,
+      resourceId: 'hash-audio',
+      startFrame: 0,
+      volume: 1
+    })
+    const counts = collectResourceCounts(document)
+    expect(counts.get('hash-audio')).toBe(1)
+  })
+
+  it('counts one clip per audio layer and skips empty resource ids', () => {
+    const document = documentWithLayers([createLayer('A')])
+    document.layers.push(
+      {
+        kind: 'audio',
+        id: 's1',
+        name: 'S1',
+        visible: true,
+        locked: false,
+        resourceId: 'hash-audio',
+        startFrame: 0,
+        volume: 1
+      },
+      {
+        kind: 'audio',
+        id: 's2',
+        name: 'S2',
+        visible: false,
+        locked: false,
+        resourceId: 'hash-audio',
+        startFrame: 4,
+        volume: 0.5
+      },
+      {
+        kind: 'audio',
+        id: 's3',
+        name: 'S3',
+        visible: true,
+        locked: false,
+        resourceId: '',
+        startFrame: 0,
+        volume: 1
+      }
+    )
+    // Muted layers still reference their resource; the empty id is ignored.
+    expect(collectResourceCounts(document).get('hash-audio')).toBe(2)
+    expect(collectResourceCounts(document).size).toBe(1)
+  })
+
+  it('leaves camera layers without resource references', () => {
+    const document = documentWithLayers([createLayer('A')])
+    document.layers.push({
+      kind: 'camera',
+      id: 'cam',
+      name: 'Camera',
+      visible: true,
+      locked: false,
+      keyframes: []
+    })
+    expect(collectResourceCounts(document)).toEqual(new Map())
+  })
 })

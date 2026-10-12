@@ -315,6 +315,15 @@ input:disabled {
   pointer-events: none;
 }
 
+/* Display-only camera framing overlay: where the active camera looks. */
+.stage__camera-frame {
+  fill: none;
+  stroke: #f59e0b;
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  pointer-events: none;
+}
+
 /* Read-only motion-path overlay of a selected tweened node */
 .stage__motion-path {
   fill: none;
@@ -733,6 +742,67 @@ input:disabled {
 
 .tl-context-resolution input[type='number'] {
   width: 44px;
+}
+
+/* Volume row of the audio-layer context menu */
+
+.tl-context-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
+.tl-context-volume:hover {
+  background: none;
+}
+
+.tl-context-volume input[type='number'] {
+  width: 44px;
+}
+
+/* Camera keyframe markers and the audio clip span */
+
+.tl-key-camera {
+  border-radius: 2px;
+  background: var(--accent-blue);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.tl-clip {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  overflow: hidden;
+  background: rgba(74, 144, 217, 0.22);
+  border: 1px solid rgba(74, 144, 217, 0.75);
+  border-radius: 3px;
+  cursor: grab;
+  box-sizing: border-box;
+}
+
+.tl-clip.dragging {
+  opacity: 0.35;
+}
+
+.tl-clip-muted {
+  opacity: 0.45;
+  border-style: dashed;
+}
+
+/* Not decoded yet: a slim placeholder until the resource loads */
+.tl-clip-pending {
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(74, 144, 217, 0.18) 0 4px,
+    rgba(74, 144, 217, 0.32) 4px 8px
+  );
+}
+
+.tl-waveform {
+  display: block;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* Library panel */

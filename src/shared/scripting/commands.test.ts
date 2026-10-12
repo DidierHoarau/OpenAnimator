@@ -136,6 +136,55 @@ describe('validateScriptPayload', () => {
     expect(bad.errors.join('\n')).toContain('/commands/2/patch/fontFallback/0')
     expect(bad.errors.join('\n')).toContain('/commands/3/patch/letterSpacing')
   })
+
+  it('accepts the camera and audio ops and rejects their bad shapes', () => {
+    const ok = validateScriptPayload({
+      commands: [
+        { op: 'addLayer', kind: 'camera', name: 'Camera' },
+        { op: 'addLayer', kind: 'audio', name: 'Sound', resourceId: 'a'.repeat(64), startFrame: 0 },
+        { op: 'setCameraKeyframe', frame: 12, center: { x: 10, y: 20 }, zoom: 2, rotation: 30, tween: true },
+        { op: 'removeCameraKeyframe', frame: 12 },
+        { op: 'setAudio', layerId: 'l1', startFrame: 6, volume: 0.5, muted: false }
+      ]
+    })
+    expect(ok.errors).toEqual([])
+    expect(ok.commands).toHaveLength(5)
+    expect(ok.commands[0]).toMatchObject({ op: 'addLayer', kind: 'camera' })
+
+    // resourceId is required when the added layer is an audio layer.
+    const missingResource = validateScriptPayload({
+      commands: [{ op: 'addLayer', kind: 'audio', name: 'Sound' }]
+    })
+    expect(missingResource.errors.join('\n')).toContain('/commands/0/resourceId')
+
+    const bad = validateScriptPayload({
+      commands: [
+        { op: 'addLayer', kind: 'holo' },
+        { op: 'addLayer', kind: 'audio', resourceId: 'r', startFrame: -2 },
+        { op: 'setCameraKeyframe', frame: -1 },
+        { op: 'setCameraKeyframe', frame: 0, zoom: 0 },
+        { op: 'setCameraKeyframe', frame: 0.5 },
+        { op: 'setCameraKeyframe', frame: 0, extra: 1 },
+        { op: 'removeCameraKeyframe' },
+        { op: 'setAudio', volume: 0.5 },
+        { op: 'setAudio', layerId: 'l1', volume: 2 },
+        { op: 'setAudio', layerId: 'l1', muted: 'yes' },
+        { op: 'setAudio', layerId: 'l1', surprise: true }
+      ]
+    })
+    const joined = bad.errors.join('\n')
+    expect(joined).toContain('/commands/0/kind')
+    expect(joined).toContain('/commands/1/startFrame')
+    expect(joined).toContain('/commands/2/frame')
+    expect(joined).toContain('/commands/3/zoom')
+    expect(joined).toContain('/commands/4/frame')
+    expect(joined).toContain('/commands/5/extra')
+    expect(joined).toContain('/commands/6/frame')
+    expect(joined).toContain('/commands/7/layerId')
+    expect(joined).toContain('/commands/8/volume')
+    expect(joined).toContain('/commands/9/muted')
+    expect(joined).toContain('/commands/10/surprise')
+  })
 })
 
 describe('validateDocumentPayload', () => {
@@ -410,7 +459,35 @@ describe('hand-rolled validator vs JSON Schema', () => {
           }
         }
       ]
-    }
+    },
+    { commands: [{ op: 'addLayer', kind: 'camera', name: 'Camera' }] },
+    { commands: [{ op: 'addLayer', kind: 'audio', resourceId: 'a'.repeat(64), startFrame: 8 }] },
+    { commands: [{ op: 'addLayer', kind: 'audio', name: 'Sound' }] },
+    { commands: [{ op: 'addLayer', kind: 'audio', resourceId: 42 }] },
+    { commands: [{ op: 'addLayer', kind: 'audio', startFrame: 4 }] },
+    {
+      commands: [
+        { op: 'setCameraKeyframe', frame: 12, center: { x: 1, y: 2 }, zoom: 2, rotation: 30, tween: true }
+      ]
+    },
+    { commands: [{ op: 'setCameraKeyframe', frame: 0 }] },
+    { commands: [{ op: 'setCameraKeyframe' }] },
+    { commands: [{ op: 'setCameraKeyframe', frame: -1 }] },
+    { commands: [{ op: 'setCameraKeyframe', frame: 2.5 }] },
+    { commands: [{ op: 'setCameraKeyframe', frame: 0, zoom: 0 }] },
+    { commands: [{ op: 'setCameraKeyframe', frame: 0, center: { x: 1 } }] },
+    { commands: [{ op: 'setCameraKeyframe', frame: 0, center: { x: 1, y: 2, z: 3 } }] },
+    { commands: [{ op: 'setCameraKeyframe', frame: 0, extra: 1 }] },
+    { commands: [{ op: 'removeCameraKeyframe', frame: 3 }] },
+    { commands: [{ op: 'removeCameraKeyframe' }] },
+    { commands: [{ op: 'removeCameraKeyframe', frame: -1 }] },
+    { commands: [{ op: 'setAudio', layerId: 'l1' }] },
+    { commands: [{ op: 'setAudio', layerId: 'l1', startFrame: 6, volume: 0.5, muted: true }] },
+    { commands: [{ op: 'setAudio', volume: 0.5 }] },
+    { commands: [{ op: 'setAudio', layerId: 'l1', volume: 1.5 }] },
+    { commands: [{ op: 'setAudio', layerId: 'l1', volume: -0.1 }] },
+    { commands: [{ op: 'setAudio', layerId: 'l1', muted: 'no' }] },
+    { commands: [{ op: 'setAudio', layerId: 'l1', extra: 1 }] }
   ]
 
   it('agrees with the compiled schema on every corpus entry', () => {

@@ -881,12 +881,33 @@ export class StageView {
     }
 
     const stageContent = document.createElementNS(SVG_NS, 'g')
+    const evaluated = evaluateDocumentAtFrame(doc, editor.currentFrame)
     stageContent.innerHTML = renderLayersToSvgMarkup(
-      evaluateDocumentAtFrame(doc, editor.currentFrame),
+      evaluated.layers,
       (id) => editor.resources.getUrl(id),
       { resolveEmbeddedFont: embeddedFamilyResolverFor(doc.fonts) }
     )
     this.svg.appendChild(stageContent)
+
+    // Display-only camera framing overlay: the stage stays in document space
+    // (no coordinate remapping of tools), this rect shows where the active
+    // camera looks — W/zoom × H/zoom around the pose center, rotated with it.
+    if (evaluated.camera) {
+      const pose = evaluated.camera
+      const cameraFrame = document.createElementNS(SVG_NS, 'rect')
+      cameraFrame.classList.add('stage__camera-frame')
+      cameraFrame.setAttribute('x', String(-doc.width / (2 * pose.zoom)))
+      cameraFrame.setAttribute('y', String(-doc.height / (2 * pose.zoom)))
+      cameraFrame.setAttribute('width', String(doc.width / pose.zoom))
+      cameraFrame.setAttribute('height', String(doc.height / pose.zoom))
+      cameraFrame.setAttribute(
+        'transform',
+        `translate(${pose.center.x} ${pose.center.y}) rotate(${pose.rotation})`
+      )
+      cameraFrame.setAttribute('vector-effect', 'non-scaling-stroke')
+      cameraFrame.setAttribute('pointer-events', 'none')
+      this.svg.appendChild(cameraFrame)
+    }
 
     // One selection box per selected node of the current layer's content.
     const layer = editor.currentLayer
@@ -960,7 +981,7 @@ export class StageView {
     group.setAttribute('opacity', String(0.24 / depth))
     if (tintFilter) group.setAttribute('filter', tintFilter)
     group.innerHTML = renderLayersToSvgMarkup(
-      evaluateDocumentAtFrame(doc, frame),
+      evaluateDocumentAtFrame(doc, frame).layers,
       (id) => this.editor.resources.getUrl(id),
       { ...outline, resolveEmbeddedFont: embeddedFamilyResolverFor(doc.fonts) }
     )

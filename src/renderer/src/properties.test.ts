@@ -91,6 +91,8 @@ describe('PropertiesView sections', () => {
       'Image',
       'Group',
       'Symbol',
+      'Camera',
+      'Audio',
       'Draw',
       'Cell',
       'Palette'

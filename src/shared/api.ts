@@ -14,6 +14,7 @@ export const DOCUMENT_READ_CHANNEL = 'openanimator:document-read'
 export const RECENT_LIST_CHANNEL = 'openanimator:recent-list'
 export const RECENT_ADD_CHANNEL = 'openanimator:recent-add'
 export const IMAGE_PICK_CHANNEL = 'openanimator:image-pick'
+export const AUDIO_PICK_CHANNEL = 'openanimator:audio-pick'
 export const RESOURCE_ADD_CHANNEL = 'openanimator:resource-add'
 export const RESOURCE_PURGE_CHANNEL = 'openanimator:resource-purge'
 export const RESOURCE_RESET_CHANNEL = 'openanimator:resource-reset'
@@ -58,6 +59,9 @@ export type ReadResult =
 export type ImagePickResult =
   | { canceled: true }
   | { canceled: false; fileName: string; bytes: Uint8Array }
+
+/** Audio files are picked through the same raw-bytes contract as images. */
+export type AudioPickResult = ImagePickResult
 
 export type ResourceAddResult = { resourceId: string; deduped: boolean }
 
@@ -113,6 +117,7 @@ export interface OpenAnimatorApi {
   getRecentProjects(): Promise<RecentProject[]>
   rememberProject(path: string, name: string): Promise<RecentProject[]>
   pickImageFile(title?: string): Promise<ImagePickResult>
+  pickAudioFile(title?: string): Promise<AudioPickResult>
   addResource(bytes: Uint8Array, fileName: string): Promise<ResourceAddResult>
   purgeUnusedResources(document: AnimatorDocument): Promise<ResourcePurgeResult>
   resetResourceStore(): Promise<void>

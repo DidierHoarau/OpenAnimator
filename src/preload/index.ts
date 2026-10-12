@@ -4,6 +4,7 @@ import type { IpcRendererEvent } from 'electron'
 import {
   APP_API_CHANNEL,
   APP_MENU_COMMAND_CHANNEL,
+  AUDIO_PICK_CHANNEL,
   DOCUMENT_OPEN_DIALOG_CHANNEL,
   DOCUMENT_READ_CHANNEL,
   DOCUMENT_SAVE_AS_CHANNEL,
@@ -37,6 +38,7 @@ const api: OpenAnimatorApi = {
   getRecentProjects: () => ipcRenderer.invoke(RECENT_LIST_CHANNEL),
   rememberProject: (path, name) => ipcRenderer.invoke(RECENT_ADD_CHANNEL, path, name),
   pickImageFile: (title) => ipcRenderer.invoke(IMAGE_PICK_CHANNEL, title),
+  pickAudioFile: (title) => ipcRenderer.invoke(AUDIO_PICK_CHANNEL, title),
   addResource: (bytes, fileName) => ipcRenderer.invoke(RESOURCE_ADD_CHANNEL, bytes, fileName),
   purgeUnusedResources: (document) => ipcRenderer.invoke(RESOURCE_PURGE_CHANNEL, document),
   resetResourceStore: () => ipcRenderer.invoke(RESOURCE_RESET_CHANNEL),

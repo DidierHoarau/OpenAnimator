@@ -1,13 +1,16 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest'
 
-import { isObjectLayer } from '@shared/model'
+import { isAudioLayer, isObjectLayer } from '@shared/model'
 import { createStarterDocument } from '@shared/starterDocument'
 import { SCRIPT_EXAMPLES } from '@shared/scripting/examples'
 import { validateScriptPayload } from '@shared/scripting/commands'
 
 import { Editor } from '../editor'
 import { executeScriptCommands } from './execute'
+
+const AUDIO_RESOURCE = 'a1b2c3d4'.repeat(8)
+const AUDIO_BYTES = new Uint8Array([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
 
 function createEditor(): Editor {
   return new Editor(createStarterDocument(), {
@@ -354,5 +357,197 @@ describe('executeScriptCommands', () => {
     expect(editor.holdStep).toBe(3)
     editor.undo()
     expect(editor.holdStep).toBe(1)
+  })
+
+  it('addLayer camera creates the singleton camera layer once', () => {
+    const editor = createEditor()
+    const result = executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'addLayer', kind: 'camera', name: 'Cam' },
+          { op: 'addLayer', kind: 'camera' }
+        ]
+      })
+    )
+    expect(result.applied).toBe(1)
+    expect(result.issues).toHaveLength(1)
+    expect(result.issues[0]).toMatchObject({ index: 1, severity: 'error' })
+    expect(result.issues[0].message).toContain('already has a camera layer')
+    expect(editor.cameraLayer?.name).toBe('Cam')
+  })
+
+  it('setCameraKeyframe creates the camera layer on demand and keys poses', () => {
+    const editor = createEditor()
+    const commands = validated({
+      commands: [
+        { op: 'setCameraKeyframe', frame: 0, center: { x: 100, y: 80 }, zoom: 2, rotation: 30, tween: true },
+        { op: 'setCameraKeyframe', frame: 12, center: { x: 480, y: 270 } }
+      ]
+    })
+    const result = executeScriptCommands(editor, commands)
+    expect(result.issues).toEqual([])
+    expect(result.applied).toBe(2)
+
+    const layer = editor.cameraLayer
+    if (!layer) throw new Error('expected the camera layer')
+    expect(layer.name).toBe('Camera')
+    expect(layer.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 12])
+    expect(layer.keyframes[0].pose).toEqual({ center: { x: 100, y: 80 }, zoom: 2, rotation: 30 })
+    expect(layer.keyframes[0].tween).toEqual({ easing: 'ease-in-out' })
+    // The second key holds the sampled pose; only its center was patched.
+    expect(layer.keyframes[1].pose).toEqual({ center: { x: 480, y: 270 }, zoom: 2, rotation: 30 })
+    expect(layer.keyframes[1].tween).toBeUndefined()
+
+    // The whole keying flow is one undo entry per command.
+    editor.undo()
+    expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0])
+    editor.undo()
+    expect(editor.cameraLayer).toBeUndefined()
+  })
+
+  it('clamps out-of-range camera frames, warns on missing keyframes and errors without a camera', () => {
+    const editor = createEditor()
+    // Removing before any camera layer exists is an error.
+    const noCamera = executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'removeCameraKeyframe', frame: 0 }] })
+    )
+    expect(noCamera.applied).toBe(0)
+    expect(noCamera.issues[0]).toMatchObject({ index: 0, severity: 'error' })
+    expect(noCamera.issues[0].message).toContain('no camera layer')
+
+    // Keys past the timeline clamp to the last frame with a warning.
+    const clamped = executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setCameraKeyframe', frame: 999 }] })
+    )
+    expect(clamped.applied).toBe(1)
+    expect(clamped.issues).toHaveLength(1)
+    expect(clamped.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
+    expect(editor.currentFrame).toBe(editor.duration - 1)
+    expect(editor.hasCameraKeyframeAt(editor.duration - 1)).toBe(true)
+
+    // Removing a frame without a keyframe warns; the keyed frame is removed.
+    const missing = executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'removeCameraKeyframe', frame: 5 }] })
+    )
+    expect(missing.applied).toBe(0)
+    expect(missing.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
+
+    const removed = executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'removeCameraKeyframe', frame: editor.duration - 1 }] })
+    )
+    expect(removed.issues).toEqual([])
+    expect(removed.applied).toBe(1)
+    expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0])
+  })
+
+  it('setTween targets the camera layer with easings, smooth paths and clearing', () => {
+    const editor = createEditor()
+    const setup = executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'setCameraKeyframe', frame: 0, center: { x: 100, y: 80 } },
+          { op: 'setCameraKeyframe', frame: 12, center: { x: 480, y: 270 } },
+          { op: 'setTween', frame: 0, easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 }, path: 'smooth' }
+        ]
+      })
+    )
+    expect(setup.issues).toEqual([])
+    expect(setup.applied).toBe(3)
+    const layer = editor.cameraLayer
+    if (!layer) throw new Error('expected the camera layer')
+    expect(layer.keyframes[0].tween).toEqual({
+      easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 },
+      path: 'smooth'
+    })
+
+    // Clearing with `easing: null` works; a frame with no camera key errors.
+    const cleared = executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'setTween', frame: 0, easing: null },
+          { op: 'setTween', frame: 5 }
+        ]
+      })
+    )
+    expect(cleared.applied).toBe(1)
+    expect(cleared.issues).toHaveLength(1)
+    expect(cleared.issues[0]).toMatchObject({ index: 1, severity: 'error' })
+    expect(layer.keyframes[0].tween).toBeUndefined()
+  })
+
+  it('adds audio layers from session resources and applies setAudio edits', () => {
+    const editor = createEditor()
+    editor.resources.put(AUDIO_RESOURCE, AUDIO_BYTES)
+    const added = executeScriptCommands(
+      editor,
+      validated({
+        commands: [{ op: 'addLayer', kind: 'audio', resourceId: AUDIO_RESOURCE, name: 'Score', startFrame: 4 }]
+      })
+    )
+    expect(added.issues).toEqual([])
+    expect(added.applied).toBe(1)
+    const layer = editor.document.layers.find((entry) => entry.name === 'Score')
+    if (!layer || !isAudioLayer(layer)) throw new Error('expected the Score audio layer')
+    expect(layer).toMatchObject({ resourceId: AUDIO_RESOURCE, startFrame: 4, volume: 1, visible: true })
+
+    const edited = executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setAudio', layerId: layer.id, startFrame: 10, volume: 0.5, muted: true }] })
+    )
+    expect(edited.issues).toEqual([])
+    expect(edited.applied).toBe(1)
+    expect(layer).toMatchObject({ startFrame: 10, volume: 0.5, visible: false })
+
+    // `muted` mirrors the visible flag: asking for the state it is in toggles.
+    const unmuted = executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setAudio', layerId: layer.id, muted: false }] })
+    )
+    expect(unmuted.issues).toEqual([])
+    expect(layer.visible).toBe(true)
+
+    // Locked layers and non-audio ids are rejected without aborting the run.
+    layer.locked = true
+    const locked = executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setAudio', layerId: layer.id, volume: 0.2 }] })
+    )
+    expect(locked.applied).toBe(0)
+    expect(locked.issues[0]).toMatchObject({ index: 0, severity: 'error' })
+    layer.locked = false
+
+    const wrongKind = executeScriptCommands(
+      editor,
+      validated({ commands: [{ op: 'setAudio', layerId: editor.document.layers[0].id, volume: 0.2 }] })
+    )
+    expect(wrongKind.applied).toBe(0)
+    expect(wrongKind.issues[0]).toMatchObject({ index: 0, severity: 'error' })
+    expect(wrongKind.issues[0].message).toContain('not an audio layer')
+  })
+
+  it('reports a missing audio resource instead of adding the layer', () => {
+    const editor = createEditor()
+    const result = executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'addLayer', kind: 'audio', resourceId: 'not-here', name: 'Ghost', startFrame: 0 },
+          { op: 'addLayer', name: 'After' }
+        ]
+      })
+    )
+    expect(result.applied).toBe(1)
+    expect(result.issues).toHaveLength(1)
+    expect(result.issues[0]).toMatchObject({ index: 0, severity: 'error' })
+    expect(result.issues[0].message).toContain('not available')
+    expect(editor.document.layers.some((layer) => layer.name === 'Ghost')).toBe(false)
+    expect(editor.document.layers.some((layer) => layer.name === 'After')).toBe(true)
   })
 })

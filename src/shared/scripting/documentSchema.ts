@@ -1,5 +1,5 @@
 /**
- * JSON Schema of the OpenAnimator document (schemaVersion 6) — the generation
+ * JSON Schema of the OpenAnimator document (schemaVersion 7) — the generation
  * contract for tools and LLMs that produce `document.json` payloads. The
  * schema mirrors the structural validation in `document.ts`
  * (`isAnimatorDocument`/`isSceneNode`); documents are always re-validated
@@ -199,13 +199,13 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
 
 export const DOCUMENT_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v6.json',
-  title: 'OpenAnimator document (v6)',
+  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v7.json',
+  title: 'OpenAnimator document (v7)',
   type: 'object',
   additionalProperties: false,
   required: ['schemaVersion', 'name', 'width', 'height', 'fps', 'background', 'layers', 'assets', 'palette', 'fonts'],
   properties: {
-    schemaVersion: { const: 6 },
+    schemaVersion: { const: 7 },
     name: { type: 'string', minLength: 1 },
     width: { type: 'number', exclusiveMinimum: 0 },
     height: { type: 'number', exclusiveMinimum: 0 },
@@ -286,8 +286,69 @@ export const DOCUMENT_SCHEMA = {
         }
       }
     },
+    cameraPose: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['center', 'zoom', 'rotation'],
+      properties: {
+        center: { $ref: '#/definitions/vec2' },
+        zoom: { type: 'number', exclusiveMinimum: 0 },
+        rotation: { type: 'number' }
+      }
+    },
+    cameraKeyframe: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['frame', 'pose'],
+      properties: {
+        frame: { type: 'integer', minimum: 0 },
+        pose: { $ref: '#/definitions/cameraPose' },
+        tween: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['easing'],
+          properties: {
+            easing: { $ref: '#/definitions/easing' },
+            path: { enum: ['linear', 'smooth'] }
+          }
+        }
+      }
+    },
+    cameraLayer: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'id', 'name', 'visible', 'locked', 'keyframes'],
+      properties: {
+        kind: { const: 'camera' },
+        id: { type: 'string', minLength: 1 },
+        name: { type: 'string' },
+        visible: { type: 'boolean' },
+        locked: { type: 'boolean' },
+        keyframes: { type: 'array', items: { $ref: '#/definitions/cameraKeyframe' } }
+      }
+    },
+    audioLayer: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['kind', 'id', 'name', 'visible', 'locked', 'resourceId', 'startFrame', 'volume'],
+      properties: {
+        kind: { const: 'audio' },
+        id: { type: 'string', minLength: 1 },
+        name: { type: 'string' },
+        visible: { type: 'boolean' },
+        locked: { type: 'boolean' },
+        resourceId: { type: 'string', minLength: 1 },
+        startFrame: { type: 'integer', minimum: 0 },
+        volume: { type: 'number', minimum: 0, maximum: 1 }
+      }
+    },
     layer: {
-      oneOf: [{ $ref: '#/definitions/objectLayer' }, { $ref: '#/definitions/drawingLayer' }]
+      oneOf: [
+        { $ref: '#/definitions/objectLayer' },
+        { $ref: '#/definitions/drawingLayer' },
+        { $ref: '#/definitions/cameraLayer' },
+        { $ref: '#/definitions/audioLayer' }
+      ]
     },
     asset: {
       type: 'object',

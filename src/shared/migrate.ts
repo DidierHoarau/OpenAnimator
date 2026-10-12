@@ -1,5 +1,5 @@
 import type { EasingName } from './easing'
-import { isAnimatorDocument, isPalette } from './document'
+import { isAnimatorDocument, isCameraKeyframe, isPalette } from './document'
 import { isPaintValue } from './paint'
 import type { AnimatorDocument, Keyframe, Layer, PrimitiveNode, SceneNode } from './model'
 
@@ -147,6 +147,47 @@ function firstInvalidPaintLocation(candidate: unknown): string | null {
   return null
 }
 
+/** First malformed camera or audio layer in the candidate document, as a
+ * user-presentable location, or null when every such layer is valid.
+ * Malformed camera poses and audio clip fields must be reported, never
+ * silently dropped. */
+function firstInvalidCameraAudioLocation(candidate: unknown): string | null {
+  const layers = (candidate as { layers?: unknown }).layers
+  if (!Array.isArray(layers)) return null
+  for (let layerIndex = 0; layerIndex < layers.length; layerIndex++) {
+    const layer = layers[layerIndex]
+    if (typeof layer !== 'object' || layer === null) continue
+    const where = `layer ${layerIndex + 1}`
+    const record = layer as {
+      kind?: unknown
+      keyframes?: unknown
+      resourceId?: unknown
+      startFrame?: unknown
+      volume?: unknown
+    }
+    if (record.kind === 'camera') {
+      if (!Array.isArray(record.keyframes)) continue
+      for (let keyframeIndex = 0; keyframeIndex < record.keyframes.length; keyframeIndex++) {
+        if (!isCameraKeyframe(record.keyframes[keyframeIndex])) {
+          return `${where}: malformed camera keyframe ${keyframeIndex + 1} (poses need a finite center, zoom > 0 and a finite rotation)`
+        }
+      }
+    }
+    if (record.kind === 'audio') {
+      if (typeof record.resourceId !== 'string') {
+        return `${where}: "resourceId" must be a string`
+      }
+      if (!Number.isInteger(record.startFrame) || (record.startFrame as number) < 0) {
+        return `${where}: "startFrame" must be an integer ≥ 0`
+      }
+      if (!isFiniteNumber(record.volume) || record.volume < 0 || record.volume > 1) {
+        return `${where}: "volume" must be a number between 0 and 1`
+      }
+    }
+  }
+  return null
+}
+
 function firstInvalidPaintInNode(value: unknown, where: string): string | null {
   if (typeof value !== 'object' || value === null) return null
   const node = value as Record<string, unknown>
@@ -229,7 +270,7 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
     throw new MigrationError('invalid document: "layers" must be an array')
   }
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     name: document.name,
     width: document.width,
     height: document.height,
@@ -244,19 +285,20 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
 }
 
 /**
- * Normalizes a parsed project file to the current schema (v6): v2–v5
+ * Normalizes a parsed project file to the current schema (v7): v2–v6
  * documents are deep-validated and returned detached from the parsed input
  * (documents saved before a section existed are normalized to empty defaults
  * — `assets: []`, `palette: []`, `fonts: []`; layers saved before drawing
  * layers existed get `kind: 'object'`), v1 documents are migrated (each
  * legacy `Shape` becomes a `PrimitiveNode` with `kind` → `primitive`).
- * Malformed gradient paints and invalid palettes raise `MigrationError` with
- * a user-presentable location — reported, never silently dropped. Invalid
- * content raises `MigrationError`. The input is never mutated.
+ * Malformed gradient paints, invalid palettes and malformed camera/audio
+ * layers raise `MigrationError` with a user-presentable location — reported,
+ * never silently dropped. Invalid content raises `MigrationError`. The input
+ * is never mutated.
  */
 export function migrateDocument(raw: unknown): AnimatorDocument {
   const version = (typeof raw === 'object' && raw !== null ? (raw as { schemaVersion?: unknown }).schemaVersion : undefined)
-  if (version === 2 || version === 3 || version === 4 || version === 5 || version === 6) {
+  if (version === 2 || version === 3 || version === 4 || version === 5 || version === 6 || version === 7) {
     const source = raw as Record<string, unknown>
     if (source.assets !== undefined && !Array.isArray(source.assets)) {
       throw new MigrationError('invalid document: "assets" must be an array')
@@ -283,7 +325,7 @@ export function migrateDocument(raw: unknown): AnimatorDocument {
       : source.layers
     const candidate = {
       ...source,
-      schemaVersion: 6,
+      schemaVersion: 7,
       layers,
       assets: (source.assets as unknown[] | undefined) ?? [],
       palette: (source.palette as unknown[] | undefined) ?? [],
@@ -295,6 +337,10 @@ export function migrateDocument(raw: unknown): AnimatorDocument {
         throw new MigrationError(
           `invalid document: ${paintProblem} (gradients need 2–8 stops with 0–1 offsets and hex colors)`
         )
+      }
+      const cameraAudioProblem = firstInvalidCameraAudioLocation(candidate)
+      if (cameraAudioProblem) {
+        throw new MigrationError(`invalid document: ${cameraAudioProblem}`)
       }
       throw new MigrationError('This file is not a valid OpenAnimator project.')
     }
