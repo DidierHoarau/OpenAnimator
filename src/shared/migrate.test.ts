@@ -29,13 +29,14 @@ function primitive(id: string, overrides: Partial<PrimitiveNode> & { primitive: 
 /** Hand-written current-schema equivalent of `fixtures/v1/tweened-strokes.json`. */
 function expectedTweenedStrokesDocument(): AnimatorDocument {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     name: 'Tween demo',
     width: 960,
     height: 540,
     fps: 24,
     background: '#10151b',
     assets: [],
+    palette: [],
     layers: [
       {
         kind: 'object',
@@ -110,7 +111,7 @@ describe('migrateDocument — v1 fixtures', () => {
   it('migrates the multi-layer fixture including hidden/locked flags', () => {
     const raw = loadFixture('multi-layer')
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(4)
+    expect(migrated.schemaVersion).toBe(5)
     expect(migrated.layers).toHaveLength(2)
     expect(migrated.layers[0]).toMatchObject({
       id: 'layer-fx',
@@ -141,13 +142,14 @@ describe('migrateDocument — v1 fixtures', () => {
     const raw = loadFixture('minimal')
     const migrated = migrateDocument(raw)
     expect(migrated).toEqual({
-      schemaVersion: 4,
+      schemaVersion: 5,
       name: 'Untitled',
       width: 960,
       height: 540,
       fps: 24,
       background: '#10151b',
       assets: [],
+      palette: [],
       layers: [
         {
           kind: 'object',
@@ -395,7 +397,7 @@ describe('migrateDocument — assets', () => {
   })
 })
 
-describe('migrateDocument — v4 pass-through', () => {
+describe('migrateDocument — v4 documents', () => {
   const v4Base = () => ({
     schemaVersion: 4,
     name: 'x',
@@ -428,7 +430,8 @@ describe('migrateDocument — v4 pass-through', () => {
       ]
     }
     const migrated = migrateDocument(raw)
-    expect(migrated.schemaVersion).toBe(4)
+    expect(migrated.schemaVersion).toBe(5)
+    expect(migrated.palette).toEqual([])
     expect(migrated.holdStep).toBe(3)
     expect((migrated.layers[0] as ObjectLayer).keyframes[0].tween).toEqual({
       easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 },
@@ -470,11 +473,108 @@ describe('migrateDocument — v4 pass-through', () => {
     expect(() => migrateDocument(badBezier)).toThrow(MigrationError)
   })
 
-  it('restamps a v3 document to v4', () => {
+  it('restamps a v3 document to v5', () => {
     const raw = { ...v4Base(), schemaVersion: 3 }
     const migrated = migrateDocument(JSON.parse(JSON.stringify(raw)))
-    expect(migrated.schemaVersion).toBe(4)
+    expect(migrated.schemaVersion).toBe(5)
+    expect(migrated.palette).toEqual([])
     expect(isAnimatorDocument(migrated)).toBe(true)
+  })
+
+  it('keeps a valid v5 palette and gradient paints through migration', () => {
+    const raw = {
+      ...v4Base(),
+      schemaVersion: 5,
+      palette: ['#ff0000', '#00ff00'],
+      layers: [
+        {
+          kind: 'object',
+          id: 'l',
+          name: 'L',
+          visible: true,
+          locked: false,
+          keyframes: [
+            {
+              frame: 0,
+              nodes: [
+                {
+                  id: 'n',
+                  type: 'primitive',
+                  primitive: 'rect',
+                  center: { x: 0, y: 0 },
+                  width: 10,
+                  height: 10,
+                  rotation: 0,
+                  opacity: 1,
+                  fill: {
+                    type: 'linear',
+                    angle: 90,
+                    stops: [
+                      { offset: 0, color: '#ff0000' },
+                      { offset: 1, color: '#0000ff' }
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+    const migrated = migrateDocument(raw)
+    expect(migrated.palette).toEqual(['#ff0000', '#00ff00'])
+    expect(isAnimatorDocument(migrated)).toBe(true)
+    const node = (migrated.layers[0] as ObjectLayer).keyframes[0].nodes[0]
+    if (node.type !== 'primitive') throw new Error('expected a primitive')
+    expect(node.fill).toMatchObject({ type: 'linear', angle: 90 })
+  })
+
+  it('rejects malformed palettes and reports malformed gradient paints', () => {
+    expect(() => migrateDocument({ ...v4Base(), schemaVersion: 5, palette: 'red' })).toThrow(
+      /"palette" must be an array of up to 48 hex colors/
+    )
+    expect(() =>
+      migrateDocument({ ...v4Base(), schemaVersion: 5, palette: ['not-a-color'] })
+    ).toThrow(MigrationError)
+    expect(() =>
+      migrateDocument({
+        ...v4Base(),
+        schemaVersion: 5,
+        palette: Array.from({ length: 49 }, () => '#ffffff')
+      })
+    ).toThrow(MigrationError)
+    const badGradient = {
+      ...v4Base(),
+      schemaVersion: 5,
+      layers: [
+        {
+          kind: 'object',
+          id: 'l',
+          name: 'L',
+          visible: true,
+          locked: false,
+          keyframes: [
+            {
+              frame: 0,
+              nodes: [
+                {
+                  id: 'n',
+                  type: 'primitive',
+                  primitive: 'rect',
+                  center: { x: 0, y: 0 },
+                  width: 10,
+                  height: 10,
+                  rotation: 0,
+                  opacity: 1,
+                  fill: { type: 'linear', angle: 0, stops: [{ offset: 0, color: '#ff0000' }] }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+    expect(() => migrateDocument(badGradient)).toThrow(/malformed "fill" paint/)
   })
 })
 

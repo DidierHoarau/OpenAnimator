@@ -13,7 +13,8 @@ import { buildPathData, normalizePathData, pathDataBounds } from '@shared/pathMo
 import { applyTextMetrics } from '@shared/textModel'
 import { identityView, panView, zoomAtView } from '@shared/viewTransform'
 import type { ViewTransform } from '@shared/viewTransform'
-import { DrawingSession } from './drawing'
+import { DrawingSession, strokeToPathData } from './drawing'
+import type { StrokePoint } from './drawing'
 import type { Editor } from './editor'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -70,6 +71,9 @@ export class StageView {
   /** Pen tool: current pointer position for the rubber-band segment. */
   private penCursor: Vec2 | null = null
   private penPreview: SVGGElement | null = null
+  /** Vector brush: sampled centerline of the stroke being drawn (stage coords). */
+  private vectorPoints: StrokePoint[] | null = null
+  private vectorPreview: SVGPathElement | null = null
   private view: ViewTransform = identityView()
   private spaceDown = false
   private spaceUsedForPan = false
@@ -172,7 +176,8 @@ export class StageView {
       this.editor.tool === 'eraser' ||
       this.editor.tool === 'pen' ||
       this.editor.tool === 'text' ||
-      this.editor.tool === 'line'
+      this.editor.tool === 'line' ||
+      this.editor.tool === 'vector'
     ) {
       this.svg.style.cursor = 'crosshair'
     } else {
@@ -215,6 +220,15 @@ export class StageView {
       this.svg.setPointerCapture(event.pointerId)
       event.preventDefault()
       void session.begin({ ...point, pressure: event.pressure })
+      return
+    }
+
+    if (editor.tool === 'vector') {
+      if (!layer || !layer.visible || layer.locked) return
+      this.vectorPoints = [{ ...point, pressure: event.pressure }]
+      this.svg.setPointerCapture(event.pointerId)
+      this.drawVectorPreview()
+      event.preventDefault()
       return
     }
 
@@ -337,6 +351,13 @@ export class StageView {
       event.preventDefault()
       return
     }
+    if (this.vectorPoints) {
+      const point = this.toStagePoint(event)
+      this.vectorPoints.push({ ...point, pressure: event.pressure })
+      this.drawVectorPreview()
+      event.preventDefault()
+      return
+    }
     const drag = this.drag
     if (!drag) {
       // Pen hover: keep the rubber-band segment attached to the pointer.
@@ -393,6 +414,15 @@ export class StageView {
       // The commit is one undo step; the doc change re-renders the stage and
       // clears the overlay mirror.
       void session.end()
+      this.releasePointer(event)
+      return
+    }
+    if (this.vectorPoints) {
+      const points = this.vectorPoints
+      this.vectorPoints = null
+      this.clearVectorPreview()
+      // The commit is one undo step (Editor.addNode auto-keys and selects).
+      this.commitVectorStroke(points)
       this.releasePointer(event)
       return
     }
@@ -587,6 +617,68 @@ export class StageView {
     this.penPreview = null
   }
 
+  /** Live preview of the in-progress vector stroke: the smoothed centerline
+   * drawn with the current brush color, size and opacity. */
+  private drawVectorPreview(): void {
+    const points = this.vectorPoints
+    if (!points || points.length === 0) return
+    if (!this.vectorPreview) {
+      this.vectorPreview = document.createElementNS(SVG_NS, 'path')
+      this.vectorPreview.classList.add('stage__vector')
+      this.vectorPreview.setAttribute('pointer-events', 'none')
+      this.svg.appendChild(this.vectorPreview)
+    }
+    const preview = this.vectorPreview
+    preview.setAttribute('d', strokeToPathData(points))
+    preview.setAttribute('fill', 'none')
+    preview.setAttribute('stroke', this.editor.brushColor)
+    preview.setAttribute('stroke-width', String(this.editor.brushSize))
+    preview.setAttribute('stroke-linecap', 'round')
+    preview.setAttribute('stroke-linejoin', 'round')
+    preview.setAttribute('opacity', String(this.editor.brushOpacity))
+  }
+
+  private clearVectorPreview(): void {
+    this.vectorPreview?.remove()
+    this.vectorPreview = null
+  }
+
+  /** Discards the in-progress vector stroke (Escape, tool change). */
+  cancelVectorStroke(): void {
+    this.vectorPoints = null
+    this.clearVectorPreview()
+  }
+
+  /**
+   * Commits the pointed stroke as one editable `PathNode`: the smoothed
+   * centerline becomes `d` (normalized so the bbox center sits at the node
+   * center), the node carries the brush color/size/opacity with fill `none`.
+   */
+  private commitVectorStroke(points: StrokePoint[]): void {
+    const filtered = points.filter((point, index) => {
+      const previous = points[index - 1]
+      return !previous || Math.hypot(point.x - previous.x, point.y - previous.y) > 0.5
+    })
+    const raw = strokeToPathData(filtered)
+    if (!raw) return
+    const bounds = pathDataBounds(raw)
+    if (!bounds) return
+    const node: PathNode = {
+      id: createId('node'),
+      type: 'path',
+      center: { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
+      width: Math.max(2, bounds.width),
+      height: Math.max(2, bounds.height),
+      rotation: 0,
+      opacity: this.editor.brushOpacity,
+      d: normalizePathData(raw),
+      fill: 'none',
+      stroke: this.editor.brushColor,
+      strokeWidth: this.editor.brushSize
+    }
+    this.editor.addNode(node)
+  }
+
   private applyMarquee(drag: DragState): void {
     const width = Math.abs(drag.last.x - drag.start.x)
     const height = Math.abs(drag.last.y - drag.start.y)
@@ -614,6 +706,11 @@ export class StageView {
       this.session.cancel()
       this.session = null
       this.clearOverlay()
+      this.updateCursor()
+      return
+    }
+    if (this.vectorPoints) {
+      this.cancelVectorStroke()
       this.updateCursor()
       return
     }
@@ -816,6 +913,11 @@ export class StageView {
     if (this.penAnchors.length > 0) {
       if (editor.tool === 'pen') this.drawPenPreview()
       else this.cancelPen()
+    }
+    // A vector stroke in progress survives re-renders; a tool change cancels it.
+    if (this.vectorPoints) {
+      if (editor.tool === 'vector') this.drawVectorPreview()
+      else this.cancelVectorStroke()
     }
     if (this.session) this.paintOverlay()
     else this.clearOverlay()

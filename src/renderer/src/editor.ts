@@ -1,4 +1,6 @@
 import {
+  MAX_PALETTE_COLORS,
+  normalizePaletteColors,
   addLayer as addLayerOp,
   addNodeToLayer,
   applyKeyframeChunk,
@@ -36,6 +38,7 @@ import {
   setKeyframeTween,
   updateNodeInLayer
 } from '@shared/document'
+import { formatHexColor, parseHexColor } from '@shared/color'
 import type { KeyframeChunkEntry, KeyframeEntryMove } from '@shared/document'
 import {
   assetNaturalSize,
@@ -70,11 +73,13 @@ export type Tool =
   | 'line'
   | 'pen'
   | 'text'
+  | 'vector'
 
 /**
  * Whether a tool may be active while `layer` is the current layer: the tool
  * availability matrix (Brush/Eraser only on drawing layers, the object tools
- * only on object layers, Hand everywhere).
+ * — including the vector brush, which commits `PathNode`s — only on object
+ * layers, Hand everywhere).
  */
 export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): boolean {
   if (tool === 'hand') return true
@@ -85,7 +90,8 @@ export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): b
         tool === 'ellipse' ||
         tool === 'line' ||
         tool === 'pen' ||
-        tool === 'text'
+        tool === 'text' ||
+        tool === 'vector'
     : tool === 'brush' || tool === 'eraser'
 }
 
@@ -514,6 +520,52 @@ export class Editor {
     this.docChanged()
   }
 
+  /**
+   * Replaces the document palette (one history entry when it changes).
+   * Entries are normalized to `#rrggbb`, deduplicated and capped; invalid
+   * entries are dropped so the scripted and the UI path share one behavior.
+   */
+  setPalette(colors: string[]): void {
+    const next = normalizePaletteColors(colors)
+    if (
+      next.length === this.document.palette.length &&
+      next.every((color, index) => color === this.document.palette[index])
+    ) {
+      return
+    }
+    this.pushHistory()
+    this.document.palette = next
+    this.docChanged()
+  }
+
+  /** Appends a color to the document palette (one history entry). */
+  addPaletteColor(color: string): void {
+    if (this.document.palette.length >= MAX_PALETTE_COLORS) {
+      this.showMessage(`Palette is full (${MAX_PALETTE_COLORS} colors)`)
+      return
+    }
+    const rgb = parseHexColor(color)
+    if (!rgb) return
+    const hex = formatHexColor(rgb)
+    if (this.document.palette.includes(hex)) return
+    this.pushHistory()
+    this.document.palette = [...this.document.palette, hex]
+    this.docChanged()
+  }
+
+  /** Removes a color from the document palette (one history entry). */
+  removePaletteColor(color: string): void {
+    const rgb = parseHexColor(color)
+    const hex = rgb ? formatHexColor(rgb) : color
+    const index = this.document.palette.indexOf(hex)
+    if (index === -1) return
+    this.pushHistory()
+    const next = [...this.document.palette]
+    next.splice(index, 1)
+    this.document.palette = next
+    this.docChanged()
+  }
+
   addNode(node: SceneNode): void {
     const layer = this.currentLayer
     if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) return
@@ -537,6 +589,17 @@ export class Editor {
         naturalHeight: node.naturalHeight
       })
     )
+    this.docChanged()
+  }
+
+  /** Adds a node plus document assets (e.g. symbol assets created by a vector
+   * import) in one undo step. */
+  addNodeWithAssets(node: SceneNode, assets: Asset[]): void {
+    const layer = this.currentLayer
+    if (!layer || !isObjectLayer(layer) || layer.locked || !layer.visible) return
+    this.pushHistory()
+    this.insertNode(node)
+    this.document.assets.push(...assets)
     this.docChanged()
   }
 

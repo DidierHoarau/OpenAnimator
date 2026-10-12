@@ -2,8 +2,13 @@ import { evaluateEasing, isEasing } from './easing'
 import type { AnimatorDocument, Asset, DrawingCell, DrawingLayer, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode } from './model'
 import { cloneNode, isObjectLayer } from './model'
 import { segmentControls } from './motionPath'
+import { isPaintValue } from './paint'
+import { formatHexColor, parseHexColor } from './color'
 import { tweenNode } from './tween'
 import type { Vec2 } from './geometry'
+
+/** Maximum number of colors in the document palette. */
+export const MAX_PALETTE_COLORS = 48
 
 let idCounter = 0
 
@@ -42,7 +47,7 @@ export function createDocument(name: string, width: number, height: number, fps:
   const layer = createLayer('Layer 1')
   layer.keyframes.push({ frame: 0, nodes: [] })
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     name,
     width,
     height,
@@ -50,7 +55,8 @@ export function createDocument(name: string, width: number, height: number, fps:
     background: '#10151b',
     layers: [layer],
     frames: 1,
-    assets: []
+    assets: [],
+    palette: []
   }
 }
 
@@ -797,8 +803,8 @@ export function isSceneNode(value: unknown): value is SceneNode {
     case 'primitive':
       return (
         (node.primitive === 'rect' || node.primitive === 'ellipse') &&
-        typeof node.fill === 'string' &&
-        (node.stroke === undefined || typeof node.stroke === 'string') &&
+        isPaintValue(node.fill) &&
+        (node.stroke === undefined || isPaintValue(node.stroke)) &&
         (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth))
       )
     case 'image':
@@ -815,8 +821,8 @@ export function isSceneNode(value: unknown): value is SceneNode {
     case 'path':
       return (
         typeof node.d === 'string' &&
-        (node.fill === undefined || typeof node.fill === 'string') &&
-        (node.stroke === undefined || typeof node.stroke === 'string') &&
+        (node.fill === undefined || isPaintValue(node.fill)) &&
+        (node.stroke === undefined || isPaintValue(node.stroke)) &&
         (node.strokeWidth === undefined || isFiniteNumber(node.strokeWidth))
       )
     case 'text':
@@ -825,7 +831,7 @@ export function isSceneNode(value: unknown): value is SceneNode {
         typeof node.fontFamily === 'string' &&
         isFiniteNumber(node.fontSize) &&
         isFiniteNumber(node.fontWeight) &&
-        typeof node.fill === 'string' &&
+        isPaintValue(node.fill) &&
         (node.align === 'left' || node.align === 'center' || node.align === 'right')
       )
     default:
@@ -900,8 +906,37 @@ export function isAsset(value: unknown): value is Asset {
   return false
 }
 
+/** True when `value` is a valid document palette: up to `MAX_PALETTE_COLORS`
+ * `#rgb`/`#rrggbb` color strings. */
+export function isPalette(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_PALETTE_COLORS &&
+    value.every((color) => typeof color === 'string' && parseHexColor(color) !== null)
+  )
+}
+
+/**
+ * Normalizes a palette color list for storage: entries are rewritten to
+ * lowercase `#rrggbb`, deduplicated, capped at `MAX_PALETTE_COLORS` and
+ * invalid entries are dropped — the shared behavior of the document palette
+ * setter and the persistent global palette store.
+ */
+export function normalizePaletteColors(colors: readonly string[]): string[] {
+  const out: string[] = []
+  for (const color of colors) {
+    if (out.length >= MAX_PALETTE_COLORS) break
+    if (typeof color !== 'string') continue
+    const rgb = parseHexColor(color)
+    if (!rgb) continue
+    const hex = formatHexColor(rgb)
+    if (!out.includes(hex)) out.push(hex)
+  }
+  return out
+}
+
 /** Deep structural validation for documents restored from persistence.
- * Requires `schemaVersion: 4` and fully typed content; older documents go
+ * Requires `schemaVersion: 5` and fully typed content; older documents go
  * through `migrateDocument` first. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
@@ -916,7 +951,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
       candidate.holdStep >= 1 &&
       candidate.holdStep <= 16)
   return (
-    candidate.schemaVersion === 4 &&
+    candidate.schemaVersion === 5 &&
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
     typeof candidate.height === 'number' &&
@@ -925,6 +960,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     typeof candidate.background === 'string' &&
     framesValid &&
     holdStepValid &&
+    isPalette(candidate.palette) &&
     Array.isArray(candidate.layers) &&
     candidate.layers.every(isLayer) &&
     Array.isArray(candidate.assets) &&

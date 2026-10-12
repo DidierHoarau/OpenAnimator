@@ -49,4 +49,35 @@ describe('documentToSvgString', () => {
     const svg = documentToSvgString(document, 0, (id) => (id === 'res-1' ? 'data:image/png;base64,AAA' : null))
     expect(svg).toContain('href="data:image/png;base64,AAA"')
   })
+
+  it('carries gradient defs into the standalone SVG', () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected object layer')
+    layer.keyframes[0].nodes.push({
+      id: 'r1',
+      type: 'primitive',
+      primitive: 'rect',
+      center: { x: 40, y: 40 },
+      width: 20,
+      height: 10,
+      rotation: 0,
+      fill: {
+        type: 'radial',
+        cx: 0.5,
+        cy: 0.5,
+        r: 0.5,
+        stops: [
+          { offset: 0, color: '#ff0000' },
+          { offset: 1, color: '#0000ff' }
+        ]
+      },
+      opacity: 1
+    })
+    const svg = documentToSvgString(document, 0)
+    // The defs block sits inside the svg root, ahead of the painted node.
+    expect(svg).toContain('<defs><radialGradient ')
+    expect(svg).toContain('stop-color="#ff0000"')
+    expect(svg).toMatch(/<rect [^>]*fill="url\(#oa-grad-[0-9a-z]+\)"/)
+  })
 })

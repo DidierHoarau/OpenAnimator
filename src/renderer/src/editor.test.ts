@@ -7,7 +7,7 @@ import {
   getLayer,
   resolveCellAtFrame
 } from '@shared/document'
-import type { Asset, DrawingLayer, GroupNode, ImageNode, PrimitiveNode, SceneNode, SymbolNode } from '@shared/model'
+import type { Asset, DrawingLayer, GroupNode, ImageNode, ObjectLayer, PrimitiveNode, SceneNode, SymbolNode } from '@shared/model'
 
 import { Editor } from './editor'
 import type { EditorDeps } from './editor'
@@ -704,8 +704,11 @@ describe('drawing layers and paint tools', () => {
     expect(editor.tool).toBe('select')
     editor.setTool('rect')
     expect(editor.tool).toBe('rect')
+    // The vector brush commits PathNodes, so it is an object-layer tool.
+    editor.setTool('vector')
+    expect(editor.tool).toBe('vector')
     editor.setTool('brush')
-    expect(editor.tool).toBe('rect')
+    expect(editor.tool).toBe('vector')
   })
 
   it('auto-switches the tool when the document changes under it', () => {
@@ -886,5 +889,122 @@ describe('drawing layers and paint tools', () => {
     editor.ensureNodeKeyframe('a')
     expect(layer.cells).toHaveLength(0)
     expect(getLayer(editor.document, layer.id)?.kind).toBe('drawing')
+  })
+})
+
+describe('Editor — document palette', () => {
+  let editor: Editor
+
+  beforeEach(() => {
+    editor = new Editor(createDocument('test', 960, 540, 24))
+  })
+
+  it('setPalette normalizes, dedupes and stores as one undo step', () => {
+    editor.setPalette(['#FF0000', 'bogus', '#ff0000', '#ABC'])
+    expect(editor.document.palette).toEqual(['#ff0000', '#aabbcc'])
+    editor.undo()
+    expect(editor.document.palette).toEqual([])
+    editor.redo()
+    expect(editor.document.palette).toEqual(['#ff0000', '#aabbcc'])
+  })
+
+  it('setPalette is a no-op (no history entry) when the palette is unchanged', () => {
+    editor.setPalette(['#ff0000'])
+    editor.undo()
+    expect(editor.document.palette).toEqual([])
+    // Calling with an equivalent (unnormalized) list must not add history.
+    editor.setPalette(['#ff0000'])
+    editor.undo()
+    expect(editor.document.palette).toEqual([])
+    expect(editor.canUndo).toBe(false)
+  })
+
+  it('addPaletteColor appends normalized colors once, ignoring invalid and duplicate entries', () => {
+    editor.addPaletteColor('#ABCDEF')
+    editor.addPaletteColor('#abcdef')
+    editor.addPaletteColor('not-a-color')
+    expect(editor.document.palette).toEqual(['#abcdef'])
+    editor.undo()
+    expect(editor.document.palette).toEqual([])
+    expect(editor.canUndo).toBe(false)
+  })
+
+  it('addPaletteColor refuses at the cap with a status message', () => {
+    const message = vi.fn()
+    editor.onMessage(message)
+    editor.setPalette(
+      Array.from({ length: 48 }, (_, index) => `#${index.toString(16).padStart(6, '0')}`)
+    )
+    editor.addPaletteColor('#ffffff')
+    expect(editor.document.palette).toHaveLength(48)
+    expect(message).toHaveBeenCalledWith('Palette is full (48 colors)')
+  })
+
+  it('removePaletteColor removes by normalized color as one undo step', () => {
+    editor.setPalette(['#ff0000', '#00ff00'])
+    editor.removePaletteColor('#FF0000')
+    expect(editor.document.palette).toEqual(['#00ff00'])
+    editor.removePaletteColor('#123456')
+    expect(editor.document.palette).toEqual(['#00ff00'])
+    editor.undo()
+    expect(editor.document.palette).toEqual(['#ff0000', '#00ff00'])
+  })
+})
+
+describe('Editor — addNodeWithAssets', () => {
+  it('adds the node and the assets in a single undo step, and selects the node', () => {
+    const editor = new Editor(createDocument('test', 960, 540, 24))
+    const node: GroupNode = {
+      id: 'imported',
+      type: 'group',
+      center: { x: 10, y: 20 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      children: []
+    }
+    const asset: Asset = {
+      id: 'asset-1',
+      name: 'Imported symbol 1',
+      kind: 'symbol',
+      createdAt: 0,
+      content: {
+        id: 'content',
+        type: 'group',
+        center: { x: 0, y: 0 },
+        width: 10,
+        height: 10,
+        rotation: 0,
+        opacity: 1,
+        children: []
+      }
+    }
+    editor.addNodeWithAssets(node, [asset])
+    const layer = editor.currentLayer
+    if (!layer || layer.kind !== 'object') throw new Error('expected an object layer')
+    expect(evaluateLayerAtFrame(layer, 0).map((entry) => entry.id)).toEqual(['imported'])
+    expect(editor.document.assets.map((entry) => entry.id)).toEqual(['asset-1'])
+    expect(editor.selectedNodeIds).toEqual(['imported'])
+    editor.undo()
+    expect(editor.document.assets).toHaveLength(0)
+    expect(
+      evaluateLayerAtFrame(getLayer(editor.document, layer.id) as ObjectLayer, 0)
+    ).toHaveLength(0)
+  })
+
+  it('refuses drawing and locked layers', () => {
+    const doc = createDocument('test', 960, 540, 24)
+    const drawing = createDrawingLayer('Draw')
+    doc.layers.unshift(drawing)
+    const editor = new Editor(doc)
+    editor.currentLayerId = drawing.id
+    editor.addNodeWithAssets(rect('x'), [])
+    expect(drawing.cells).toHaveLength(0)
+
+    editor.setCurrentLayer(doc.layers[1].id)
+    doc.layers[1].locked = true
+    editor.addNodeWithAssets(rect('x'), [])
+    expect(editor.canUndo).toBe(false)
   })
 })

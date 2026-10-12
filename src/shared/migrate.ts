@@ -1,5 +1,6 @@
 import type { EasingName } from './easing'
-import { isAnimatorDocument } from './document'
+import { isAnimatorDocument, isPalette } from './document'
+import { isPaintValue } from './paint'
 import type { AnimatorDocument, Keyframe, Layer, PrimitiveNode, SceneNode } from './model'
 
 /** A v1 shape, exactly as persisted before the SceneNode model. */
@@ -124,6 +125,51 @@ function validateLegacyKeyframe(value: unknown, where: string): Keyframe {
   return migrated
 }
 
+/** First malformed paint in the candidate document, as a user-presentable
+ * location, or null when every paint field is valid. Malformed gradient
+ * paints must be reported (never silently dropped as if solid). */
+function firstInvalidPaintLocation(candidate: unknown): string | null {
+  const layers = (candidate as { layers?: unknown }).layers
+  if (!Array.isArray(layers)) return null
+  for (let layerIndex = 0; layerIndex < layers.length; layerIndex++) {
+    const keyframes = (layers[layerIndex] as { keyframes?: unknown })?.keyframes
+    if (!Array.isArray(keyframes)) continue
+    for (let keyframeIndex = 0; keyframeIndex < keyframes.length; keyframeIndex++) {
+      const nodes = (keyframes[keyframeIndex] as { nodes?: unknown })?.nodes
+      if (!Array.isArray(nodes)) continue
+      for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex++) {
+        const where = `layer ${layerIndex + 1}, keyframe ${keyframeIndex + 1}, node ${nodeIndex + 1}`
+        const problem = firstInvalidPaintInNode(nodes[nodeIndex], where)
+        if (problem) return problem
+      }
+    }
+  }
+  return null
+}
+
+function firstInvalidPaintInNode(value: unknown, where: string): string | null {
+  if (typeof value !== 'object' || value === null) return null
+  const node = value as Record<string, unknown>
+  if (node.type === 'primitive' || node.type === 'path') {
+    if (node.fill !== undefined && !isPaintValue(node.fill)) {
+      return `${where}: malformed "fill" paint`
+    }
+    if (node.stroke !== undefined && !isPaintValue(node.stroke)) {
+      return `${where}: malformed "stroke" paint`
+    }
+  }
+  if (node.type === 'text' && node.fill !== undefined && !isPaintValue(node.fill)) {
+    return `${where}: malformed "fill" paint`
+  }
+  if (node.type === 'group' && Array.isArray(node.children)) {
+    for (let index = 0; index < node.children.length; index++) {
+      const problem = firstInvalidPaintInNode(node.children[index], `${where}, child ${index + 1}`)
+      if (problem) return problem
+    }
+  }
+  return null
+}
+
 function validateLegacyLayer(value: unknown, index: number): Layer {
   if (typeof value !== 'object' || value === null) {
     throw new MigrationError(`invalid layer ${index + 1}: expected an object`)
@@ -178,7 +224,7 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
     throw new MigrationError('invalid document: "layers" must be an array')
   }
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     name: document.name,
     width: document.width,
     height: document.height,
@@ -186,30 +232,38 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
     background: document.background,
     layers: document.layers.map(validateLegacyLayer),
     ...(document.frames !== undefined ? { frames: document.frames as number } : {}),
-    assets: []
+    assets: [],
+    palette: []
   }
 }
 
 /**
- * Normalizes a parsed project file to the current schema (v4): v2, v3 and v4
- * documents are deep-validated and returned detached from the parsed input
- * (documents saved before the asset library existed are normalized to
- * `assets: []`, those saved before drawing layers existed get
- * `kind: 'object'` on every layer, and pre-v4 documents get the v4 marker),
- * v1 documents are migrated (each legacy `Shape` becomes a `PrimitiveNode`
- * with `kind` → `primitive`). Invalid content raises `MigrationError`. The
- * input is never mutated.
+ * Normalizes a parsed project file to the current schema (v5): v2–v4 documents
+ * are deep-validated and returned detached from the parsed input (documents
+ * saved before the asset library existed are normalized to `assets: []`,
+ * those saved before drawing layers existed get `kind: 'object'` on every
+ * layer, pre-v5 documents get the palette injected and the v5 marker), v1
+ * documents are migrated (each legacy `Shape` becomes a `PrimitiveNode` with
+ * `kind` → `primitive`). Malformed gradient paints and invalid palettes raise
+ * `MigrationError` with a user-presentable location — reported, never
+ * silently dropped. Invalid content raises `MigrationError`. The input is
+ * never mutated.
  */
 export function migrateDocument(raw: unknown): AnimatorDocument {
   const version = (typeof raw === 'object' && raw !== null ? (raw as { schemaVersion?: unknown }).schemaVersion : undefined)
-  if (version === 2 || version === 3 || version === 4) {
+  if (version === 2 || version === 3 || version === 4 || version === 5) {
     const source = raw as Record<string, unknown>
     if (source.assets !== undefined && !Array.isArray(source.assets)) {
       throw new MigrationError('invalid document: "assets" must be an array')
     }
-    // Additive normalization: inject the (possibly missing) assets field and
-    // the layer kind before deep validation so pre-library / pre-drawing v2
-    // files keep opening.
+    if (source.palette !== undefined && !isPalette(source.palette)) {
+      throw new MigrationError(
+        'invalid document: "palette" must be an array of up to 48 hex colors (#rgb or #rrggbb)'
+      )
+    }
+    // Additive normalization: inject the (possibly missing) assets, palette
+    // and layer kind before deep validation so pre-library / pre-palette
+    // v2–v4 files keep opening.
     const layers = Array.isArray(source.layers)
       ? source.layers.map((layer) =>
           typeof layer === 'object' &&
@@ -221,11 +275,18 @@ export function migrateDocument(raw: unknown): AnimatorDocument {
       : source.layers
     const candidate = {
       ...source,
-      schemaVersion: 4,
+      schemaVersion: 5,
       layers,
-      assets: (source.assets as unknown[] | undefined) ?? []
+      assets: (source.assets as unknown[] | undefined) ?? [],
+      palette: (source.palette as unknown[] | undefined) ?? []
     }
     if (!isAnimatorDocument(candidate)) {
+      const paintProblem = firstInvalidPaintLocation(candidate)
+      if (paintProblem) {
+        throw new MigrationError(
+          `invalid document: ${paintProblem} (gradients need 2–8 stops with 0–1 offsets and hex colors)`
+        )
+      }
       throw new MigrationError('This file is not a valid OpenAnimator project.')
     }
     return structuredClone(candidate)

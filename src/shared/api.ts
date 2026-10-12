@@ -22,6 +22,8 @@ export const LIBRARY_REMOVE_CHANNEL = 'openanimator:library-remove'
 export const LIBRARY_RENAME_CHANNEL = 'openanimator:library-rename'
 export const EXPORT_PICK_PATH_CHANNEL = 'openanimator:export-pick-path'
 export const EXPORT_WRITE_CHANNEL = 'openanimator:export-write'
+export const PALETTE_GET_CHANNEL = 'openanimator:palette-get'
+export const PALETTE_SET_CHANNEL = 'openanimator:palette-set'
 
 export interface AppVersions {
   app: string
@@ -109,6 +111,10 @@ export interface OpenAnimatorApi {
   pickExportPath(request: ExportPathRequest): Promise<SaveAsResult>
   /** Writes rendered export bytes to the chosen destination. */
   writeExportFile(path: string, bytes: Uint8Array): Promise<ExportWriteResult>
+  /** Reads the persistent global color palette. */
+  loadGlobalPalette(): Promise<string[]>
+  /** Replaces the persistent global color palette. */
+  saveGlobalPalette(colors: string[]): Promise<boolean>
   /** Listens for application-menu commands; returns an unsubscribe function. */
   onMenuCommand(listener: (command: MenuCommand) => void): () => void
 }

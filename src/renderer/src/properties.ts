@@ -1,21 +1,26 @@
 import { formatHexColor, parseHexColor } from '@shared/color'
 import {
+  MAX_PALETTE_COLORS,
   cellRangeAtFrame,
   findKeyframeAtFrame,
   findKeyframeIndexForFrame,
   findNearestNodeKeyframeIndex,
   findNextCellFrame,
-  findPreviousCellFrame
+  findPreviousCellFrame,
+  normalizePaletteColors
 } from '@shared/document'
 import type { CellRange } from '@shared/document'
 import { isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { ImageNode, SceneNode } from '@shared/model'
+import { isGradientPaint, paintPrimaryColor } from '@shared/paint'
+import type { Paint } from '@shared/paint'
 import { pathDataToAnchors } from '@shared/pathModel'
 import { applyTextMetrics } from '@shared/textModel'
 
 import type { Editor } from './editor'
 import { el } from './dom'
 import { EasingEditor } from './easingEditor'
+import { GradientEditor } from './gradientEditor'
 import type { ImageImportDeps } from './imageImport'
 import { pickImageFile, prepareImageResource } from './imageImport'
 import { convertSelectedTextToOutlines } from './textOutlines'
@@ -25,6 +30,7 @@ import {
   type SectionId,
   type SectionState
 } from './sectionState'
+import { SwatchStrip } from './swatches'
 
 const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#e6edf3'
@@ -145,6 +151,23 @@ export class PropertiesView {
   private readonly textHex: HTMLInputElement
   private readonly outlinesButton: HTMLButtonElement
   private readonly imageImportDeps: ImageImportDeps
+
+  private readonly fillGradient: GradientEditor
+  private readonly strokeGradient: GradientEditor
+  private readonly pathStrokeGradient: GradientEditor
+  private readonly pathFillGradient: GradientEditor
+  private readonly textGradient: GradientEditor
+  private readonly fillSwatches: SwatchStrip
+  private readonly strokeSwatches: SwatchStrip
+  private readonly pathStrokeSwatches: SwatchStrip
+  private readonly pathFillSwatches: SwatchStrip
+  private readonly textSwatches: SwatchStrip
+  private readonly brushSwatches: SwatchStrip
+  private readonly paletteDocStrip: SwatchStrip
+  private readonly paletteGlobalStrip: SwatchStrip
+  private readonly addDocSwatchButton: HTMLButtonElement
+  private readonly addGlobalSwatchButton: HTMLButtonElement
+  private globalPalette: string[] = []
   private lastNodeId: string | null = null
 
   constructor(
@@ -257,6 +280,13 @@ export class PropertiesView {
       }
     })
     fillRow.append(this.fillColor, this.fillHex)
+    this.fillGradient = this.createPaintEditor((node, paint) => {
+      if (node.type === 'primitive') node.fill = paint
+    })
+    this.fillSwatches = this.createSwatchStrip((node, color) => {
+      if (node.type === 'primitive') node.fill = color
+    })
+    fillRows.append(this.fillGradient.root, this.fillSwatches.root)
 
     const outlineRow = this.row(fillRows, 'Outline')
     this.strokeToggle = el('input', undefined) as HTMLInputElement
@@ -303,6 +333,13 @@ export class PropertiesView {
       })
     })
     outlineRow.append(this.strokeToggle, this.strokeColor, this.strokeWidth)
+    this.strokeGradient = this.createPaintEditor((node, paint) => {
+      if (node.type === 'primitive') node.stroke = paint
+    })
+    this.strokeSwatches = this.createSwatchStrip((node, color) => {
+      if (node.type === 'primitive') node.stroke = color
+    })
+    fillRows.append(this.strokeGradient.root, this.strokeSwatches.root)
     shape.content.append(this.transformRows, fillRows)
 
     // Path properties, visible only while a path node is selected.
@@ -353,6 +390,13 @@ export class PropertiesView {
       })
     })
     pathStrokeRow.append(this.pathStrokeToggle, this.pathStrokeColor, this.pathStrokeWidth)
+    this.pathStrokeGradient = this.createPaintEditor((node, paint) => {
+      if (node.type === 'path') node.stroke = paint
+    })
+    this.pathStrokeSwatches = this.createSwatchStrip((node, color) => {
+      if (node.type === 'path') node.stroke = color
+    })
+    pathStrokeRows.append(this.pathStrokeGradient.root, this.pathStrokeSwatches.root)
 
     const pathFillRow = this.row(pathStrokeRows, 'Fill')
     this.pathFillToggle = el('input', undefined) as HTMLInputElement
@@ -379,6 +423,13 @@ export class PropertiesView {
     this.pathFillColor.addEventListener('change', () => editor.endInteraction())
     this.pathFillColor.addEventListener('cancel', () => editor.endInteraction())
     pathFillRow.append(this.pathFillToggle, this.pathFillColor)
+    this.pathFillGradient = this.createPaintEditor((node, paint) => {
+      if (node.type === 'path') node.fill = paint
+    })
+    this.pathFillSwatches = this.createSwatchStrip((node, color) => {
+      if (node.type === 'path') node.fill = color
+    })
+    pathStrokeRows.append(this.pathFillGradient.root, this.pathFillSwatches.root)
 
     const pathInfoRow = this.row(path.content, 'Geometry')
     this.pathInfoLabel = el('span', 'panel-file-name')
@@ -500,6 +551,13 @@ export class PropertiesView {
       }
     })
     textColorRow.append(this.textColor, this.textHex)
+    this.textGradient = this.createPaintEditor((node, paint) => {
+      if (node.type === 'text') node.fill = paint
+    })
+    this.textSwatches = this.createSwatchStrip((node, color) => {
+      if (node.type === 'text') node.fill = color
+    })
+    fontRows.append(this.textGradient.root, this.textSwatches.root)
 
     const textActions = el('div', 'panel-buttons')
     this.outlinesButton = this.button(
@@ -598,6 +656,11 @@ export class PropertiesView {
       }
     })
     colorRow.append(this.brushColor, this.brushHex)
+    this.brushSwatches = new SwatchStrip({
+      title: 'Document & global palette',
+      onPick: (color) => editor.setBrushColor(color)
+    })
+    draw.content.appendChild(this.brushSwatches.root)
 
     const sizeRow = this.row(draw.content, 'Size')
     sizeRow.appendChild(el('span', 'panel-suffix', 'px'))
@@ -729,6 +792,38 @@ export class PropertiesView {
     })
     cellMoveRow.appendChild(this.cellMoveInput)
 
+    // Palette section: the document swatches (stored in the project file) and
+    // the global swatches (stored on this machine); right-click removes a
+    // swatch, a click applies it to the selection (or the brush).
+    const palette = this.createSection('palette', 'Palette')
+    const docPaletteRow = this.row(palette.content, 'Document')
+    this.paletteDocStrip = new SwatchStrip({
+      title: 'Document palette',
+      onPick: (color) => this.applyPaletteColor(color),
+      onRemove: (color) => editor.removePaletteColor(color)
+    })
+    docPaletteRow.appendChild(this.paletteDocStrip.root)
+    const globalPaletteRow = this.row(palette.content, 'Global')
+    this.paletteGlobalStrip = new SwatchStrip({
+      title: 'Global palette',
+      onPick: (color) => this.applyPaletteColor(color),
+      onRemove: (color) => this.removeGlobalColor(color)
+    })
+    globalPaletteRow.appendChild(this.paletteGlobalStrip.root)
+    const paletteActions = el('div', 'panel-buttons')
+    this.addDocSwatchButton = this.button(
+      '+ Swatch',
+      'Add the current color to the document palette (stored in the project file)',
+      () => editor.addPaletteColor(this.currentPaletteColor())
+    )
+    this.addGlobalSwatchButton = this.button(
+      '+ Global',
+      'Add the current color to the global palette (stored on this machine, shared by all projects)',
+      () => this.addGlobalColor(this.currentPaletteColor())
+    )
+    paletteActions.append(this.addDocSwatchButton, this.addGlobalSwatchButton)
+    palette.content.append(paletteActions)
+
     scroll.append(
       layer.root,
       shape.root,
@@ -738,13 +833,15 @@ export class PropertiesView {
       group.root,
       symbol.root,
       draw.root,
-      cell.root
+      cell.root,
+      palette.root
     )
     container.appendChild(scroll)
 
     editor.onDocChange(() => this.render())
     editor.onFrameChange(() => this.render())
     editor.onUiChange(() => this.render())
+    void this.loadGlobalPalette()
     this.render()
   }
 
@@ -758,6 +855,103 @@ export class PropertiesView {
     this.sectionState[id] = !this.sectionState[id]
     saveSectionState(window.localStorage, this.sectionState)
     this.sections.get(id)?.setExpanded(this.sectionState[id])
+  }
+
+  /**
+   * Paint editor bound to one node slot. Stop-color drags are a single
+   * coalesced interaction so a whole picker drag is one undo entry.
+   */
+  private createPaintEditor(apply: (node: SceneNode, paint: Paint) => void): GradientEditor {
+    return new GradientEditor({
+      onApply: (paint) => {
+        this.editor.updateSelectedNode((current) => apply(current, paint))
+      },
+      onDragStart: () => this.editor.beginInteraction(),
+      onDragEnd: () => this.editor.endInteraction()
+    })
+  }
+
+  /** Swatch strip beside one color picker: click applies to the node slot. */
+  private createSwatchStrip(apply: (node: SceneNode, color: string) => void): SwatchStrip {
+    return new SwatchStrip({
+      title: 'Document & global palette',
+      onPick: (color) => {
+        this.editor.updateSelectedNode((current) => apply(current, color))
+      }
+    })
+  }
+
+  /** Document palette followed by the global palette, deduplicated. */
+  private combinedPalette(): string[] {
+    return Array.from(new Set([...this.editor.document.palette, ...this.globalPalette]))
+  }
+
+  /**
+   * Applies a palette color to the primary paint of the selection — the
+   * primitive fill, the path outline (falling back to its fill) or the text
+   * fill — and to the brush when nothing suitable is selected.
+   */
+  private applyPaletteColor(color: string): void {
+    const node = this.selectedNodePose()
+    if (node?.type === 'primitive' || node?.type === 'path' || node?.type === 'text') {
+      this.editor.updateSelectedNode((current) => {
+        if (current.type === 'primitive') current.fill = color
+        else if (current.type === 'path') {
+          if (current.stroke !== undefined) current.stroke = color
+          else current.fill = color
+        } else if (current.type === 'text') current.fill = color
+      })
+      return
+    }
+    this.editor.setBrushColor(color)
+  }
+
+  /** Representative color of the current selection's paint (else the brush). */
+  private currentPaletteColor(): string {
+    const node = this.selectedNodePose()
+    if (node?.type === 'primitive') return paintPrimaryColor(node.fill)
+    if (node?.type === 'text') return paintPrimaryColor(node.fill)
+    if (node?.type === 'path') {
+      if (node.stroke !== undefined) return paintPrimaryColor(node.stroke)
+      if (node.fill !== undefined) return paintPrimaryColor(node.fill)
+    }
+    return this.editor.brushColor
+  }
+
+  private async loadGlobalPalette(): Promise<void> {
+    try {
+      this.globalPalette = normalizePaletteColors(await window.api.loadGlobalPalette())
+      this.render()
+    } catch {
+      // The global palette is optional; the panel works without it.
+    }
+  }
+
+  private addGlobalColor(color: string): void {
+    const rgb = parseHexColor(color)
+    if (!rgb) return
+    const hex = formatHexColor(rgb)
+    if (this.globalPalette.includes(hex)) return
+    if (this.globalPalette.length >= MAX_PALETTE_COLORS) {
+      this.editor.showMessage(`Global palette is full (${MAX_PALETTE_COLORS} colors)`)
+      return
+    }
+    this.globalPalette = [...this.globalPalette, hex]
+    this.persistGlobalPalette()
+  }
+
+  private removeGlobalColor(color: string): void {
+    const next = this.globalPalette.filter((entry) => entry !== color)
+    if (next.length === this.globalPalette.length) return
+    this.globalPalette = next
+    this.persistGlobalPalette()
+  }
+
+  private persistGlobalPalette(): void {
+    void window.api.saveGlobalPalette(this.globalPalette).catch(() => {
+      // Persistence is best-effort; the session keeps the working copy.
+    })
+    this.render()
   }
 
   private button(title: string, tooltip: string, onClick: () => void): HTMLButtonElement {
@@ -849,6 +1043,7 @@ export class PropertiesView {
     this.renderNodeSection()
     this.renderDrawSection()
     this.renderCellSection()
+    this.renderPaletteSection()
   }
 
   private renderLayerSection(): void {
@@ -960,37 +1155,65 @@ export class PropertiesView {
       this.replaceSourceButton.disabled = !editable
     }
     if (node.type === 'primitive') {
-      const fill = normalizeHex(node.fill, DEFAULT_FILL)
-      if (!keepFocused(this.fillColor)) this.fillColor.value = fill
-      if (!keepFocused(this.fillHex)) this.fillHex.value = node.fill
+      const fill = node.fill
+      const fillIsGradient = isGradientPaint(fill)
+      if (!fillIsGradient && !keepFocused(this.fillColor)) {
+        this.fillColor.value = normalizeHex(fill, DEFAULT_FILL)
+      }
+      if (!fillIsGradient && !keepFocused(this.fillHex)) this.fillHex.value = fill
+      this.fillColor.disabled = !editable || fillIsGradient
+      this.fillHex.disabled = !editable || fillIsGradient
+      this.fillGradient.setValue(fill, editable)
+      this.fillSwatches.setColors(this.combinedPalette())
+      this.fillSwatches.setActive(paintPrimaryColor(fill))
+      this.fillSwatches.setDisabled(!editable || fillIsGradient)
+
       const outlined = node.stroke !== undefined
+      const stroke = node.stroke
+      const strokeIsGradient = stroke !== undefined && isGradientPaint(stroke)
       if (!keepFocused(this.strokeToggle)) this.strokeToggle.checked = outlined
-      if (!keepFocused(this.strokeColor)) {
-        this.strokeColor.value = normalizeHex(node.stroke ?? DEFAULT_STROKE, DEFAULT_STROKE)
+      if (stroke !== undefined && !strokeIsGradient && !keepFocused(this.strokeColor)) {
+        this.strokeColor.value = normalizeHex(stroke, DEFAULT_STROKE)
       }
       if (!keepFocused(this.strokeWidth)) {
         this.strokeWidth.value = String(node.strokeWidth ?? DEFAULT_STROKE_WIDTH)
       }
-      this.strokeColor.disabled = !editable || !outlined
+      this.strokeColor.disabled = !editable || !outlined || strokeIsGradient
       this.strokeWidth.disabled = !editable || !outlined
+      this.strokeGradient.setValue(stroke ?? DEFAULT_STROKE, editable && outlined)
+      this.strokeSwatches.setColors(this.combinedPalette())
+      this.strokeSwatches.setActive(stroke !== undefined ? paintPrimaryColor(stroke) : null)
+      this.strokeSwatches.setDisabled(!editable || !outlined || strokeIsGradient)
     }
     if (node.type === 'path') {
       const outlined = node.stroke !== undefined
       const filled = node.fill !== undefined
+      const stroke = node.stroke
+      const fill = node.fill
+      const strokeIsGradient = stroke !== undefined && isGradientPaint(stroke)
+      const fillIsGradient = fill !== undefined && isGradientPaint(fill)
       if (!keepFocused(this.pathStrokeToggle)) this.pathStrokeToggle.checked = outlined
-      if (!keepFocused(this.pathStrokeColor)) {
-        this.pathStrokeColor.value = normalizeHex(node.stroke ?? DEFAULT_STROKE, DEFAULT_STROKE)
+      if (stroke !== undefined && !strokeIsGradient && !keepFocused(this.pathStrokeColor)) {
+        this.pathStrokeColor.value = normalizeHex(stroke, DEFAULT_STROKE)
       }
       if (!keepFocused(this.pathStrokeWidth)) {
         this.pathStrokeWidth.value = String(node.strokeWidth ?? DEFAULT_STROKE_WIDTH)
       }
       if (!keepFocused(this.pathFillToggle)) this.pathFillToggle.checked = filled
-      if (!keepFocused(this.pathFillColor)) {
-        this.pathFillColor.value = normalizeHex(node.fill ?? DEFAULT_FILL, DEFAULT_FILL)
+      if (fill !== undefined && !fillIsGradient && !keepFocused(this.pathFillColor)) {
+        this.pathFillColor.value = normalizeHex(fill, DEFAULT_FILL)
       }
-      this.pathStrokeColor.disabled = !editable || !outlined
+      this.pathStrokeColor.disabled = !editable || !outlined || strokeIsGradient
       this.pathStrokeWidth.disabled = !editable || !outlined
-      this.pathFillColor.disabled = !editable || !filled
+      this.pathFillColor.disabled = !editable || !filled || fillIsGradient
+      this.pathStrokeGradient.setValue(stroke ?? DEFAULT_STROKE, editable && outlined)
+      this.pathStrokeSwatches.setColors(this.combinedPalette())
+      this.pathStrokeSwatches.setActive(stroke !== undefined ? paintPrimaryColor(stroke) : null)
+      this.pathStrokeSwatches.setDisabled(!editable || !outlined || strokeIsGradient)
+      this.pathFillGradient.setValue(fill ?? DEFAULT_FILL, editable && filled)
+      this.pathFillSwatches.setColors(this.combinedPalette())
+      this.pathFillSwatches.setActive(fill !== undefined ? paintPrimaryColor(fill) : null)
+      this.pathFillSwatches.setDisabled(!editable || !filled || fillIsGradient)
       const parsed = pathDataToAnchors(node.d)
       this.pathInfoLabel.textContent = parsed
         ? `${parsed.anchors.length} anchors${parsed.closed ? ' · closed' : ''}`
@@ -1002,8 +1225,18 @@ export class PropertiesView {
       if (!keepFocused(this.textSize)) this.textSize.value = String(node.fontSize)
       if (!keepFocused(this.textWeight)) this.textWeight.value = String(node.fontWeight)
       if (!keepFocused(this.textAlign)) this.textAlign.value = node.align
-      if (!keepFocused(this.textColor)) this.textColor.value = normalizeHex(node.fill, DEFAULT_TEXT_FILL)
-      if (!keepFocused(this.textHex)) this.textHex.value = node.fill
+      const fill = node.fill
+      const fillIsGradient = isGradientPaint(fill)
+      if (!fillIsGradient && !keepFocused(this.textColor)) {
+        this.textColor.value = normalizeHex(fill, DEFAULT_TEXT_FILL)
+      }
+      if (!fillIsGradient && !keepFocused(this.textHex)) this.textHex.value = fill
+      this.textColor.disabled = !editable || fillIsGradient
+      this.textHex.disabled = !editable || fillIsGradient
+      this.textGradient.setValue(fill, editable)
+      this.textSwatches.setColors(this.combinedPalette())
+      this.textSwatches.setActive(paintPrimaryColor(fill))
+      this.textSwatches.setDisabled(!editable || fillIsGradient)
       this.outlinesButton.disabled = !editable
     }
     this.lastNodeId = node.id
@@ -1021,6 +1254,9 @@ export class PropertiesView {
     const hex = normalizeHex(editor.brushColor, '#e6edf3')
     if (!keep(this.brushColor)) this.brushColor.value = hex
     if (!keep(this.brushHex)) this.brushHex.value = editor.brushColor
+    this.brushSwatches.setColors(this.combinedPalette())
+    this.brushSwatches.setActive(editor.brushColor)
+    this.brushSwatches.setDisabled(false)
     if (!keep(this.brushSize)) this.brushSize.value = String(editor.brushSize)
     if (!keep(this.brushOpacity)) this.brushOpacity.value = String(editor.brushOpacity)
     this.onionToggle.checked = editor.onionSkin
@@ -1058,6 +1294,15 @@ export class PropertiesView {
     if (!keep(this.cellEndInput)) this.cellEndInput.value = String(range.endFrame + 1)
     if (!keep(this.cellMoveInput)) this.cellMoveInput.value = String(range.cellFrame + 1)
     for (const input of inputs) input.disabled = layer.locked
+  }
+
+  /** Palette section: document and global swatch strips, always visible. */
+  private renderPaletteSection(): void {
+    const current = this.currentPaletteColor()
+    this.paletteDocStrip.setColors(this.editor.document.palette)
+    this.paletteDocStrip.setActive(current)
+    this.paletteGlobalStrip.setColors(this.globalPalette)
+    this.paletteGlobalStrip.setActive(current)
   }
 
   /** Span of the cell covering the playhead of the active drawing layer. */

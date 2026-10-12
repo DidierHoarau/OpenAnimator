@@ -1,6 +1,7 @@
 import { fitImagePlacement } from '@shared/imagePlacement'
 import type { ImageNode } from '@shared/model'
 import { createId } from '@shared/document'
+import { importSvgAsVectors } from '@shared/svgImport'
 
 import type { Editor } from './editor'
 
@@ -164,7 +165,9 @@ export async function prepareImageResource(
  * Imports raw image bytes as a new ImageNode on the current object layer:
  * placed centered on the stage — or at the drop point — at natural size
  * capped to the stage, then auto-selected. Returns true when the image landed
- * on the stage.
+ * on the stage. SVGs are first tried as editable vectors (one group, plus
+ * symbol assets for repeated shapes); unsupported or malformed SVGs fall
+ * back to the raster path (2× PNG resource) with a status-bar note.
  */
 export async function importImageBytes(
   editor: Editor,
@@ -177,6 +180,23 @@ export async function importImageBytes(
   if (!layer || layer.locked || !layer.visible) {
     editor.showMessage('Select a visible, unlocked object layer to import the image')
     return false
+  }
+  if (detectImageFormat(fileName, bytes) === 'svg') {
+    const imported = importSvgAsVectors(bytes)
+    if (imported.ok) {
+      const placement = fitImagePlacement(
+        { width: imported.group.width, height: imported.group.height },
+        editor.document,
+        dropPoint
+      )
+      imported.group.center = placement.center
+      imported.group.width = placement.width
+      imported.group.height = placement.height
+      // One undo step covers the group and the symbol assets it references.
+      editor.addNodeWithAssets(imported.group, imported.assets)
+      return true
+    }
+    editor.showMessage(`SVG imported as a raster image: ${imported.reason}`)
   }
   const prepared = await prepareImageResource(editor, fileName, bytes, deps)
   if (!prepared) return false

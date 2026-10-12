@@ -9,6 +9,7 @@ import {
 import type { KeyframeChunkEntry } from '@shared/document'
 import { isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { DrawingLayer, Layer, ObjectLayer, SceneNode } from '@shared/model'
+import { paintPrimaryColor } from '@shared/paint'
 
 import type { Editor } from './editor'
 import { el } from './dom'
@@ -37,11 +38,15 @@ function nodeLabel(node: SceneNode): string {
   return node.name || NODE_KIND_LABELS[kind] || 'Object'
 }
 
-/** Timeline swatch/span color: a node's own paint where it has one. */
+/** Timeline swatch/span color: a node's own paint where it has one
+ * (gradient paints show their first stop's color). */
 function nodeColor(node: SceneNode): string {
-  if (node.type === 'primitive') return node.fill
-  if (node.type === 'path') return node.stroke ?? node.fill ?? NEUTRAL_COLOR
-  if (node.type === 'text') return node.fill
+  if (node.type === 'primitive') return paintPrimaryColor(node.fill)
+  if (node.type === 'path') {
+    if (node.stroke !== undefined) return paintPrimaryColor(node.stroke)
+    return node.fill !== undefined ? paintPrimaryColor(node.fill) : NEUTRAL_COLOR
+  }
+  if (node.type === 'text') return paintPrimaryColor(node.fill)
   return NEUTRAL_COLOR
 }
 

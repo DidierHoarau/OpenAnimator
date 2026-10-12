@@ -132,7 +132,8 @@ export function parsePathCommands(d: string): PathCommand[] | null {
   return commands
 }
 
-function serializeCommands(commands: PathCommand[]): string {
+/** Serializes absolute commands back to path data (numbers to 2 decimals). */
+export function serializeCommands(commands: PathCommand[]): string {
   let d = ''
   for (const command of commands) {
     switch (command.type) {

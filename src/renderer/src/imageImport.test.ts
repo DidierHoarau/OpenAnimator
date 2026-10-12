@@ -147,21 +147,99 @@ describe('importImageBytes', () => {
     expect(node.naturalHeight).toBe(100)
   })
 
-  it('rasterizes SVGs at 2× and reports the rasterized natural size', async () => {
+  it('rasterizes SVGs outside the vector subset at 2× and reports the fallback', async () => {
     const addResource = vi.fn(() => Promise.resolve({ resourceId: 'hash-svg', deduped: false }))
     fakeApi(addResource)
+    const message = vi.fn()
+    editor.onMessage(message)
     const encoded = deps({
       decode: vi.fn(() => Promise.resolve({ width: 40, height: 30 })),
       encodePng: vi.fn(() => Promise.resolve(RASTER_PNG))
     })
+    // An empty SVG has no drawable shapes — the vector importer fails and the
+    // raster path takes over.
     await importImageBytes(editor, 'icon.svg', SVG_BYTES, undefined, encoded)
     expect(encoded.encodePng).toHaveBeenCalledWith(SVG_BYTES, 'image/svg+xml', { width: 40, height: 30 }, 2)
     expect(addResource).toHaveBeenCalledWith(RASTER_PNG, 'icon.svg')
+    expect(message).toHaveBeenCalledWith('SVG imported as a raster image: no supported drawable shapes were found')
     const node = editor.document.layers[0].keyframes[0].nodes[0] as ImageNode
+    expect(node.type).toBe('image')
     expect(node.naturalWidth).toBe(80)
     expect(node.naturalHeight).toBe(60)
     expect(node.width).toBe(80)
     expect(node.height).toBe(60)
+  })
+
+  it('falls back to rasterizing when the SVG uses unsupported features', async () => {
+    const addResource = vi.fn(() => Promise.resolve({ resourceId: 'hash-filt', deduped: false }))
+    fakeApi(addResource)
+    const message = vi.fn()
+    editor.onMessage(message)
+    const withFilter = new TextEncoder().encode(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><filter id="f"></filter></svg>'
+    )
+    await importImageBytes(editor, 'photo.svg', withFilter, undefined, deps())
+    expect(addResource).toHaveBeenCalled()
+    expect(message).toHaveBeenCalledWith('SVG imported as a raster image: unsupported element <filter>')
+  })
+
+  it('imports supported SVGs as editable vectors on one undo step', async () => {
+    const addResource = vi.fn()
+    fakeApi(addResource)
+    const message = vi.fn()
+    editor.onMessage(message)
+    const source = new TextEncoder().encode(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50">' +
+        '<rect x="10" y="10" width="30" height="20" fill="#ff0000"/></svg>'
+    )
+    const ok = await importImageBytes(editor, 'shape.svg', source, undefined, deps())
+    expect(ok).toBe(true)
+    // The vector path never touches the resource store.
+    expect(addResource).not.toHaveBeenCalled()
+    expect(message).not.toHaveBeenCalled()
+    const group = editor.document.layers[0].keyframes[0].nodes[0]
+    expect(group.type).toBe('group')
+    if (group.type !== 'group') throw new Error('expected a group')
+    // 30×20 content fits the stage: placed at natural size, stage-centered.
+    expect(group.width).toBe(30)
+    expect(group.height).toBe(20)
+    expect(group.center).toEqual({ x: 480, y: 270 })
+    expect(group.children).toHaveLength(1)
+    const rect = group.children[0]
+    expect(rect.type).toBe('primitive')
+    if (rect.type !== 'primitive') throw new Error('expected a primitive')
+    expect(rect.primitive).toBe('rect')
+    expect(rect.fill).toBe('#ff0000')
+    expect(rect.width).toBe(30)
+    expect(rect.height).toBe(20)
+    expect(rect.center).toEqual({ x: 0, y: 0 })
+    expect(editor.selectedNodeIds).toEqual([group.id])
+    // One undo step reverts the whole import (group + symbol assets).
+    editor.undo()
+    expect(editor.document.layers[0].keyframes[0].nodes).toHaveLength(0)
+    expect(editor.document.assets).toHaveLength(0)
+    expect(editor.canUndo).toBe(false)
+  })
+
+  it('collapses repeated shapes into symbol assets placed with the group', async () => {
+    const addResource = vi.fn()
+    fakeApi(addResource)
+    const source = new TextEncoder().encode(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50">' +
+        '<rect x="10" y="10" width="30" height="20" fill="#00ff00"/>' +
+        '<rect x="60" y="10" width="30" height="20" fill="#00ff00"/></svg>'
+    )
+    const ok = await importImageBytes(editor, 'twins.svg', source, { x: 200, y: 150 }, deps())
+    expect(ok).toBe(true)
+    const group = editor.document.layers[0].keyframes[0].nodes[0]
+    if (group.type !== 'group') throw new Error('expected a group')
+    expect(group.center).toEqual({ x: 200, y: 150 })
+    expect(group.width).toBe(80)
+    expect(group.height).toBe(20)
+    expect(editor.document.assets).toHaveLength(1)
+    const asset = editor.document.assets[0]
+    expect(asset.kind).toBe('symbol')
+    expect(group.children.every((child) => child.type === 'symbol')).toBe(true)
   })
 
   it('registers the imported image as a document asset', async () => {

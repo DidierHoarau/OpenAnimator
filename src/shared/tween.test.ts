@@ -104,6 +104,96 @@ describe('tweenNode', () => {
     expect((tweenNode(from, to, 1) as PrimitiveNode).fill).toBe('blue')
   })
 
+  it('interpolates matching gradient fills (geometry and stops)', () => {
+    const from = shape('a', {
+      fill: {
+        type: 'linear',
+        angle: 0,
+        stops: [
+          { offset: 0, color: '#ff0000' },
+          { offset: 1, color: '#000000' }
+        ]
+      }
+    })
+    const to = shape('a', {
+      fill: {
+        type: 'linear',
+        angle: 90,
+        stops: [
+          { offset: 0, color: '#0000ff' },
+          { offset: 1, color: '#ffffff' }
+        ]
+      }
+    })
+    const mid = tweenNode(from, to, 0.5) as PrimitiveNode
+    expect(mid.fill).toEqual({
+      type: 'linear',
+      angle: 45,
+      stops: [
+        { offset: 0, color: '#800080' },
+        { offset: 1, color: '#808080' }
+      ]
+    })
+    // t=0 and t=1 reproduce the ends exactly.
+    expect((tweenNode(from, to, 0) as PrimitiveNode).fill).toEqual(from.fill)
+    expect((tweenNode(from, to, 1) as PrimitiveNode).fill).toEqual(to.fill)
+  })
+
+  it('interpolates radial gradients', () => {
+    const from = shape('a', {
+      fill: { type: 'radial', cx: 0.5, cy: 0.5, r: 0.5, stops: [{ offset: 0, color: '#ffffff' }, { offset: 1, color: '#000000' }] }
+    })
+    const to = shape('a', {
+      fill: { type: 'radial', cx: 0.5, cy: 0.5, r: 1, stops: [{ offset: 0, color: '#ffffff' }, { offset: 1, color: '#000000' }] }
+    })
+    const mid = tweenNode(from, to, 0.5) as PrimitiveNode
+    expect(mid.fill).toMatchObject({ type: 'radial', r: 0.75 })
+  })
+
+  it('snaps solid↔gradient and gradient-of-different-shape pairs', () => {
+    const gradient = {
+      type: 'linear' as const,
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#ff0000' },
+        { offset: 1, color: '#0000ff' }
+      ]
+    }
+    const solid = shape('a', { fill: '#ff0000' })
+    const painted = shape('a', { fill: gradient })
+    expect((tweenNode(painted, solid, 0.5) as PrimitiveNode).fill).toBe(gradient)
+    expect((tweenNode(painted, solid, 1) as PrimitiveNode).fill).toBe('#ff0000')
+    expect((tweenNode(solid, painted, 0.5) as PrimitiveNode).fill).toBe('#ff0000')
+    expect((tweenNode(solid, painted, 1) as PrimitiveNode).fill).toBe(gradient)
+    const radial = shape('a', {
+      fill: { type: 'radial', cx: 0.5, cy: 0.5, r: 0.5, stops: gradient.stops }
+    })
+    expect((tweenNode(painted, radial, 0.5) as PrimitiveNode).fill).toBe(gradient)
+  })
+
+  it('interpolates gradient strokes when both ends define one', () => {
+    const stroke = (angle: number): PrimitiveNode =>
+      shape('a', {
+        stroke: {
+          type: 'linear',
+          angle,
+          stops: [
+            { offset: 0, color: '#000000' },
+            { offset: 1, color: '#000000' }
+          ]
+        },
+        strokeWidth: 2
+      })
+    expect((tweenNode(stroke(0), stroke(90), 0.5) as PrimitiveNode).stroke).toMatchObject({
+      type: 'linear',
+      angle: 45
+    })
+    // One end without a stroke keeps the defined one (no lerp).
+    const bare = shape('a', { strokeWidth: 2 })
+    expect((tweenNode(stroke(0), bare, 0.5) as PrimitiveNode).stroke).toEqual(stroke(0).stroke)
+    expect((tweenNode(bare, stroke(0), 0.5) as PrimitiveNode).stroke).toEqual(stroke(0).stroke)
+  })
+
   it('tweens a group: transform and opacity lerp, children come from `from`', () => {
     const from = group('g', { center: { x: 0, y: 0 }, opacity: 1 })
     const to = group('g', {
@@ -305,6 +395,54 @@ describe('evaluateLayerAtFrame', () => {
     expect(evaluateLayerAtFrame(layer, 5)[0].center.x).toBe(50)
   })
 
+  it('evaluates gradient fill interpolation through the tween pipeline', () => {
+    const gradientLayer: ObjectLayer = {
+      ...layer,
+      keyframes: [
+        {
+          frame: 0,
+          nodes: [
+            shape('a', {
+              fill: {
+                type: 'linear',
+                angle: 0,
+                stops: [
+                  { offset: 0, color: '#000000' },
+                  { offset: 1, color: '#000000' }
+                ]
+              }
+            })
+          ],
+          tween: { easing: 'linear' }
+        },
+        {
+          frame: 10,
+          nodes: [
+            shape('a', {
+              fill: {
+                type: 'linear',
+                angle: 0,
+                stops: [
+                  { offset: 0, color: '#ffffff' },
+                  { offset: 1, color: '#ffffff' }
+                ]
+              }
+            })
+          ]
+        }
+      ]
+    }
+    const mid = evaluateLayerAtFrame(gradientLayer, 5)[0] as PrimitiveNode
+    expect(mid.fill).toEqual({
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '#808080' },
+        { offset: 1, color: '#808080' }
+      ]
+    })
+  })
+
   it('evaluates cubic bezier easing definitions', () => {
     const eased: ObjectLayer = {
       ...layer,
@@ -445,14 +583,15 @@ describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       name: 'test',
       width: 100,
       height: 100,
       fps: 24,
       background: '#000000',
       layers: [{ kind: 'object', id: 'l', name: 'L', visible: true, locked: false, keyframes: [] as never[] }],
-      assets: []
+      assets: [],
+      palette: ['#ff0000']
     }
     expect(isAnimatorDocument(valid)).toBe(true)
     expect(isAnimatorDocument({})).toBe(false)
@@ -460,5 +599,9 @@ describe('document validation', () => {
     expect(isAnimatorDocument({ ...valid, fps: 0 })).toBe(false)
     expect(isAnimatorDocument({ ...valid, layers: 'nope' })).toBe(false)
     expect(isAnimatorDocument({ ...valid, assets: 'nope' })).toBe(false)
+    // v5 requires a well-formed palette of hex colors.
+    expect(isAnimatorDocument({ ...valid, palette: undefined })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, palette: ['red'] })).toBe(false)
+    expect(isAnimatorDocument({ ...valid, palette: ['#ff0000', '#ff0000'] })).toBe(true)
   })
 })

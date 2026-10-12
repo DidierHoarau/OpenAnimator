@@ -9,6 +9,7 @@ export type SectionId =
   | 'symbol'
   | 'draw'
   | 'cell'
+  | 'palette'
 
 /** Expanded/collapsed state of every panel section. */
 export type SectionState = Record<SectionId, boolean>
@@ -30,7 +31,8 @@ export const DEFAULT_SECTION_STATE: SectionState = {
   group: true,
   symbol: true,
   draw: true,
-  cell: true
+  cell: true,
+  palette: true
 }
 
 const SECTION_IDS = Object.keys(DEFAULT_SECTION_STATE) as SectionId[]

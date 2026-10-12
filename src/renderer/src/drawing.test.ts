@@ -4,7 +4,7 @@ import { createDocument, createDrawingLayer, getLayer } from '@shared/document'
 import type { AnimatorDocument, DrawingLayer } from '@shared/model'
 
 import { Editor } from './editor'
-import { DrawingSession, createTransparentPng, segmentWidth, strokeSegments } from './drawing'
+import { DrawingSession, createTransparentPng, segmentWidth, strokeSegments, strokeToPathData } from './drawing'
 import type { StrokePoint } from './drawing'
 
 function point(x: number, y: number, pressure = 0.5): StrokePoint {
@@ -141,6 +141,28 @@ describe('strokeSegments', () => {
     expect(segments[1].control).toEqual(points[2])
     // The last segment ends at the raw last point.
     expect(segments[1].to).toEqual(points[3])
+  })
+})
+
+describe('strokeToPathData', () => {
+  it('returns empty path data for an empty stroke', () => {
+    expect(strokeToPathData([])).toBe('')
+  })
+
+  it('turns a single point into a degenerate quadratic (a dot)', () => {
+    expect(strokeToPathData([point(3, 4)])).toBe('M 3 4 Q 3 4 3 4')
+  })
+
+  it('emits one Q per smoothed segment, starting with M', () => {
+    expect(strokeToPathData([point(0, 0), point(2, 0), point(4, 2), point(6, 2)])).toBe(
+      'M 0 0 Q 2 0 3 1 Q 4 2 6 2'
+    )
+  })
+
+  it('formats numbers to two decimals without trailing zeros', () => {
+    expect(strokeToPathData([point(0.004, 1.236), point(3.1, 2.5)])).toBe(
+      'M 0 1.24 Q 3.1 2.5 3.1 2.5'
+    )
   })
 })
 
