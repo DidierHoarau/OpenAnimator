@@ -1,4 +1,5 @@
 import {
+  audioClipEndFrame,
   cellRangeAtFrame,
   extractKeyframeChunk,
   findKeyframeAtFrame,
@@ -7,10 +8,18 @@ import {
   resolveCellAtFrame
 } from '@shared/document'
 import type { KeyframeChunkEntry } from '@shared/document'
-import { isDrawingLayer, isObjectLayer } from '@shared/model'
-import type { DrawingLayer, Layer, ObjectLayer, SceneNode } from '@shared/model'
+import { isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
+import type {
+  AudioLayer,
+  CameraLayer,
+  DrawingLayer,
+  Layer,
+  ObjectLayer,
+  SceneNode
+} from '@shared/model'
 import { paintPrimaryColor } from '@shared/paint'
 
+import { importAudioViaDialog } from './audioImport'
 import type { Editor } from './editor'
 import { el } from './dom'
 
@@ -32,6 +41,10 @@ const NODE_KIND_LABELS: Record<string, string> = {
 }
 /** Swatch/span color for node kinds without a fill of their own. */
 const NEUTRAL_COLOR = '#64748b'
+/** Marker identity of a camera keyframe in the timeline selection. */
+const CAMERA_MARKER_NODE = '\u0000camera'
+/** Waveform fill of audio clips (mirrors the accent blue). */
+const WAVEFORM_COLOR = '#6aa9e9'
 
 function nodeLabel(node: SceneNode): string {
   const kind = node.type === 'primitive' ? node.primitive : node.type
@@ -95,8 +108,15 @@ function markerKey(layerId: string, nodeId: string, frame: number): string {
 }
 
 function parseMarkerKey(key: string): MarkerRef {
-  const [layerId, nodeId, frame] = key.split('\u0000')
-  return { layerId, nodeId, frame: Number(frame) }
+  // Node ids are opaque strings — the camera sentinel itself contains the
+  // separator — so only the layer id and the frame sit at the ends.
+  const first = key.indexOf('\u0000')
+  const last = key.lastIndexOf('\u0000')
+  return {
+    layerId: key.slice(0, first),
+    nodeId: key.slice(first + 1, last),
+    frame: Number(key.slice(last + 1))
+  }
 }
 
 /**
@@ -125,6 +145,7 @@ export class TimelineView {
   private readonly frameLabel: HTMLSpanElement
   private readonly playButton: HTMLButtonElement
   private readonly loopButton: HTMLButtonElement
+  private readonly scrubAudioCheckbox: HTMLInputElement
   private readonly fpsInput: HTMLInputElement
   private readonly holdSelect: HTMLSelectElement
   private readonly onionCheckbox: HTMLInputElement
@@ -140,6 +161,10 @@ export class TimelineView {
   private readonly menuCellButtons: HTMLButtonElement[]
   private readonly menuKeyframeButtons: HTMLButtonElement[]
   private readonly menuPasteKeyframeButton: HTMLButtonElement
+  private readonly menuCameraButtons: HTMLButtonElement[]
+  private readonly menuAudioButtons: HTMLButtonElement[]
+  private readonly menuAudioVolumeRow: HTMLDivElement
+  private readonly menuAudioVolumeInput: HTMLInputElement
   private readonly menuResolutionRow: HTMLDivElement
   private readonly menuResolutionInput: HTMLInputElement
   private readonly menuMoveRow: HTMLDivElement
@@ -161,6 +186,7 @@ export class TimelineView {
   private draggedLayerId: string | null = null
   private draggedCell: { layerId: string; frame: number } | null = null
   private draggedNode: { layerId: string; nodeId: string } | null = null
+  private draggedAudio: { layerId: string } | null = null
 
   constructor(
     private readonly editor: Editor,
@@ -178,7 +204,16 @@ export class TimelineView {
     this.loopButton = el('button', undefined, 'Loop')
     this.loopButton.title = 'Toggle looped playback'
     this.loopButton.addEventListener('click', () => editor.toggleLoop())
-    playbackGroup.append(this.playButton, stopButton, this.loopButton)
+    this.scrubAudioCheckbox = el('input', 'tl-check') as HTMLInputElement
+    this.scrubAudioCheckbox.type = 'checkbox'
+    this.scrubAudioCheckbox.title =
+      'Play a short blip of the audio under the playhead while scrubbing paused (off by default)'
+    this.scrubAudioCheckbox.addEventListener('change', () =>
+      editor.setScrubAudio(this.scrubAudioCheckbox.checked)
+    )
+    const scrubLabel = el('span', 'tl-label', 'Scrub audio')
+    scrubLabel.addEventListener('click', () => this.scrubAudioCheckbox.click())
+    playbackGroup.append(this.playButton, stopButton, this.loopButton, this.scrubAudioCheckbox, scrubLabel)
 
     const fpsGroup = el('div', 'tl-group')
     fpsGroup.appendChild(el('span', 'tl-label', 'fps'))
@@ -352,6 +387,53 @@ export class TimelineView {
       seekToMarker(target, frame)
       this.pasteKeyframes()
     })
+    // Camera actions, shown for camera-layer context menus (row or marker).
+    const cameraOp = (label: string, action: (target: MenuTarget) => void): HTMLButtonElement => {
+      const button = el('button', 'tl-context-item', label)
+      button.addEventListener('click', () => {
+        const target = this.menuTarget
+        this.closeContextMenu()
+        if (target) action(target)
+      })
+      return button
+    }
+    const seekIntoTargetMarker = (target: MenuTarget): void => {
+      this.editor.setCurrentLayer(target.layerId)
+      if (target.keyframeFrame !== undefined) this.editor.seekToFrame(target.keyframeFrame)
+    }
+    this.menuCameraButtons = [
+      cameraOp('Add Camera Keyframe', (target) => {
+        seekIntoTargetMarker(target)
+        this.editor.ensureCameraKeyframe()
+      }),
+      cameraOp('Remove Camera Keyframe', (target) => {
+        seekIntoTargetMarker(target)
+        this.editor.removeCameraKeyframeHere()
+      }),
+      cameraOp('Toggle Tween', (target) => {
+        seekIntoTargetMarker(target)
+        this.editor.toggleCameraTweenHere()
+      })
+    ]
+    // Audio actions, shown for audio-layer context menus.
+    this.menuAudioButtons = [
+      cameraOp('Mute / Unmute', (target) => this.editor.toggleAudioMute(target.layerId))
+    ]
+    this.menuAudioVolumeRow = el('div', 'tl-context-item tl-context-volume')
+    this.menuAudioVolumeRow.appendChild(el('span', undefined, 'Volume'))
+    this.menuAudioVolumeInput = el('input', 'tl-number') as HTMLInputElement
+    this.menuAudioVolumeInput.type = 'number'
+    this.menuAudioVolumeInput.min = '0'
+    this.menuAudioVolumeInput.max = '100'
+    this.menuAudioVolumeInput.step = '5'
+    this.menuAudioVolumeInput.title = 'Clip volume in percent (0–100)'
+    this.menuAudioVolumeInput.addEventListener('change', () => {
+      const target = this.menuTarget
+      if (target) {
+        this.editor.setAudioLayerVolume(target.layerId, Number(this.menuAudioVolumeInput.value) / 100)
+      }
+    })
+    this.menuAudioVolumeRow.appendChild(this.menuAudioVolumeInput)
     this.menuResolutionRow = el('div', 'tl-context-item tl-context-resolution')
     this.menuResolutionRow.appendChild(el('span', undefined, 'Cell resolution'))
     this.menuResolutionInput = el('input', 'tl-number') as HTMLInputElement
@@ -382,12 +464,18 @@ export class TimelineView {
       if (!target || !Number.isFinite(value)) return
       const frame = Math.floor(value) - 1
       this.editor.setCurrentLayer(target.layerId)
+      const layer = getLayer(this.editor.document, target.layerId)
       let moved = false
       if (target.nodeId) {
         moved = this.editor.moveNodeToFrame(target.nodeId, frame)
         if (moved) this.editor.selectNodes([target.nodeId], 'replace')
+      } else if (layer && isCameraLayer(layer)) {
+        if (target.keyframeFrame !== undefined) {
+          moved = this.editor.moveCameraKeyframeEntry(target.keyframeFrame, frame, target.layerId)
+        }
+      } else if (layer && isAudioLayer(layer)) {
+        moved = this.editor.setAudioClipStart(target.layerId, frame)
       } else {
-        const layer = getLayer(this.editor.document, target.layerId)
         const range = layer && isDrawingLayer(layer)
           ? cellRangeAtFrame(layer, this.editor.currentFrame, this.editor.duration)
           : null
@@ -401,6 +489,9 @@ export class TimelineView {
       this.menuMoveRow,
       ...this.menuKeyframeButtons,
       this.menuPasteKeyframeButton,
+      ...this.menuCameraButtons,
+      ...this.menuAudioButtons,
+      this.menuAudioVolumeRow,
       ...this.menuCellButtons,
       this.menuResolutionRow,
       this.menuDeleteButton
@@ -435,6 +526,8 @@ export class TimelineView {
       this.refreshNodeTweenButtons()
     })
     editor.onUiChange(() => this.render())
+    // A freshly decoded audio resource unlocks its clip length and waveform.
+    editor.audio.onDecoded?.(() => this.render())
     this.render()
   }
 
@@ -503,7 +596,8 @@ export class TimelineView {
     }
     this.focusedMarker = { layerId, nodeId, frame }
     this.editor.setCurrentLayer(layerId)
-    this.editor.selectNodes([nodeId], 'replace')
+    // Camera markers hold no node: only the layer becomes current.
+    if (nodeId !== CAMERA_MARKER_NODE) this.editor.selectNodes([nodeId], 'replace')
     this.editor.seekToFrame(frame)
 
     const drag = { layerId, startX: event.clientX, startY: event.clientY, pointerId: event.pointerId, dragging: false }
@@ -560,13 +654,30 @@ export class TimelineView {
 
   /** Moves every selected entry of one layer by the uniform delta, one undo step. */
   private applyMarkerDrag(layerId: string, delta: number): void {
+    const layer = getLayer(this.editor.document, layerId)
+    const refs = [...this.selectedMarkers]
+      .map(parseMarkerKey)
+      .filter((marker) => marker.layerId === layerId)
+    if (!layer || refs.length === 0) return
+    if (isCameraLayer(layer)) {
+      const cameraMoves = refs.map((marker) => ({
+        fromFrame: marker.frame,
+        toFrame: marker.frame + delta
+      }))
+      if (this.editor.moveCameraKeyframes(cameraMoves, layerId)) {
+        this.selectedMarkers = new Set(
+          cameraMoves.map((move) => markerKey(layerId, CAMERA_MARKER_NODE, move.toFrame))
+        )
+        if (this.focusedMarker?.layerId === layerId) {
+          this.focusedMarker = { ...this.focusedMarker, frame: this.focusedMarker.frame + delta }
+        }
+      }
+      return
+    }
     const moves: Array<{ nodeId: string; fromFrame: number; toFrame: number }> = []
-    for (const key of this.selectedMarkers) {
-      const marker = parseMarkerKey(key)
-      if (marker.layerId !== layerId) continue
+    for (const marker of refs) {
       moves.push({ nodeId: marker.nodeId, fromFrame: marker.frame, toFrame: marker.frame + delta })
     }
-    if (moves.length === 0) return
     if (this.editor.moveNodeKeyframeEntries(moves, layerId)) {
       this.selectedMarkers = new Set(moves.map((move) => markerKey(layerId, move.nodeId, move.toFrame)))
       if (this.focusedMarker?.layerId === layerId) {
@@ -749,6 +860,7 @@ export class TimelineView {
       this.holdSelect.appendChild(option)
     }
     this.holdSelect.value = step
+    this.scrubAudioCheckbox.checked = editor.scrubAudio
     this.onionCheckbox.checked = editor.onionSkin
     if (document.activeElement !== this.onionBeforeInput) {
       this.onionBeforeInput.value = String(editor.onionBefore)
@@ -773,7 +885,7 @@ export class TimelineView {
     if (expanded) {
       if (isDrawingLayer(layer)) {
         group.appendChild(this.buildFilmstripRow(layer, frames))
-      } else {
+      } else if (isObjectLayer(layer)) {
         const nodes = this.collectAllNodes(layer)
         if (nodes.length === 0) {
           group.appendChild(this.buildEmptyNodeRow(frames))
@@ -783,6 +895,8 @@ export class TimelineView {
           }
         }
       }
+      // Camera and audio layers have no child rows: their markers and clip
+      // span live on the layer row itself.
     }
 
     return group
@@ -795,25 +909,47 @@ export class TimelineView {
     if (layer.id === editor.currentLayerId) row.classList.add('current')
 
     const head = el('div', 'tl-head')
-    const toggle = el('span', 'tl-toggle', expanded ? '▾' : '▸')
+    const expandable = isObjectLayer(layer) || isDrawingLayer(layer)
+    const toggle = el('span', 'tl-toggle', expandable ? (expanded ? '▾' : '▸') : '')
     toggle.title = expanded ? 'Collapse layer' : 'Expand layer'
-    toggle.addEventListener('click', (event) => {
-      event.stopPropagation()
-      this.toggleExpand(layer.id)
-    })
+    if (expandable) {
+      toggle.addEventListener('click', (event) => {
+        event.stopPropagation()
+        this.toggleExpand(layer.id)
+      })
+    }
     const visibilityButton = el('button', 'tl-icon', layer.visible ? '◉' : '○')
-    visibilityButton.title = layer.visible ? 'Hide layer' : 'Show layer'
+    visibilityButton.title = layer.visible
+      ? isAudioLayer(layer)
+        ? 'Mute this audio layer'
+        : 'Hide layer'
+      : isAudioLayer(layer)
+        ? 'Unmute this audio layer'
+        : 'Show layer'
     visibilityButton.addEventListener('click', (event) => {
       event.stopPropagation()
       editor.toggleLayerVisibility(layer.id)
     })
     const name = el('span', 'name', layer.name)
     name.title = layer.name
-    // Kind badge: object (keyframes/tweens) vs drawing (frame-by-frame cells).
-    const kindBadge = el('span', 'tl-kind', isDrawingLayer(layer) ? '\u270e' : '\u25a3')
-    kindBadge.title = isDrawingLayer(layer)
-      ? 'Drawing layer: one raster cell per frame span, never tweened'
-      : 'Object layer: keyframes and tweens'
+    // Kind badge: object (keyframes/tweens), drawing (frame-by-frame cells),
+    // camera (keyframed framing) or audio (one clip).
+    let badgeGlyph = '\u25a3'
+    let badgeTitle = 'Object layer: keyframes and tweens'
+    if (isDrawingLayer(layer)) {
+      badgeGlyph = '\u270e'
+      badgeTitle = 'Drawing layer: one raster cell per frame span, never tweened'
+    } else if (isCameraLayer(layer)) {
+      badgeGlyph = '\u25c9'
+      badgeTitle = 'Camera layer: keyframed camera framing, applied in renders and exports'
+    } else if (isAudioLayer(layer)) {
+      badgeGlyph = '\u266a'
+      badgeTitle = layer.visible
+        ? 'Audio layer: one clip, mixed into WebM/MP4 exports'
+        : 'Audio layer (muted): hidden from playback and exports'
+    }
+    const kindBadge = el('span', 'tl-kind', badgeGlyph)
+    kindBadge.title = badgeTitle
     const lockButton = el('button', 'tl-icon', layer.locked ? 'L' : '·')
     lockButton.title = layer.locked ? 'Unlock layer' : 'Lock layer'
     lockButton.addEventListener('click', (event) => {
@@ -869,13 +1005,23 @@ export class TimelineView {
     })
     row.addEventListener('dragend', () => this.clearDragState())
 
-    const track = this.buildBarTrack(null, null, frames)
-    this.wireDropTarget(track, layer.id)
+    // Track: camera rows carry their keyframe markers directly; audio rows
+    // carry the clip span with its waveform.
+    let track: HTMLDivElement
+    if (isCameraLayer(layer)) {
+      track = this.buildCameraTrack(layer, frames)
+    } else if (isAudioLayer(layer)) {
+      track = this.buildAudioTrack(layer, frames)
+      this.wireDropTarget(track, layer.id)
+    } else {
+      track = this.buildBarTrack(null, null, frames)
+      this.wireDropTarget(track, layer.id)
+    }
     row.appendChild(track)
     return row
   }
 
-  /** Lines at the end of the layer list to append a layer of either kind. */
+  /** Lines at the end of the layer list to append a layer of every kind. */
   private buildAddLayerRows(): HTMLDivElement[] {
     const objectRow = el('div', 'tl-add-layer', '+ Object Layer')
     objectRow.title = 'Add an object layer (keyframes and tweens) at the bottom of the stack'
@@ -883,7 +1029,119 @@ export class TimelineView {
     const drawingRow = el('div', 'tl-add-layer', '+ Drawing Layer')
     drawingRow.title = 'Add a drawing layer (frame-by-frame cells) at the bottom of the stack'
     drawingRow.addEventListener('click', () => this.editor.addLayerAtBottom('drawing'))
-    return [objectRow, drawingRow]
+    const cameraRow = el('div', 'tl-add-layer', '+ Camera Layer')
+    cameraRow.title =
+      'Add the document camera layer (at most one): keyframed framing applied to renders and exports'
+    cameraRow.addEventListener('click', () => this.editor.addCameraLayer())
+    const audioRow = el('div', 'tl-add-layer', '+ Audio Layer\u2026')
+    audioRow.title = 'Import a WAV, MP3 or OGG file as a new audio layer'
+    audioRow.addEventListener('click', () => void importAudioViaDialog(this.editor))
+    return [objectRow, drawingRow, cameraRow, audioRow]
+  }
+
+  /**
+   * Track of a camera layer: a marker on every camera keyframe (drag to
+   * retime — the marker set is the document camera's own keyframes) and a
+   * tween span running to the next keyframe.
+   */
+  private buildCameraTrack(layer: CameraLayer, frames: number): HTMLDivElement {
+    const track = this.buildBarTrack(null, null, frames)
+    const sorted = [...layer.keyframes].sort((a, b) => a.frame - b.frame)
+    for (let i = 0; i < sorted.length; i++) {
+      const keyframe = sorted[i]
+      const next = sorted[i + 1]
+      if (keyframe.tween && next) {
+        const tweenSpan = el('div', 'tl-tween')
+        tweenSpan.style.left = `${keyframe.frame * FRAME_WIDTH}px`
+        tweenSpan.style.width = `${(next.frame - keyframe.frame) * FRAME_WIDTH}px`
+        track.appendChild(tweenSpan)
+      }
+      const marker = el('div', 'tl-key tl-key-camera')
+      marker.style.left = `${keyframe.frame * FRAME_WIDTH + FRAME_WIDTH / 2}px`
+      marker.dataset.frame = String(keyframe.frame)
+      marker.dataset.layerId = layer.id
+      marker.dataset.shapeId = CAMERA_MARKER_NODE
+      marker.title = `Camera keyframe ${keyframe.frame + 1}${keyframe.tween ? ' · tween' : ''} — drag to retime, shift-click to multi-select, right-click for actions`
+      if (this.selectedMarkers.has(markerKey(layer.id, CAMERA_MARKER_NODE, keyframe.frame))) {
+        marker.classList.add('selected')
+      }
+      marker.addEventListener('pointerdown', (event) =>
+        this.onMarkerPointerDown(event, layer.id, CAMERA_MARKER_NODE, keyframe.frame)
+      )
+      marker.addEventListener('contextmenu', (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        this.openContextMenu({ layerId: layer.id, nodeId: null, keyframeFrame: keyframe.frame }, event)
+      })
+      track.appendChild(marker)
+    }
+    return track
+  }
+
+  /**
+   * Track of an audio layer: the clip span (start frame through the decoded
+   * duration — one frame until the resource decodes) with its waveform, and
+   * drag-to-move onto any frame.
+   */
+  private buildAudioTrack(layer: AudioLayer, frames: number): HTMLDivElement {
+    const editor = this.editor
+    const track = el('div', 'tl-track tl-audio-track')
+    track.dataset.frames = String(frames)
+    track.style.width = `${frames * FRAME_WIDTH}px`
+    track.style.height = `${ROW_HEIGHT}px`
+    if (layer.startFrame >= frames) return track
+    const seconds = editor.audio.durationSeconds?.(layer.resourceId) ?? null
+    const endFrame =
+      seconds === null
+        ? layer.startFrame + 1
+        : Math.max(layer.startFrame + 1, audioClipEndFrame(editor.document, layer, seconds))
+    const visibleEnd = Math.min(endFrame, frames)
+    const width = (visibleEnd - layer.startFrame) * FRAME_WIDTH
+    const clip = el('div', 'tl-clip')
+    clip.style.left = `${layer.startFrame * FRAME_WIDTH}px`
+    clip.style.width = `${width}px`
+    clip.title = layer.visible
+      ? `Audio "${layer.name}" — starts at frame ${layer.startFrame + 1}; drag onto a frame to move it`
+      : `Audio "${layer.name}" is muted (hidden from playback and exports)`
+    if (!layer.visible) clip.classList.add('tl-clip-muted')
+    const peaks = editor.audio.peaks?.(layer.resourceId, Math.max(1, Math.round(width / 2))) ?? null
+    if (peaks) {
+      const canvas = el('canvas', 'tl-waveform') as HTMLCanvasElement
+      const pixelWidth = Math.max(1, Math.round(width))
+      const height = ROW_HEIGHT - 10
+      canvas.width = pixelWidth
+      canvas.height = height
+      canvas.style.width = `${pixelWidth}px`
+      canvas.style.height = `${height}px`
+      const context = canvas.getContext('2d')
+      if (context) {
+        context.fillStyle = WAVEFORM_COLOR
+        const mid = height / 2
+        for (let i = 0; i < peaks.length; i++) {
+          const x = ((i + 0.5) / peaks.length) * pixelWidth - 0.5
+          const top = mid - Math.max(0, peaks[i].max) * mid
+          const bottom = mid - Math.min(0, peaks[i].min) * mid
+          context.fillRect(x, top, 1, Math.max(1, bottom - top))
+        }
+      }
+      clip.appendChild(canvas)
+    } else {
+      clip.classList.add('tl-clip-pending')
+    }
+    // Dragging the clip body moves the whole clip: dropping on a frame makes
+    // that frame the new start (frames snap, the clips never stretches).
+    clip.setAttribute('draggable', 'true')
+    clip.addEventListener('dragstart', (event) => {
+      this.draggedAudio = { layerId: layer.id }
+      if (event.dataTransfer) {
+        event.dataTransfer.setData('text/plain', layer.id)
+        event.dataTransfer.effectAllowed = 'move'
+      }
+      clip.classList.add('dragging')
+    })
+    clip.addEventListener('dragend', () => this.clearDragState())
+    track.appendChild(clip)
+    return track
   }
 
   /**
@@ -1150,30 +1408,46 @@ export class TimelineView {
     if (!layer) return
     this.menuTarget = target
     const drawing = isDrawingLayer(layer)
+    const camera = isCameraLayer(layer)
+    const audio = isAudioLayer(layer)
     for (const button of this.menuCellButtons) button.classList.toggle('hidden', !drawing)
     this.menuResolutionRow.classList.toggle('hidden', !drawing)
     if (drawing) this.menuResolutionInput.value = String(layer.resolutionScale)
-    // Keyframe actions only make sense when the menu was opened on a marker.
+    // Object keyframe actions only make sense when the menu was opened on a
+    // node marker of an object layer.
     const onMarker = target.nodeId !== null && target.keyframeFrame !== undefined
-    for (const button of this.menuKeyframeButtons) button.classList.toggle('hidden', !onMarker)
-    this.menuPasteKeyframeButton.classList.toggle('hidden', !onMarker)
+    const objectMarker = onMarker && isObjectLayer(layer)
+    for (const button of this.menuKeyframeButtons) button.classList.toggle('hidden', !objectMarker)
+    this.menuPasteKeyframeButton.classList.toggle('hidden', !objectMarker)
     this.menuPasteKeyframeButton.disabled = this.clipboard === null
-    // "Move to frame" applies to object rows and to drawing layers (their
-    // cell at the playhead); plain object-layer rows have nothing to move.
-    const movable = target.nodeId !== null || drawing
+    // Camera and audio layers get their own actions instead.
+    for (const button of this.menuCameraButtons) button.classList.toggle('hidden', !camera)
+    for (const button of this.menuAudioButtons) button.classList.toggle('hidden', !audio)
+    this.menuAudioVolumeRow.classList.toggle('hidden', !audio)
+    if (audio) this.menuAudioVolumeInput.value = String(Math.round(layer.volume * 100))
+    // "Move to frame" applies to object rows, drawing layers (their cell at
+    // the playhead), camera keyframes and audio clips; plain object-layer,
+    // camera and audio rows without a target have nothing to move.
+    const movable =
+      (target.nodeId !== null && isObjectLayer(layer)) ||
+      drawing ||
+      (camera && target.keyframeFrame !== undefined) ||
+      audio
     this.menuMoveRow.classList.toggle('hidden', !movable)
     if (movable) {
       let position: number | null = null
-      if (target.nodeId !== null) {
-        if (isObjectLayer(layer)) {
-          const frames = layer.keyframes
-            .filter((keyframe) => keyframe.nodes.some((node) => node.id === target.nodeId))
-            .map((keyframe) => keyframe.frame)
-          if (frames.length > 0) position = Math.min(...frames)
-        }
+      if (target.nodeId !== null && isObjectLayer(layer)) {
+        const frames = layer.keyframes
+          .filter((keyframe) => keyframe.nodes.some((node) => node.id === target.nodeId))
+          .map((keyframe) => keyframe.frame)
+        if (frames.length > 0) position = Math.min(...frames)
       } else if (isDrawingLayer(layer)) {
         const range = cellRangeAtFrame(layer, this.editor.currentFrame, this.editor.duration)
         if (range) position = range.cellFrame
+      } else if (camera) {
+        position = target.keyframeFrame ?? null
+      } else if (audio) {
+        position = layer.startFrame
       }
       this.menuMoveInput.value = position === null ? '' : String(position + 1)
       this.menuMoveInput.disabled = position === null
@@ -1262,7 +1536,9 @@ export class TimelineView {
    */
   private wireDropTarget(track: HTMLDivElement, layerId: string): void {
     const active = (): boolean =>
-      this.draggedCell?.layerId === layerId || this.draggedNode?.layerId === layerId
+      this.draggedCell?.layerId === layerId ||
+      this.draggedNode?.layerId === layerId ||
+      this.draggedAudio?.layerId === layerId
     track.addEventListener('dragover', (event) => {
       if (!active()) return
       event.preventDefault()
@@ -1271,6 +1547,7 @@ export class TimelineView {
     track.addEventListener('drop', (event) => {
       const cell = this.draggedCell
       const node = this.draggedNode
+      const audio = this.draggedAudio
       if (!active()) return
       event.preventDefault()
       this.clearDragState()
@@ -1281,6 +1558,8 @@ export class TimelineView {
         this.editor.moveCellToFrame(cell.frame, frame)
       } else if (node && node.layerId === layerId) {
         this.editor.moveNodeToFrame(node.nodeId, frame)
+      } else if (audio && audio.layerId === layerId) {
+        this.editor.setAudioClipStart(layerId, frame)
       }
     })
   }
@@ -1298,6 +1577,7 @@ export class TimelineView {
     this.draggedLayerId = null
     this.draggedCell = null
     this.draggedNode = null
+    this.draggedAudio = null
     for (const row of this.rowsHost.querySelectorAll('.dragging, .drop-before, .drop-after')) {
       row.classList.remove('dragging', 'drop-before', 'drop-after')
     }

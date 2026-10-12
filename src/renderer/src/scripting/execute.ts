@@ -1,7 +1,8 @@
 import type { ScriptCommand, ScriptIssue } from '@shared/scripting/commands'
+import type { Vec2 } from '@shared/geometry'
 import type { SceneNode, NodeBase } from '@shared/model'
 import { MAX_PALETTE_COLORS, createId, extractKeyframeChunk } from '@shared/document'
-import { isObjectLayer } from '@shared/model'
+import { isAudioLayer, isCameraLayer, isObjectLayer } from '@shared/model'
 
 import type { Editor } from '../editor'
 import { applyTextMetrics } from '@shared/textModel'
@@ -58,6 +59,31 @@ function applyCommand(
 ): boolean {
   switch (command.op) {
     case 'addLayer': {
+      if (command.kind === 'camera') {
+        const layer = editor.addCameraLayer()
+        if (!layer) {
+          issue(issues, index, 'addLayer: the document already has a camera layer')
+          return false
+        }
+        if (command.name) editor.renameLayer(layer.id, command.name)
+        return true
+      }
+      if (command.kind === 'audio') {
+        const layer = editor.addAudioLayer(
+          command.resourceId ?? '',
+          command.name ?? 'Audio',
+          command.startFrame ?? 0
+        )
+        if (!layer) {
+          issue(
+            issues,
+            index,
+            `addLayer: audio resource ${command.resourceId ?? ''} is not available in this session`
+          )
+          return false
+        }
+        return true
+      }
       editor.addLayerAtBottom(command.kind ?? 'object')
       if (command.name) editor.renameLayer(editor.currentLayerId, command.name)
       return true
@@ -128,12 +154,27 @@ function applyCommand(
     case 'setTween': {
       const layerId = command.layerId ?? editor.currentLayerId
       const layer = findLayer(editor, layerId)
-      if (!layer || !isObjectLayer(layer)) {
-        issue(issues, index, `setTween: layer ${layerId} is not an object layer`)
+      if (!layer || (!isObjectLayer(layer) && !isCameraLayer(layer))) {
+        issue(issues, index, `setTween: layer ${layerId} is not an object or camera layer`)
         return false
       }
       editor.setCurrentLayer(layerId)
       editor.setFrame(command.frame ?? editor.currentFrame)
+      if (isCameraLayer(layer)) {
+        const cameraKeyframe = layer.keyframes.find((entry) => entry.frame === editor.currentFrame)
+        if (!cameraKeyframe) {
+          issue(issues, index, `setTween: no camera keyframe at frame ${editor.currentFrame} on layer ${layerId}`)
+          return false
+        }
+        if (command.easing === null) {
+          editor.setCameraTweenHere(null)
+          return true
+        }
+        if (!cameraKeyframe.tween) editor.toggleCameraTweenHere()
+        editor.setCameraTweenEasingHere((command.easing ?? 'ease-in-out') as Easing)
+        if (command.path) editor.setCameraTweenPathHere(command.path)
+        return true
+      }
       const keyframe = layer.keyframes.find((entry) => entry.frame === editor.currentFrame)
       if (!keyframe) {
         issue(issues, index, `setTween: no keyframe at frame ${editor.currentFrame} on layer ${layerId}`)
@@ -255,6 +296,74 @@ function applyCommand(
         issue(issues, index, `seek: frame ${command.frame} clamped to ${clamped}`, 'warning')
       }
       editor.seekToFrame(command.frame)
+      return true
+    }
+    case 'setCameraKeyframe': {
+      let layer = editor.cameraLayer
+      if (!layer) layer = editor.addCameraLayer() ?? undefined
+      if (!layer) {
+        issue(issues, index, 'setCameraKeyframe: could not create the camera layer')
+        return false
+      }
+      editor.setCurrentLayer(layer.id)
+      editor.setFrame(command.frame)
+      if (editor.currentFrame !== command.frame) {
+        issue(
+          issues,
+          index,
+          `setCameraKeyframe: frame ${command.frame} clamped to ${editor.currentFrame}`,
+          'warning'
+        )
+      }
+      if (!editor.ensureCameraKeyframe()) {
+        issue(
+          issues,
+          index,
+          `setCameraKeyframe: could not key the camera at frame ${editor.currentFrame} (layer locked?)`
+        )
+        return false
+      }
+      const patch: { center?: Vec2; zoom?: number; rotation?: number } = {}
+      if (command.center) patch.center = command.center
+      if (command.zoom !== undefined) patch.zoom = command.zoom
+      if (command.rotation !== undefined) patch.rotation = command.rotation
+      if (Object.keys(patch).length > 0) editor.setCameraPoseHere(patch)
+      const keyframe = layer.keyframes.find((entry) => entry.frame === editor.currentFrame)
+      if (command.tween !== undefined && keyframe) {
+        if (command.tween && !keyframe.tween) editor.toggleCameraTweenHere()
+        if (!command.tween && keyframe.tween) editor.toggleCameraTweenHere()
+      }
+      return true
+    }
+    case 'removeCameraKeyframe': {
+      const layer = editor.cameraLayer
+      if (!layer) {
+        issue(issues, index, 'removeCameraKeyframe: the document has no camera layer')
+        return false
+      }
+      editor.setCurrentLayer(layer.id)
+      editor.setFrame(command.frame)
+      if (!editor.removeCameraKeyframeHere()) {
+        issue(issues, index, `removeCameraKeyframe: no camera keyframe at frame ${command.frame}`, 'warning')
+        return false
+      }
+      return true
+    }
+    case 'setAudio': {
+      const layer = findLayer(editor, command.layerId)
+      if (!layer || !isAudioLayer(layer)) {
+        issue(issues, index, `setAudio: layer ${command.layerId} is not an audio layer`)
+        return false
+      }
+      if (layer.locked) {
+        issue(issues, index, `setAudio: layer ${command.layerId} is locked`)
+        return false
+      }
+      if (command.startFrame !== undefined) editor.setAudioClipStart(layer.id, command.startFrame)
+      if (command.volume !== undefined) editor.setAudioLayerVolume(layer.id, command.volume)
+      if (command.muted !== undefined && command.muted === layer.visible) {
+        editor.toggleAudioMute(layer.id)
+      }
       return true
     }
   }

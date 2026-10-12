@@ -48,6 +48,7 @@ function documentWithNodes(nodes: SceneNode[]): AnimatorDocument {
 
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4])
 const JPG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 8, 7, 6])
+const AUDIO_BYTES = new Uint8Array([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
 const SAME_BYTES = PNG_BYTES.slice()
 
 function resources(entries: Array<[string, Uint8Array, string]>): ProjectResourceMap {
@@ -100,8 +101,42 @@ describe('packProject / parseProject — round trip', () => {
     const document = migrateDocument(loadV1Fixture('tweened-strokes'))
     const packed = packProject(document, new Map())
     const parsed = parseProject(packed)
-    expect(parsed.document.schemaVersion).toBe(6)
-    expect(evaluateDocumentAtFrame(parsed.document, 0).length).toBeGreaterThan(0)
+    expect(parsed.document.schemaVersion).toBe(7)
+    expect(evaluateDocumentAtFrame(parsed.document, 0).layers.length).toBeGreaterThan(0)
+  })
+
+  it('round-trips camera and audio layers, keeping the audio resource', () => {
+    const document = documentWithNodes([])
+    document.layers.push(
+      {
+        kind: 'camera',
+        id: 'cam',
+        name: 'Camera',
+        visible: true,
+        locked: false,
+        keyframes: [
+          { frame: 0, pose: { center: { x: 10, y: 20 }, zoom: 1.5, rotation: 0 }, tween: { easing: 'linear' } },
+          { frame: 10, pose: { center: { x: 90, y: 80 }, zoom: 2, rotation: 30 } }
+        ]
+      },
+      {
+        kind: 'audio',
+        id: 'sound',
+        name: 'Sound',
+        visible: true,
+        locked: false,
+        resourceId: 'e'.repeat(64),
+        startFrame: 3,
+        volume: 0.4
+      }
+    )
+    const parsed = parseProject(
+      packProject(document, resources([['e'.repeat(64), AUDIO_BYTES, 'wav']]))
+    )
+    expect(parsed.document).toEqual(document)
+    expect(parsed.resources.get('e'.repeat(64))).toEqual({ bytes: AUDIO_BYTES, ext: 'wav' })
+    // The camera pose evaluates out of the parsed container.
+    expect(evaluateDocumentAtFrame(parsed.document, 5).camera!.center).toEqual({ x: 50, y: 50 })
   })
 
   it('dedupes identical content into a single ZIP entry', () => {

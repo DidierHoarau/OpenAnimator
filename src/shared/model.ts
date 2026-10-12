@@ -117,7 +117,8 @@ export interface Asset {
   createdAt: number
 }
 
-/** Classic tween attached to a keyframe: interpolates toward the next keyframe. */export interface KeyframeTween {
+/** Classic tween attached to a keyframe: interpolates toward the next keyframe. */
+export interface KeyframeTween {
   easing: Easing
   /**
    * Spatial behavior of the tweened center. Absent ≡ `'linear'` (the center
@@ -164,7 +165,42 @@ export interface DrawingLayer extends LayerBase {
   cells: DrawingCell[]
 }
 
-export type Layer = ObjectLayer | DrawingLayer
+/** View transform applied to the whole document at render time. */
+export interface CameraPose {
+  /** Stage point shown at the center of the frame. */
+  center: Vec2
+  /** Magnification; must be > 0. */
+  zoom: number
+  /** Rotation in degrees. */
+  rotation: number
+}
+
+/** A camera keyframe holds its pose starting at `frame` until the next one. */
+export interface CameraKeyframe {
+  frame: number
+  pose: CameraPose
+  tween?: KeyframeTween
+}
+
+/** View layer: keyframed pan/zoom/rotation; at most one per document. */
+export interface CameraLayer extends LayerBase {
+  kind: 'camera'
+  /** Keyframes sorted by ascending `frame`. */
+  keyframes: CameraKeyframe[]
+}
+
+/** Soundtrack layer: one audio clip (resource) placed at `startFrame`. */
+export interface AudioLayer extends LayerBase {
+  kind: 'audio'
+  /** Content-addressed resource id of the audio file. */
+  resourceId: string
+  /** Timeline frame the clip starts at. */
+  startFrame: number
+  /** Playback gain, 0..1. */
+  volume: number
+}
+
+export type Layer = ObjectLayer | DrawingLayer | CameraLayer | AudioLayer
 
 export function isObjectLayer(layer: Layer): layer is ObjectLayer {
   return layer.kind === 'object'
@@ -172,6 +208,14 @@ export function isObjectLayer(layer: Layer): layer is ObjectLayer {
 
 export function isDrawingLayer(layer: Layer): layer is DrawingLayer {
   return layer.kind === 'drawing'
+}
+
+export function isCameraLayer(layer: Layer): layer is CameraLayer {
+  return layer.kind === 'camera'
+}
+
+export function isAudioLayer(layer: Layer): layer is AudioLayer {
+  return layer.kind === 'audio'
 }
 
 /** One embedded font subset: the glyphs actually used by the document are
@@ -196,7 +240,7 @@ export interface EmbeddedFont {
 
 /** The authoring document. `layers[0]` is the topmost layer. */
 export interface AnimatorDocument {
-  schemaVersion: 6
+  schemaVersion: 7
   name: string
   width: number
   height: number

@@ -34,6 +34,8 @@ describe('section state', () => {
       image: true,
       group: true,
       symbol: true,
+      camera: true,
+      audio: true,
       draw: true,
       cell: true,
       palette: true
@@ -50,6 +52,8 @@ describe('section state', () => {
       image: true,
       group: false,
       symbol: true,
+      camera: false,
+      audio: true,
       draw: false,
       cell: true,
       palette: false
@@ -80,6 +84,8 @@ describe('section state', () => {
       image: true,
       group: true,
       symbol: true,
+      camera: true,
+      audio: true,
       draw: true,
       cell: true,
       palette: true

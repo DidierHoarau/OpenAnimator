@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createDocument, getLayer } from '@shared/document'
-import type { DrawingLayer, PrimitiveNode, SceneNode } from '@shared/model'
+import type { AudioLayer, DrawingLayer, PrimitiveNode, SceneNode } from '@shared/model'
 
 import { Editor } from './editor'
 import { registerKeyboard } from './keyboard'
@@ -376,7 +376,12 @@ describe('TimelineView — drawing layers', () => {
 
   it('adds object and drawing layers from the two bottom lines', () => {
     const lines = [...container.querySelectorAll<HTMLElement>('.tl-add-layer')]
-    expect(lines.map((line) => line.textContent)).toEqual(['+ Object Layer', '+ Drawing Layer'])
+    expect(lines.map((line) => line.textContent)).toEqual([
+      '+ Object Layer',
+      '+ Drawing Layer',
+      '+ Camera Layer',
+      '+ Audio Layer…'
+    ])
 
     lines[1].click()
     expect(editor.document.layers[1].kind).toBe('drawing')
@@ -384,6 +389,11 @@ describe('TimelineView — drawing layers', () => {
 
     lines[0].click()
     expect(editor.document.layers[2].kind).toBe('object')
+
+    // The camera line creates the singleton camera layer, keyed at frame 0.
+    lines[2].click()
+    expect(editor.document.layers[3].kind).toBe('camera')
+    expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0])
   })
 
   it('badges each layer row with its kind', () => {
@@ -849,5 +859,207 @@ describe('TimelineView — keyframe markers, range copy/paste and options', () =
 
     outlineCheckbox.click()
     expect(editor.onionOutline).toBe(true)
+  })
+})
+
+describe('TimelineView — camera and audio layers', () => {
+  const AUDIO_BYTES = new Uint8Array([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x41, 0x56, 0x45])
+  /** Decoded 2s clip at 24fps: spans 48 frames from its start. */
+  const DECODED_AUDIO = {
+    start: () => {},
+    stop: () => {},
+    sync: () => {},
+    scrub: () => {},
+    durationSeconds: () => 2,
+    peaks: (_resourceId: string, buckets: number) =>
+      Array.from({ length: buckets }, () => ({ min: -1, max: 1 }))
+  }
+
+  let editor: Editor
+  let container: HTMLElement
+  let view: TimelineView
+
+  beforeEach(() => {
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24), { audio: DECODED_AUDIO })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    view = new TimelineView(editor, container)
+  })
+
+  const extend = (toFrame: number): void => {
+    while (editor.duration <= toFrame) {
+      editor.seekToFrame(editor.duration - 1)
+      editor.insertFrameHere()
+    }
+  }
+  const rowFor = (layerId: string): HTMLElement =>
+    [...container.querySelectorAll<HTMLElement>('.tl-row')].find(
+      (row) => row.dataset.layerId === layerId
+    )!
+  const liveAudioLayer = (id: string): AudioLayer => {
+    const layer = getLayer(editor.document, id)
+    if (!layer || layer.kind !== 'audio') throw new Error('expected the audio layer')
+    return layer
+  }
+  const cameraFrames = (): number[] =>
+    editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame) ?? []
+
+  it('renders camera keyframe markers with tween spans and retimes them by drag', () => {
+    const layer = editor.addCameraLayer()
+    if (!layer) throw new Error('expected the camera layer')
+    extend(7)
+    editor.seekToFrame(4)
+    editor.ensureCameraKeyframe()
+    editor.seekToFrame(0)
+    editor.toggleCameraTweenHere()
+    view.render()
+
+    const cameraFramesHtml = (): (string | undefined)[] =>
+      [...rowFor(layer.id).querySelectorAll<HTMLElement>('.tl-key-camera')].map(
+        (marker) => marker.dataset.frame
+      )
+    expect(cameraFramesHtml()).toEqual(['0', '4'])
+    // The tween on frame 0 runs to the next camera keyframe.
+    expect(rowFor(layer.id).querySelectorAll('.tl-tween')).toHaveLength(1)
+
+    // Drag the marker at frame 4 two frames right: one undo step.
+    rowFor(layer.id)
+      .querySelector<HTMLElement>('.tl-key-camera[data-frame="4"]')!
+      .dispatchEvent(new MouseEvent('pointerdown', { clientX: 100, clientY: 50, bubbles: true }))
+    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 128, clientY: 50 }))
+    window.dispatchEvent(new MouseEvent('pointerup', { clientX: 128, clientY: 50 }))
+    expect(cameraFrames()).toEqual([0, 6])
+    editor.undo()
+    expect(cameraFrames()).toEqual([0, 4])
+  })
+
+  it('adds, tweens and removes camera keyframes from the context menu', () => {
+    const layer = editor.addCameraLayer()
+    if (!layer) throw new Error('expected the camera layer')
+    extend(7)
+    view.render()
+    const menu = container.querySelector<HTMLElement>('.tl-context-menu')!
+    const button = (label: string): HTMLButtonElement =>
+      [...menu.querySelectorAll<HTMLButtonElement>('button')].find(
+        (entry) => entry.textContent === label
+      )!
+
+    // Camera rows swap the object/audio actions for the camera ones.
+    rowFor(layer.id).dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, clientX: 12, clientY: 12 })
+    )
+    expect(button('Add Camera Keyframe').classList.contains('hidden')).toBe(false)
+    expect(button('Toggle Tween').classList.contains('hidden')).toBe(false)
+    expect(button('Mute / Unmute').classList.contains('hidden')).toBe(true)
+    expect(menu.querySelector('.tl-context-volume')?.classList.contains('hidden')).toBe(true)
+
+    // The row menu has no keyframe target: the key lands at the playhead.
+    editor.seekToFrame(3)
+    rowFor(layer.id).dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, clientX: 12, clientY: 12 })
+    )
+    button('Add Camera Keyframe').click()
+    expect(editor.hasCameraKeyframeAt(3)).toBe(true)
+    expect(menu.classList.contains('hidden')).toBe(true)
+
+    // A marker's menu targets its own frame: tween it, then remove it.
+    rowFor(layer.id)
+      .querySelector<HTMLElement>('.tl-key-camera[data-frame="3"]')!
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }))
+    button('Toggle Tween').click()
+    expect(
+      editor.cameraLayer?.keyframes.find((keyframe) => keyframe.frame === 3)?.tween
+    ).toBeDefined()
+
+    rowFor(layer.id)
+      .querySelector<HTMLElement>('.tl-key-camera[data-frame="3"]')!
+      .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }))
+    button('Remove Camera Keyframe').click()
+    expect(editor.hasCameraKeyframeAt(3)).toBe(false)
+    expect(cameraFrames()).toEqual([0])
+  })
+
+  it('shows the audio clip span from the decoded duration and drags it onto a frame', () => {
+    editor.resources.put('res-audio', AUDIO_BYTES)
+    const layer = editor.addAudioLayer('res-audio', 'Score', 4)
+    if (!layer) throw new Error('expected the audio layer')
+    view.render()
+
+    const track = (): HTMLElement =>
+      rowFor(layer.id).querySelector<HTMLElement>('.tl-audio-track')!
+    const clip = track().querySelector<HTMLElement>('.tl-clip')!
+    // Decoded 2s at 24fps → 48 frames from the start at frame 4; the strip
+    // clamps the visible span to its 40-frame width.
+    expect(clip.style.left).toBe(`${4 * 14}px`)
+    expect(clip.style.width).toBe(`${(40 - 4) * 14}px`)
+    expect(clip.querySelector('.tl-waveform')).not.toBeNull()
+    expect(clip.getAttribute('draggable')).toBe('true')
+
+    clip.dispatchEvent(new Event('dragstart', { bubbles: true }))
+    expect(clip.classList.contains('dragging')).toBe(true)
+    track().getBoundingClientRect = () => ({ left: 180 }) as unknown as DOMRect
+    track().dispatchEvent(new MouseEvent('drop', { bubbles: true, clientX: 180 + 7 * 14 + 7 }))
+    expect(liveAudioLayer(layer.id).startFrame).toBe(7)
+    expect(track().querySelector<HTMLElement>('.tl-clip')!.classList.contains('dragging')).toBe(
+      false
+    )
+
+    // One undo step restores the original start.
+    editor.undo()
+    expect(liveAudioLayer(layer.id).startFrame).toBe(4)
+  })
+
+  it('mutes and sets the volume through the audio context menu', () => {
+    editor.resources.put('res-audio', AUDIO_BYTES)
+    const layer = editor.addAudioLayer('res-audio', 'Score', 2)
+    if (!layer) throw new Error('expected the audio layer')
+    view.render()
+    const menu = container.querySelector<HTMLElement>('.tl-context-menu')!
+    rowFor(layer.id).dispatchEvent(
+      new MouseEvent('contextmenu', { bubbles: true, clientX: 12, clientY: 12 })
+    )
+
+    const button = (label: string): HTMLButtonElement =>
+      [...menu.querySelectorAll<HTMLButtonElement>('button')].find(
+        (entry) => entry.textContent === label
+      )!
+    expect(button('Mute / Unmute').classList.contains('hidden')).toBe(false)
+    // Camera actions swap out for the audio ones.
+    expect(button('Add Camera Keyframe').classList.contains('hidden')).toBe(true)
+
+    // Volume is edited in percent and stored on the layer.
+    const volume = menu.querySelector<HTMLInputElement>('.tl-context-volume input')!
+    expect(volume.value).toBe('100')
+    volume.value = '40'
+    volume.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(liveAudioLayer(layer.id).volume).toBeCloseTo(0.4)
+
+    // Mute is the layer's visible flag; the clip re-renders dimmed.
+    button('Mute / Unmute').click()
+    expect(liveAudioLayer(layer.id).visible).toBe(false)
+    view.render()
+    expect(rowFor(layer.id).querySelector('.tl-clip')?.classList.contains('tl-clip-muted')).toBe(
+      true
+    )
+    editor.undo()
+    expect(liveAudioLayer(layer.id).visible).toBe(true)
+  })
+
+  it('wires the scrub-audio checkbox both ways', () => {
+    const box = container.querySelector<HTMLInputElement>('.tl-controls .tl-check')!
+    expect(box.checked).toBe(false)
+    box.click()
+    expect(editor.scrubAudio).toBe(true)
+    box.click()
+    expect(editor.scrubAudio).toBe(false)
+
+    // Editor-side changes mirror back onto the control.
+    editor.setScrubAudio(true)
+    view.render()
+    expect(box.checked).toBe(true)
+    editor.toggleScrubAudio()
+    view.render()
+    expect(box.checked).toBe(false)
   })
 })

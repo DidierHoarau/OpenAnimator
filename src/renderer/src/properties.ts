@@ -2,6 +2,9 @@ import { formatHexColor, parseHexColor } from '@shared/color'
 import {
   MAX_PALETTE_COLORS,
   cellRangeAtFrame,
+  defaultCameraPose,
+  evaluateCameraAtFrame,
+  findCameraKeyframeAtFrame,
   findKeyframeAtFrame,
   findKeyframeIndexForFrame,
   findNearestNodeKeyframeIndex,
@@ -10,7 +13,7 @@ import {
   normalizePaletteColors
 } from '@shared/document'
 import type { CellRange } from '@shared/document'
-import { isDrawingLayer, isObjectLayer } from '@shared/model'
+import { isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { ImageNode, SceneNode } from '@shared/model'
 import { isGradientPaint, paintPrimaryColor } from '@shared/paint'
 import type { Paint } from '@shared/paint'
@@ -107,6 +110,24 @@ export class PropertiesView {
   private readonly easingEditor: EasingEditor
   private readonly tweenPathSelect: HTMLSelectElement
   private readonly moveNodeInput: HTMLInputElement
+
+  /** Camera section: keyframed framing of the document camera. */
+  private readonly cameraKeyframeButton: HTMLButtonElement
+  private readonly cameraRemoveKeyframeButton: HTMLButtonElement
+  private readonly cameraTweenButton: HTMLButtonElement
+  private readonly cameraEasingEditor: EasingEditor
+  private readonly cameraTweenPathSelect: HTMLSelectElement
+  private readonly cameraCenterX: HTMLInputElement
+  private readonly cameraCenterY: HTMLInputElement
+  private readonly cameraZoom: HTMLInputElement
+  private readonly cameraRotation: HTMLInputElement
+
+  /** Audio section: one clip per audio layer. */
+  private readonly audioFileLabel: HTMLElement
+  private readonly audioDurationLabel: HTMLElement
+  private readonly audioStartInput: HTMLInputElement
+  private readonly audioVolumeInput: HTMLInputElement
+  private readonly audioMuteToggle: HTMLInputElement
 
   /** Shared transform rows, parked in whichever node section is visible. */
   private readonly transformRows: HTMLDivElement
@@ -768,6 +789,123 @@ export class PropertiesView {
     symbolActions.append(this.editSymbolButton, this.breakApartButton)
     symbol.content.append(symbolActions)
 
+    // Camera section, visible while the document camera layer is current:
+    // pose inputs (edits auto-key at the playhead) plus keyframe and tween
+    // controls mirroring the object-layer ones.
+    const camera = this.createSection('camera', 'Camera')
+    const cameraRows = el('div', 'panel-rows')
+    this.cameraCenterX = this.numberInput(cameraRows, 'Center', 'x', () => this.applyCameraPose())
+    this.cameraCenterY = this.numberInput(cameraRows, '', 'y', () => this.applyCameraPose())
+    this.cameraZoom = this.numberInput(cameraRows, 'Zoom', '×', () => this.applyCameraPose())
+    this.cameraZoom.min = '0.05'
+    this.cameraZoom.max = '64'
+    this.cameraZoom.step = '0.05'
+    this.cameraRotation = this.numberInput(cameraRows, 'Rotation', '°', () => this.applyCameraPose())
+    this.cameraCenterX.title =
+      'Camera center in stage coordinates (edits key the pose at the current frame)'
+    this.cameraZoom.title = 'Camera zoom (1 shows the whole stage); 0.05–64'
+    this.cameraRotation.title = 'Camera roll in degrees (positive turns the view counter-clockwise)'
+    const cameraActions = el('div', 'panel-buttons')
+    this.cameraKeyframeButton = this.button(
+      '+ Keyframe',
+      'Insert a camera keyframe at the current frame holding the pose evaluated there',
+      () => editor.ensureCameraKeyframe()
+    )
+    this.cameraRemoveKeyframeButton = this.button(
+      '− Keyframe',
+      'Remove the camera keyframe at the current frame',
+      () => editor.removeCameraKeyframeHere()
+    )
+    this.cameraTweenButton = this.button(
+      'Tween',
+      'Toggle a tween from the camera keyframe at the current frame to the next one',
+      () => editor.toggleCameraTweenHere()
+    )
+    cameraActions.append(
+      this.cameraKeyframeButton,
+      this.cameraRemoveKeyframeButton,
+      this.cameraTweenButton
+    )
+    this.cameraEasingEditor = new EasingEditor({
+      onChange: (easing) => editor.setCameraTweenEasingHere(easing),
+      onDragStart: () => editor.beginInteraction(),
+      onDragEnd: () => editor.endInteraction()
+    })
+    this.cameraTweenPathSelect = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['linear', 'Linear'],
+      ['smooth', 'Smooth']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.cameraTweenPathSelect.appendChild(option)
+    }
+    this.cameraTweenPathSelect.title =
+      'Spatial trajectory of the camera tween (Smooth bends the center path through the neighbouring poses)'
+    this.cameraTweenPathSelect.addEventListener('change', () => {
+      editor.setCameraTweenPathHere(this.cameraTweenPathSelect.value as 'linear' | 'smooth')
+    })
+    camera.content.append(cameraRows, cameraActions, this.cameraEasingEditor.root)
+    const cameraPathRow = this.row(camera.content, 'Center path')
+    cameraPathRow.appendChild(this.cameraTweenPathSelect)
+
+    // Audio section, visible while an audio layer is current: clip info,
+    // start frame, volume and mute (the layer's visible flag).
+    const audio = this.createSection('audio', 'Audio')
+    const audioFileRow = this.row(audio.content, 'Clip')
+    this.audioFileLabel = el('span', 'panel-file-name')
+    this.audioFileLabel.title = 'The imported audio file playing on this layer'
+    audioFileRow.appendChild(this.audioFileLabel)
+    const audioDurationRow = this.row(audio.content, 'Duration')
+    this.audioDurationLabel = el('span', 'panel-suffix', '')
+    this.audioDurationLabel.title = 'Decoded clip length in seconds'
+    audioDurationRow.appendChild(this.audioDurationLabel)
+    const audioStartRow = this.row(audio.content, 'Start')
+    audioStartRow.appendChild(el('span', 'panel-suffix', 'f'))
+    this.audioStartInput = el('input') as HTMLInputElement
+    this.audioStartInput.type = 'number'
+    this.audioStartInput.min = '1'
+    this.audioStartInput.title =
+      'Frame the clip starts on (1-based); the clip may run past the end of the timeline'
+    this.audioStartInput.addEventListener('change', () => {
+      const layer = editor.currentLayer
+      const value = Number(this.audioStartInput.value)
+      if (!layer || !isAudioLayer(layer) || !Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      if (!editor.setAudioClipStart(layer.id, Math.max(0, Math.floor(value) - 1))) this.render()
+    })
+    audioStartRow.appendChild(this.audioStartInput)
+    const audioVolumeRow = this.row(audio.content, 'Volume')
+    audioVolumeRow.appendChild(el('span', 'panel-suffix', '%'))
+    this.audioVolumeInput = el('input') as HTMLInputElement
+    this.audioVolumeInput.type = 'number'
+    this.audioVolumeInput.min = '0'
+    this.audioVolumeInput.max = '100'
+    this.audioVolumeInput.step = '5'
+    this.audioVolumeInput.title = 'Clip volume in percent (0–100), applied to playback and exports'
+    this.audioVolumeInput.addEventListener('change', () => {
+      const layer = editor.currentLayer
+      const value = Number(this.audioVolumeInput.value)
+      if (!layer || !isAudioLayer(layer) || !Number.isFinite(value)) {
+        this.render()
+        return
+      }
+      editor.setAudioLayerVolume(layer.id, value / 100)
+    })
+    audioVolumeRow.appendChild(this.audioVolumeInput)
+    const audioMuteRow = this.row(audio.content, 'Muted')
+    this.audioMuteToggle = el('input') as HTMLInputElement
+    this.audioMuteToggle.type = 'checkbox'
+    this.audioMuteToggle.title = 'Mute this audio layer (hidden from playback and exports)'
+    this.audioMuteToggle.addEventListener('change', () => {
+      const layer = editor.currentLayer
+      if (!layer || !isAudioLayer(layer)) return
+      if (this.audioMuteToggle.checked !== !layer.visible) editor.toggleAudioMute(layer.id)
+    })
+    audioMuteRow.appendChild(this.audioMuteToggle)
+
     // Image properties, visible only while an image node is selected.
     const image = this.createSection('image', 'Image')
     const imageFileRow = this.row(image.content, 'Source')
@@ -995,6 +1133,8 @@ export class PropertiesView {
       image.root,
       group.root,
       symbol.root,
+      camera.root,
+      audio.root,
       draw.root,
       cell.root,
       palette.root
@@ -1004,6 +1144,8 @@ export class PropertiesView {
     editor.onDocChange(() => this.render())
     editor.onFrameChange(() => this.render())
     editor.onUiChange(() => this.render())
+    // A freshly decoded audio resource unlocks the clip duration.
+    editor.audio.onDecoded?.(() => this.render())
     void this.loadGlobalPalette()
     void this.loadSystemFonts()
     this.render()
@@ -1198,6 +1340,35 @@ export class PropertiesView {
     })
   }
 
+  /** Applies the camera inputs to the pose at the playhead (auto-keying the
+   * keyframe when the frame has none). Only fields that changed are patched. */
+  private applyCameraPose(): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    if (!layer || !isCameraLayer(layer)) {
+      this.render()
+      return
+    }
+    const current =
+      findCameraKeyframeAtFrame(layer, editor.currentFrame)?.pose ??
+      evaluateCameraAtFrame(editor.document, editor.currentFrame) ??
+      defaultCameraPose(editor.document)
+    const x = Number(this.cameraCenterX.value)
+    const y = Number(this.cameraCenterY.value)
+    const zoom = Number(this.cameraZoom.value)
+    const rotation = Number(this.cameraRotation.value)
+    if (![x, y, zoom, rotation].every((value) => Number.isFinite(value))) {
+      this.render()
+      return
+    }
+    const patch: { center?: { x: number; y: number }; zoom?: number; rotation?: number } = {}
+    if (x !== current.center.x || y !== current.center.y) patch.center = { x, y }
+    if (zoom !== current.zoom) patch.zoom = zoom
+    if (rotation !== current.rotation) patch.rotation = rotation
+    if (Object.keys(patch).length === 0) return
+    if (!editor.setCameraPoseHere(patch)) this.render()
+  }
+
   /**
    * Re-points the selected image at another file: the picked image is
    * prepared (decode, re-encode, store) and the node's resourceId, natural
@@ -1222,6 +1393,8 @@ export class PropertiesView {
   render(): void {
     this.renderLayerSection()
     this.renderNodeSection()
+    this.renderCameraSection()
+    this.renderAudioSection()
     this.renderDrawSection()
     this.renderCellSection()
     this.renderPaletteSection()
@@ -1266,6 +1439,72 @@ export class PropertiesView {
       this.moveNodeInput.value = firstFrame === null ? '' : String(firstFrame + 1)
     }
     this.moveNodeInput.disabled = !editable || firstFrame === null
+  }
+
+  /** Camera section: pose inputs and keyframe/tween controls while the
+   * document camera layer is current. */
+  private renderCameraSection(): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    const isCamera = layer !== undefined && isCameraLayer(layer)
+    this.sections.get('camera')?.setVisible(isCamera)
+    if (!layer || !isCameraLayer(layer)) return
+
+    const locked = layer.locked
+    const keyframe = findCameraKeyframeAtFrame(layer, editor.currentFrame)
+    const pose =
+      keyframe?.pose ??
+      evaluateCameraAtFrame(editor.document, editor.currentFrame) ??
+      defaultCameraPose(editor.document)
+    const keep = (input: HTMLInputElement): boolean => document.activeElement === input
+    if (!keep(this.cameraCenterX)) this.cameraCenterX.value = String(round(pose.center.x))
+    if (!keep(this.cameraCenterY)) this.cameraCenterY.value = String(round(pose.center.y))
+    if (!keep(this.cameraZoom)) this.cameraZoom.value = String(round(pose.zoom))
+    if (!keep(this.cameraRotation)) this.cameraRotation.value = String(round(pose.rotation))
+    for (const input of [
+      this.cameraCenterX,
+      this.cameraCenterY,
+      this.cameraZoom,
+      this.cameraRotation
+    ]) {
+      input.disabled = locked
+    }
+    const index = layer.keyframes.findIndex((candidate) => candidate.frame === editor.currentFrame)
+    const hasNext = index !== -1 && index < layer.keyframes.length - 1
+    this.cameraKeyframeButton.disabled = locked || keyframe !== undefined
+    this.cameraRemoveKeyframeButton.disabled = locked || keyframe === undefined
+    this.cameraTweenButton.disabled = locked || keyframe === undefined || !hasNext
+    const tween = keyframe?.tween
+    this.cameraTweenButton.classList.toggle('active', tween !== undefined)
+    this.cameraEasingEditor.setDisabled(tween === undefined)
+    this.cameraTweenPathSelect.disabled = tween === undefined
+    if (tween) {
+      this.cameraEasingEditor.setValue(tween.easing)
+      this.cameraTweenPathSelect.value = tween.path ?? 'linear'
+    }
+  }
+
+  /** Audio section: clip info, start frame, volume and mute while an audio
+   * layer is current. */
+  private renderAudioSection(): void {
+    const editor = this.editor
+    const layer = editor.currentLayer
+    const isAudio = layer !== undefined && isAudioLayer(layer)
+    this.sections.get('audio')?.setVisible(isAudio)
+    if (!layer || !isAudioLayer(layer)) return
+
+    this.audioFileLabel.textContent = layer.name
+    const seconds = editor.audio.durationSeconds?.(layer.resourceId) ?? null
+    this.audioDurationLabel.textContent =
+      seconds === null ? '—' : `${(Math.round(seconds * 100) / 100).toFixed(2)} s`
+    const keep = (input: HTMLInputElement): boolean => document.activeElement === input
+    if (!keep(this.audioStartInput)) this.audioStartInput.value = String(layer.startFrame + 1)
+    if (!keep(this.audioVolumeInput)) {
+      this.audioVolumeInput.value = String(Math.round(layer.volume * 100))
+    }
+    this.audioMuteToggle.checked = !layer.visible
+    this.audioStartInput.disabled = layer.locked
+    this.audioVolumeInput.disabled = layer.locked
   }
 
   private renderNodeSection(): void {

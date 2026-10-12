@@ -2,6 +2,8 @@ import './style.css'
 
 import { createStarterDocument } from '@shared/starterDocument'
 
+import { AudioSystem } from './audio'
+import { detectAudioFormat, importAudioBytes, importAudioViaDialog } from './audioImport'
 import { preloadDrawingCells } from './cellPreload'
 import { el } from './dom'
 import { Editor } from './editor'
@@ -76,6 +78,9 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   const importButton = el('button', undefined, 'Import Image…')
   importButton.title = 'Import an image onto the stage (Ctrl+I)'
   importButton.addEventListener('click', () => void importImageViaDialog(editor))
+  const importAudioButton = el('button', undefined, 'Import Audio…')
+  importAudioButton.title = 'Import a WAV, MP3 or OGG file as a new audio layer'
+  importAudioButton.addEventListener('click', () => void importAudioViaDialog(editor))
   const newButton = el('button', undefined, 'New')
   newButton.title = 'Start a new project'
   newButton.addEventListener('click', () => void newDocument(editor))
@@ -103,7 +108,7 @@ function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryV
   const scriptButton = el('button', undefined, 'Script…')
   scriptButton.title = 'Run a JSON command payload through the editor'
   scriptButton.addEventListener('click', () => showScriptConsole(editor))
-  docs.append(importButton, newButton, openButton, saveButton, saveAsButton, exportButton, purgeButton, scriptButton)
+  docs.append(importButton, importAudioButton, newButton, openButton, saveButton, saveAsButton, exportButton, purgeButton, scriptButton)
   toolbar.appendChild(docs)
 
   editor.onUiChange(() => {
@@ -164,7 +169,8 @@ function buildStatusbar(editor: Editor, stageView: StageView): HTMLElement {
   return statusbar
 }
 
-/** OS drag-drop of image files onto the workspace imports them at the drop point. */
+/** OS drag-drop of image and audio files onto the workspace: images land at
+ * the drop point, audio files import as new audio layers. */
 function registerFileDrop(editor: Editor, workspace: HTMLElement, stageView: StageView): void {
   workspace.addEventListener('dragover', (event) => {
     event.preventDefault()
@@ -174,9 +180,13 @@ function registerFileDrop(editor: Editor, workspace: HTMLElement, stageView: Sta
     const file = event.dataTransfer?.files?.[0]
     if (!file) return
     const point = stageView.toStagePoint(event)
-    void file
-      .arrayBuffer()
-      .then((buffer) => importImageBytes(editor, file.name, new Uint8Array(buffer), point))
+    void file.arrayBuffer().then((buffer) => {
+      const bytes = new Uint8Array(buffer)
+      if (detectAudioFormat(file.name, bytes)) {
+        return void importAudioBytes(editor, file.name, bytes)
+      }
+      return void importImageBytes(editor, file.name, bytes, point)
+    })
   })
 }
 
@@ -203,7 +213,14 @@ async function bootstrap(): Promise<void> {
   const root = document.querySelector<HTMLDivElement>('#app')
   if (!root) throw new Error('Missing #app root element')
 
-  const editor = new Editor(createStarterDocument())
+  // The audio system reads resources through the editor, which does not exist
+  // yet: resolve the editor lazily through a captured slot.
+  let audioEditor: Editor | null = null
+  const audio = new AudioSystem({
+    getBlob: (resourceId) => audioEditor?.resources.getBlob(resourceId) ?? null
+  })
+  const editor = new Editor(createStarterDocument(), { audio })
+  audioEditor = editor
 
   const layout = el('div', 'layout')
   const libraryHost = el('aside', 'library-panel')

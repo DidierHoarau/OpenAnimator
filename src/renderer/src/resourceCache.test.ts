@@ -11,6 +11,10 @@ const UNKNOWN_BYTES = new Uint8Array([1, 2, 3])
 const TTF_BYTES = new Uint8Array([0x00, 0x01, 0x00, 0x00, 0x00, 0x10])
 const OTF_BYTES = new Uint8Array([0x4f, 0x54, 0x54, 0x4f, 0x00, 0x10])
 const TTC_BYTES = new Uint8Array([0x74, 0x74, 0x63, 0x66, 0x00, 0x01])
+const WAV_BYTES = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45])
+const OGG_BYTES = new Uint8Array([0x4f, 0x67, 0x67, 0x53, 0x00, 0x02])
+const MP3_ID3_BYTES = new Uint8Array([0x49, 0x44, 0x33, 0x04, 0x00])
+const MP3_FRAME_BYTES = new Uint8Array([0xff, 0xfb, 0x90, 0x00])
 
 describe('sniffResourceMime', () => {
   it('recognizes PNG, JPEG, GIF and WebP magic bytes', () => {
@@ -25,6 +29,15 @@ describe('sniffResourceMime', () => {
     expect(sniffResourceMime(TTF_BYTES)).toBe('font/ttf')
     expect(sniffResourceMime(OTF_BYTES)).toBe('font/otf')
     expect(sniffResourceMime(TTC_BYTES)).toBe('font/collection')
+  })
+
+  it('recognizes WAV, OGG and MP3 audio magic bytes', () => {
+    expect(sniffResourceMime(WAV_BYTES)).toBe('audio/wav')
+    expect(sniffResourceMime(OGG_BYTES)).toBe('audio/ogg')
+    expect(sniffResourceMime(MP3_ID3_BYTES)).toBe('audio/mpeg')
+    // Bare MPEG frame sync, no ID3 tag.
+    expect(sniffResourceMime(MP3_FRAME_BYTES)).toBe('audio/mpeg')
+    expect(sniffResourceMime(new Uint8Array([0xff, 0x1f]))).toBe('application/octet-stream')
   })
 })
 
@@ -140,6 +153,23 @@ describe('ResourceCache', () => {
     expect(cache.isCorrupt('fontB')).toBe(false)
     expect(cache.getBlob('fontA')).not.toBeNull()
     expect(cache.getBlob('fontA')!.type).toBe('font/ttf')
+  })
+
+  it('keeps audio blobs with their exact sniffed type (decodeAudioData input)', async () => {
+    const decode = vi.fn(() => Promise.reject(new Error('not an image')))
+    const cache = new ResourceCache(
+      { wav: WAV_BYTES, ogg: OGG_BYTES, mp3: MP3_ID3_BYTES, img: PNG_BYTES },
+      { createUrl: () => 'blob:mock', revokeUrl: () => undefined, decode }
+    )
+    await vi.waitFor(() => expect(cache.isCorrupt('img')).toBe(true))
+    // Only the image went through the decoder: audio can never decode as one.
+    expect(decode).toHaveBeenCalledTimes(1)
+    expect(cache.isCorrupt('wav')).toBe(false)
+    expect(cache.isCorrupt('ogg')).toBe(false)
+    expect(cache.getBlob('wav')?.type).toBe('audio/wav')
+    expect(cache.getBlob('ogg')?.type).toBe('audio/ogg')
+    expect(cache.getBlob('mp3')?.type).toBe('audio/mpeg')
+    expect(cache.getUrl('wav')).not.toBeNull()
   })
 
   it('put() registers a new resource without touching the others', () => {

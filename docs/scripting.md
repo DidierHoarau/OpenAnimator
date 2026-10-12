@@ -35,7 +35,7 @@ layer. Frames are 0-based.
 
 | Command | Fields | Behavior |
 | --- | --- | --- |
-| `addLayer` | `kind?` (`object`\|`drawing`), `name?` | Appends a layer at the bottom and selects it. |
+| `addLayer` | `kind?` (`object`\|`drawing`\|`camera`\|`audio`), `name?`, `resourceId?` (audio), `startFrame?` (audio) | Appends a layer at the bottom and selects it. `camera` creates the one camera layer (error when it exists); `audio` needs an existing `resourceId` of the session and starts its clip at `startFrame` (default 0). |
 | `renameLayer` | `layerId`, `name` | Renames a layer. |
 | `removeLayer` | `layerId` | Removes a layer. |
 | `addNode` | `node`, `layerId?`, `frame?` | Adds a scene node with auto-key at the frame. |
@@ -43,7 +43,7 @@ layer. Frames are 0-based.
 | `deleteNode` | `nodeId`, `layerId?` | Removes the node from the layer. |
 | `setKeyframe` | `nodeId`, `layerId?`, `frame?`, `patch?` | Ensures the node has its own pose at the frame, optionally patching it. Warns if a pose already exists there. |
 | `removeNodeKeyframe` | `nodeId`, `layerId?`, `frame?` | Removes the node's own pose at the frame. |
-| `setTween` | `layerId?`, `frame?`, `easing`, `path?` | Turns a classic tween on the keyframe at `frame` on/off (`easing: null` removes it). Easings: `linear`, `ease-in`, `ease-out`, `ease-in-out`, or a custom cubic bezier `{x1, y1, x2, y2}` (x ∈ 0..1). `path: 'smooth'` swings the tweened center along a curve through the neighbouring poses; `'linear'` (default) keeps it straight. |
+| `setTween` | `layerId?`, `frame?`, `easing`, `path?` | Turns a classic tween on the keyframe at `frame` on/off (`easing: null` removes it). Works on object layers and on the camera layer (tweening the camera pose toward the next camera keyframe). Easings: `linear`, `ease-in`, `ease-out`, `ease-in-out`, or a custom cubic bezier `{x1, y1, x2, y2}` (x ∈ 0..1). `path: 'smooth'` swings the tweened center along a curve through the neighbouring poses; `'linear'` (default) keeps it straight. |
 | `moveKeyframe` | `nodeId`, `layerId?`, `fromFrame`, `toFrame` | Moves the node's own pose from one frame to another (the timeline drag). Keyframes emptied by the move are dropped; the destination keeps its tween. |
 | `copyKeyframes` | `nodeId`, `layerId?`, `fromFrame`, `toFrame?`, `targetFrame` | Copies the node's poses in `[fromFrame, toFrame]` (default: `fromFrame` only) to `targetFrame + offset`, merging into existing keyframes; a copied tween is restored only where none exists. |
 | `setHoldStep` | `step` (1–16) | Sets the non-destructive hold step: playback, onion skinning and export evaluate every frame at `frame - frame % step` ("animation on n's"). `1` turns it off. |
@@ -52,6 +52,9 @@ layer. Frames are 0-based.
 | `setFps` | `fps` | Sets frames per second. |
 | `setPalette` | `colors` | Replaces the document palette with up to 48 hex colors (`#rgb`/`#rrggbb`); entries are normalized, deduplicated and invalid ones dropped (warned). |
 | `seek` | `frame` | Moves the playhead (warnings when clamped). |
+| `setCameraKeyframe` | `frame`, `center?`, `zoom?`, `rotation?`, `tween?` | Creates or updates a camera keyframe at `frame` (creating the camera layer on demand, keying the held pose when the frame has none) and applies the given pose fields. `tween: true/false` ensures/removes the tween on that keyframe. |
+| `removeCameraKeyframe` | `frame` | Removes the camera keyframe at `frame` (warns when there is none). |
+| `setAudio` | `layerId`, `startFrame?`, `volume?`, `muted?` | Updates an audio layer's clip start, volume (0..1) or mute; at least one field should be given. |
 
 ### Node kinds
 
@@ -99,6 +102,38 @@ gradient type and stop count; any mismatch snaps at the last frame (same
 behavior as unparseable solid colors). Unknown gradient fields are rejected
 by both the JSON Schema and the renderer validator.
 
+### Camera and audio layers
+
+A **camera layer** (one per document) drives the framing of every render:
+`center` is the point `(x, y)` of the document kept in the middle of the
+stage, `zoom` scales around it (1 = 100%, clamped to 0.05..64) and
+`rotation` rotates the view (degrees). Poses are keyframed; like object
+keyframes, a keyframe holds until the next one unless a tween (with easing
+and an optional smooth center path) interpolates toward it. Camera poses
+are baked into renders and exports for both the app and the CLI.
+
+```json
+{"commands": [
+  {"op": "setCameraKeyframe", "frame": 0, "zoom": 1, "center": {"x": 480, "y": 270}},
+  {"op": "setCameraKeyframe", "frame": 48, "zoom": 2.5, "center": {"x": 720, "y": 200}},
+  {"op": "setTween", "frame": 0, "easing": "ease-in-out", "path": "smooth"}
+]}
+```
+
+An **audio layer** carries one clip: `resourceId` names an audio resource
+already imported into the session (import it in the app first — scripts
+cannot read files), `startFrame` is where the clip begins, `volume` is
+0..1 and mute is the layer's visibility (`muted: true`). Audio plays during
+playback (with a `Scrub audio` toggle in the timeline) and is mixed into
+WebM/MP4 exports; PNG sequences and GIF are silent.
+
+```json
+{"commands": [
+  {"op": "addLayer", "kind": "audio", "resourceId": "res-12", "name": "Theme", "startFrame": 24},
+  {"op": "setAudio", "layerId": "lay7", "volume": 0.6}
+]}
+```
+
 ## Validate-and-retry loop
 
 1. **Generate** a payload against the schema
@@ -142,8 +177,10 @@ validate <payload.json> [--kind commands|document]
   they are written to a temporary directory and handed to resvg as font
   files, so text renders with the embedded typography (see
   [docs/font-embedding.md](font-embedding.md)). `webm`/`mp4` require
-  `ffmpeg` on PATH (WebCodecs is browser-only). `png-sequence` writes a ZIP
-  of per-frame PNGs.
+  `ffmpeg` on PATH (WebCodecs is browser-only) and mix the document's
+  audible audio layers into the output with the same timing as the app.
+  `png-sequence` writes a ZIP of per-frame PNGs, which — like GIF — are
+  silent.
 - `validate` prints schema errors and exits 1 on an invalid payload — the
   machine surface for CI checks and LLM tooling.
 

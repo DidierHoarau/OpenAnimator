@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { app, dialog, ipcMain } from 'electron'
 
 import {
+  AUDIO_PICK_CHANNEL,
   DOCUMENT_OPEN_DIALOG_CHANNEL,
   DOCUMENT_READ_CHANNEL,
   DOCUMENT_SAVE_AS_CHANNEL,
@@ -16,6 +17,7 @@ import {
   RESOURCE_RESET_CHANNEL
 } from '../shared/api'
 import type {
+  AudioPickResult,
   ImagePickResult,
   OpenDialogResult,
   ReadResult,
@@ -38,6 +40,8 @@ const MAX_PROJECT_FILE_SIZE = 200 * 1024 * 1024
 const IMAGE_FILE_FILTERS = [
   { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg'] }
 ]
+
+const AUDIO_FILE_FILTERS = [{ name: 'Audio', extensions: ['wav', 'mp3', 'ogg'] }]
 
 function recentStorePath(): string {
   return join(app.getPath('userData'), 'recent-projects.json')
@@ -191,6 +195,28 @@ export function registerProjectHandlers(): void {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         dialog.showErrorBox('Import failed', `Could not read the image file: ${message}`)
+        return { canceled: true }
+      }
+    }
+  )
+
+  ipcMain.handle(
+    AUDIO_PICK_CHANNEL,
+    async (_event, title: string): Promise<AudioPickResult> => {
+      const result = await dialog.showOpenDialog({
+        title,
+        filters: AUDIO_FILE_FILTERS,
+        properties: ['openFile']
+      })
+      if (result.canceled || result.filePaths.length === 0) return { canceled: true }
+      const path = result.filePaths[0]
+      try {
+        const bytes = await readFile(path)
+        const fileName = path.split(/[\\/]/).pop() ?? path
+        return { canceled: false, fileName, bytes: new Uint8Array(bytes) }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        dialog.showErrorBox('Import failed', `Could not read the audio file: ${message}`)
         return { canceled: true }
       }
     }

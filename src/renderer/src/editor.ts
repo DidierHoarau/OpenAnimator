@@ -4,12 +4,16 @@ import {
   addLayer as addLayerOp,
   addNodeToLayer,
   applyKeyframeChunk,
+  cameraLayerOf,
   cellRangeAtFrame,
   cloneDocument,
   createDocument,
   createLayer,
+  defaultCameraPose,
   documentDuration,
+  evaluateCameraAtFrame,
   evaluateLayerAtFrame,
+  findCameraKeyframeAtFrame,
   findCellAtFrame,
   findKeyframeAtFrame,
   findKeyframeIndexForFrame,
@@ -19,12 +23,15 @@ import {
   getLayer,
   holdStepOf,
   insertBlankKeyframe,
+  insertCameraKeyframe,
   insertCell as insertCellOp,
   insertFrame,
+  moveCameraKeyframes as moveCameraKeyframesOp,
   moveCell as moveCellOp,
   moveKeyframeEntries,
   moveLayer as moveLayerOp,
   moveNodeKeyframes,
+  removeCameraKeyframe as removeCameraKeyframeOp,
   removeCell as removeCellOp,
   removeFrame,
   removeLayer as removeLayerOp,
@@ -33,13 +40,14 @@ import {
   renameLayer as renameLayerOp,
   renameNodeInLayer,
   resolveCellAtFrame,
+  setAudioClipStart as setAudioClipStartOp,
   setCellContent as setCellContentOp,
   setCellEnd as setCellEndOp,
   setKeyframeTween,
   updateNodeInLayer
 } from '@shared/document'
 import { formatHexColor, parseHexColor } from '@shared/color'
-import type { KeyframeChunkEntry, KeyframeEntryMove } from '@shared/document'
+import type { CameraKeyframeMove, KeyframeChunkEntry, KeyframeEntryMove } from '@shared/document'
 import {
   assetNaturalSize,
   countAssetInstances as countAssetInstancesOp,
@@ -54,12 +62,14 @@ import { nodeBounds } from '@shared/hitTesting'
 import type { Rect } from '@shared/hitTesting'
 import { groupNaturalSize, groupNodes, ungroupNode } from '@shared/groups'
 import type { Vec2 } from '@shared/geometry'
-import { cloneNode, isDrawingLayer, isObjectLayer } from '@shared/model'
-import type { AnimatorDocument, Asset, DrawingLayer, EmbeddedFont, GroupNode, ImageNode, KeyframeTween, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
+import { cloneNode, isAudioLayer, isCameraLayer, isDrawingLayer, isObjectLayer } from '@shared/model'
+import type { AnimatorDocument, Asset, AudioLayer, CameraLayer, CameraPose, DrawingLayer, EmbeddedFont, GroupNode, ImageNode, KeyframeTween, Layer, ObjectLayer, SceneNode, SymbolNode } from '@shared/model'
 import { validateAssetGraph } from '@shared/symbols'
 import { createId } from '@shared/document'
 import { measureLineWidthCanvas } from '@shared/textModel'
 import type { MeasureLineWidth } from '@shared/textModel'
+import { NOOP_AUDIO } from './audio'
+import type { AudioPlaybackBridge } from './audio'
 import { createTransparentPng } from './drawing'
 import { ResourceCache } from './resourceCache'
 
@@ -79,20 +89,26 @@ export type Tool =
  * Whether a tool may be active while `layer` is the current layer: the tool
  * availability matrix (Brush/Eraser only on drawing layers, the object tools
  * — including the vector brush, which commits `PathNode`s — only on object
- * layers, Hand everywhere).
+ * layers, Select/Hand on the camera and audio control layers, Hand
+ * everywhere).
  */
 export function toolCompatibleWithLayer(tool: Tool, layer: Layer | undefined): boolean {
   if (tool === 'hand') return true
   if (!layer) return false
-  return isObjectLayer(layer)
-    ? tool === 'select' ||
-        tool === 'rect' ||
-        tool === 'ellipse' ||
-        tool === 'line' ||
-        tool === 'pen' ||
-        tool === 'text' ||
-        tool === 'vector'
-    : tool === 'brush' || tool === 'eraser'
+  if (isObjectLayer(layer)) {
+    return (
+      tool === 'select' ||
+      tool === 'rect' ||
+      tool === 'ellipse' ||
+      tool === 'line' ||
+      tool === 'pen' ||
+      tool === 'text' ||
+      tool === 'vector'
+    )
+  }
+  if (isDrawingLayer(layer)) return tool === 'brush' || tool === 'eraser'
+  // Camera and audio layers are control/data layers: inspection tools only.
+  return tool === 'select'
 }
 
 function clampOnionCount(value: number): number {
@@ -114,6 +130,8 @@ export interface EditorDeps {
   storeResource?: (bytes: Uint8Array) => Promise<string | null>
   /** Measures one text line's width (injectable for DOM-free tests). */
   measureText?: MeasureLineWidth
+  /** Audio playback surface; defaults to a silent no-op. */
+  audio?: AudioPlaybackBridge
 }
 
 function defaultStoreResource(bytes: Uint8Array): Promise<string | null> {
@@ -164,8 +182,12 @@ export class Editor {
   brushSize = 6
   /** Brush stroke opacity 0..1 (the eraser always erases fully). */
   brushOpacity = 1
+  /** Play a short audio blip when seeking while paused (session state). */
+  scrubAudio = false
   /** Measures one text line's width for text-node layout (injectable). */
   readonly measureText: MeasureLineWidth
+  /** Audio playback surface (no-op unless wired to a real AudioSystem). */
+  readonly audio: AudioPlaybackBridge
 
   private readonly deps: EditorDeps
   /** Transparent cell buffers already stored, keyed by pixel size: blank
@@ -191,6 +213,7 @@ export class Editor {
     this.document = document
     this.deps = deps
     this.measureText = deps.measureText ?? measureLineWidthCanvas
+    this.audio = deps.audio ?? NOOP_AUDIO
     this.currentLayerId = document.layers[0]?.id ?? ''
     this.autoSwitchTool()
   }
@@ -393,6 +416,11 @@ export class Editor {
     if (clamped === this.currentFrame) return
     this.currentFrame = clamped
     this.frameChanged()
+    // Seeks are the audio latency baseline: during playback the mix re-aligns
+    // to the new position; while paused a short blip previews the clip content
+    // under the playhead (opt-in session flag).
+    if (this.playing) this.audio.sync(this.document, this.currentFrame, this.document.fps)
+    else if (this.scrubAudio) this.audio.scrub(this.document, this.currentFrame, this.document.fps)
   }
 
   /**
@@ -499,6 +527,7 @@ export class Editor {
     this.playing = true
     this.lastTick = null
     this.accumulator = 0
+    this.audio.start(this.document, this.currentFrame, this.document.fps)
     this.uiChanged()
     this.startLoop()
   }
@@ -512,6 +541,7 @@ export class Editor {
     this.accumulator = 0
     if (!this.playing) return
     this.playing = false
+    this.audio.stop()
     this.uiChanged()
   }
 
@@ -523,6 +553,17 @@ export class Editor {
   toggleLoop(): void {
     this.loop = !this.loop
     this.uiChanged()
+  }
+
+  /** Enables/disables the paused scrub audio blip (session state). */
+  setScrubAudio(enabled: boolean): void {
+    if (this.scrubAudio === enabled) return
+    this.scrubAudio = enabled
+    this.uiChanged()
+  }
+
+  toggleScrubAudio(): void {
+    this.setScrubAudio(!this.scrubAudio)
   }
 
   toggleOnionSkin(): void {
@@ -1749,8 +1790,9 @@ export class Editor {
   }
 
   /** Adds a new layer of the given kind at the bottom of the stack and makes
-   * it current. */
-  addLayerAtBottom(kind: Layer['kind'] = 'object'): void {
+   * it current. Camera and audio layers have dedicated flows
+   * (`addCameraLayer` / `addAudioLayer`). */
+  addLayerAtBottom(kind: 'object' | 'drawing' = 'object'): void {
     this.pushHistory()
     const layer =
       kind === 'drawing'
@@ -1781,6 +1823,266 @@ export class Editor {
 
   removeCurrentLayer(): void {
     this.removeLayer(this.currentLayerId)
+  }
+
+  /** The document's camera layer, when one exists (at most one per document). */
+  get cameraLayer(): CameraLayer | undefined {
+    return cameraLayerOf(this.document)
+  }
+
+  /** Whether the camera has a keyframe exactly at `frame` (playhead default). */
+  hasCameraKeyframeAt(frame: number = this.currentFrame): boolean {
+    const layer = this.cameraLayer
+    return layer !== undefined && findCameraKeyframeAtFrame(layer, frame) !== undefined
+  }
+
+  /**
+   * Adds the singleton camera layer — seeded with the default (identity)
+   * pose at frame 0 so the framing overlay appears immediately — at the
+   * bottom of the stack and makes it current. Returns null (with a message)
+   * when a camera layer already exists.
+   */
+  addCameraLayer(): CameraLayer | null {
+    if (this.cameraLayer) {
+      this.showMessage('The document already has a camera layer')
+      return null
+    }
+    this.pushHistory()
+    const layer = addLayerOp(this.document, 'Camera', 'bottom', 'camera')
+    insertCameraKeyframe(this.document, 0, defaultCameraPose(this.document))
+    this.currentLayerId = layer.id
+    this.autoSwitchTool()
+    this.docChanged()
+    this.uiChanged()
+    return layer
+  }
+
+  /**
+   * Ensures a camera keyframe at the playhead: it holds the pose evaluated
+   * there (hold or tween sample — the default pose when the camera has no
+   * keyframes yet). Returns true when a keyframe exists there afterwards.
+   * One undo step when one was inserted.
+   */
+  ensureCameraKeyframe(): boolean {
+    const layer = this.cameraLayer
+    if (!layer || layer.locked) return false
+    if (findCameraKeyframeAtFrame(layer, this.currentFrame)) return true
+    this.pushHistory()
+    if (!insertCameraKeyframe(this.document, this.currentFrame)) return false
+    this.docChanged()
+    return true
+  }
+
+  /**
+   * Sets the camera pose at the playhead, creating the keyframe when the
+   * frame has none (auto-key, mirroring node property edits). `patch` updates
+   * the given pose fields; zoom is clamped to 0.05–64. One undo step; false
+   * when nothing changed.
+   */
+  setCameraPoseHere(patch: { center?: Vec2; zoom?: number; rotation?: number }): boolean {
+    const layer = this.cameraLayer
+    if (!layer || layer.locked) return false
+    if (patch.center && (!Number.isFinite(patch.center.x) || !Number.isFinite(patch.center.y))) {
+      return false
+    }
+    if (patch.zoom !== undefined && !Number.isFinite(patch.zoom)) return false
+    if (patch.rotation !== undefined && !Number.isFinite(patch.rotation)) return false
+    const keyframe = findCameraKeyframeAtFrame(layer, this.currentFrame)
+    const current =
+      keyframe?.pose ??
+      evaluateCameraAtFrame(this.document, this.currentFrame) ??
+      defaultCameraPose(this.document)
+    const next: CameraPose = {
+      center: patch.center ?? current.center,
+      zoom: patch.zoom === undefined ? current.zoom : Math.min(64, Math.max(0.05, patch.zoom)),
+      rotation: patch.rotation ?? current.rotation
+    }
+    if (
+      next.center.x === current.center.x &&
+      next.center.y === current.center.y &&
+      next.zoom === current.zoom &&
+      next.rotation === current.rotation
+    ) {
+      return false
+    }
+    this.pushHistory()
+    if (keyframe) {
+      keyframe.pose = next
+    } else {
+      insertCameraKeyframe(this.document, this.currentFrame, next)
+    }
+    this.docChanged()
+    return true
+  }
+
+  /** Removes the camera keyframe exactly at the playhead. One undo step;
+   * false when there is none. */
+  removeCameraKeyframeHere(): boolean {
+    const layer = this.cameraLayer
+    if (!layer || layer.locked) return false
+    if (!findCameraKeyframeAtFrame(layer, this.currentFrame)) return false
+    this.pushHistory()
+    if (!removeCameraKeyframeOp(this.document, this.currentFrame)) return false
+    this.docChanged()
+    return true
+  }
+
+  /** Toggles the tween of the camera keyframe at the playhead. */
+  toggleCameraTweenHere(): void {
+    const layer = this.cameraLayer
+    if (!layer || layer.locked) return
+    const keyframe = findCameraKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe) return
+    this.pushHistory()
+    keyframe.tween = keyframe.tween ? undefined : { easing: 'ease-in-out' }
+    this.docChanged()
+  }
+
+  /** Replaces the tween of the camera keyframe at the playhead (`null`
+   * removes it). One undo step; no-op when unchanged. */
+  setCameraTweenHere(tween: KeyframeTween | null): void {
+    const layer = this.cameraLayer
+    if (!layer || layer.locked) return
+    const keyframe = findCameraKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe) return
+    const current = keyframe.tween
+    if (tween === null) {
+      if (!current) return
+    } else if (
+      current &&
+      easingsEqual(current.easing, tween.easing) &&
+      (current.path ?? 'linear') === (tween.path ?? 'linear')
+    ) {
+      return
+    }
+    this.pushHistory()
+    keyframe.tween = tween ? structuredClone(tween) : undefined
+    this.docChanged()
+  }
+
+  /** Replaces the tween easing of the camera keyframe at the playhead,
+   * preserving its motion-path mode. One undo step; no-op when unchanged. */
+  setCameraTweenEasingHere(easing: Easing): void {
+    const layer = this.cameraLayer
+    if (!layer || layer.locked) return
+    const keyframe = findCameraKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe?.tween) return
+    if (easingsEqual(keyframe.tween.easing, easing)) return
+    this.pushHistory()
+    const next: KeyframeTween = keyframe.tween.path
+      ? { easing, path: keyframe.tween.path }
+      : { easing }
+    keyframe.tween = next
+    this.docChanged()
+  }
+
+  /** Sets the motion-path mode of the camera tween at the playhead
+   * (`'smooth'` samples the center along a Catmull-Rom curve through the
+   * neighbouring poses; `'linear'` removes the field). One undo step. */
+  setCameraTweenPathHere(path: 'linear' | 'smooth'): void {
+    const layer = this.cameraLayer
+    if (!layer || layer.locked) return
+    const keyframe = findCameraKeyframeAtFrame(layer, this.currentFrame)
+    if (!keyframe?.tween) return
+    if ((keyframe.tween.path ?? 'linear') === path) return
+    this.pushHistory()
+    const next: KeyframeTween = { easing: keyframe.tween.easing }
+    if (path === 'smooth') next.path = 'smooth'
+    keyframe.tween = next
+    this.docChanged()
+  }
+
+  /** Moves one camera keyframe entry from `fromFrame` to `toFrame` (the
+   * timeline's single-marker drag). */
+  moveCameraKeyframeEntry(
+    fromFrame: number,
+    toFrame: number,
+    layerId: string = this.currentLayerId
+  ): boolean {
+    return this.moveCameraKeyframes([{ fromFrame, toFrame }], layerId)
+  }
+
+  /**
+   * Moves camera keyframes in one undo step (a multi-marker drag); moved
+   * keyframes replace any already at their target. Targets outside the
+   * timeline are refused with a message; false when nothing actually moves.
+   */
+  moveCameraKeyframes(
+    moves: readonly CameraKeyframeMove[],
+    layerId: string = this.currentLayerId
+  ): boolean {
+    const layer = getLayer(this.document, layerId)
+    if (!layer || !isCameraLayer(layer) || layer.locked || moves.length === 0) return false
+    const totalFrames = this.duration
+    if (moves.some((move) => move.toFrame < 0 || move.toFrame > totalFrames - 1)) {
+      this.showMessage('Move keyframe: the target frame is outside the timeline')
+      return false
+    }
+    const effective = moves.some(
+      (move) =>
+        move.fromFrame !== move.toFrame &&
+        findCameraKeyframeAtFrame(layer, move.fromFrame) !== undefined
+    )
+    if (!effective) return false
+    this.pushHistory()
+    moveCameraKeyframesOp(layer, moves, totalFrames)
+    this.docChanged()
+    return true
+  }
+
+  /**
+   * Adds an audio layer playing `resourceId` (a registered audio resource of
+   * this session) at the bottom of the stack, makes it current and returns
+   * it. Returns null (with a status message) when the resource is unknown.
+   */
+  addAudioLayer(resourceId: string, name: string, startFrame = 0): AudioLayer | null {
+    if (!resourceId || !this.resources.getBlob(resourceId)) {
+      this.showMessage('Audio resource is not available in this session')
+      return null
+    }
+    this.pushHistory()
+    const layer = addLayerOp(this.document, name || 'Audio', 'bottom', 'audio', resourceId)
+    layer.startFrame = Number.isFinite(startFrame) ? Math.max(0, Math.round(startFrame)) : 0
+    this.currentLayerId = layer.id
+    this.autoSwitchTool()
+    this.docChanged()
+    this.uiChanged()
+    return layer
+  }
+
+  /** Sets the volume (0..1) of an audio layer. One undo step. */
+  setAudioLayerVolume(layerId: string, volume: number): void {
+    const layer = getLayer(this.document, layerId)
+    if (!layer || !isAudioLayer(layer) || layer.locked || !Number.isFinite(volume)) return
+    const next = Math.min(1, Math.max(0, volume))
+    if (next === layer.volume) return
+    this.pushHistory()
+    layer.volume = next
+    this.docChanged()
+    this.uiChanged()
+  }
+
+  /** Mutes/unmutes an audio layer. Audio mute is the layer's `visible` flag,
+   * like every other layer kind, so hidden audio is skipped by both playback
+   * and exports. One undo step. */
+  toggleAudioMute(layerId: string): void {
+    this.toggleLayerVisibility(layerId)
+  }
+
+  /** Moves an audio clip's start frame (clamped to the timeline start, it
+   * may extend past the end). One undo step; false when the clip did not
+   * move. */
+  setAudioClipStart(layerId: string, startFrame: number): boolean {
+    const layer = getLayer(this.document, layerId)
+    if (!layer || !isAudioLayer(layer) || layer.locked || !Number.isFinite(startFrame)) {
+      return false
+    }
+    const clamped = Math.max(0, Math.round(startFrame))
+    if (clamped === layer.startFrame) return false
+    this.pushHistory()
+    setAudioClipStartOp(layer, startFrame)
+    this.docChanged()
+    return true
   }
 
   /** Reorders a layer: index 0 is the topmost row of the stack. */
@@ -1860,6 +2162,8 @@ export class Editor {
             if (this.loop) {
               this.currentFrame = 0
               moved = true
+              // The audio mix never loops on its own: re-align it to frame 0.
+              this.audio.sync(this.document, 0, this.document.fps)
             } else {
               this.pause()
               return

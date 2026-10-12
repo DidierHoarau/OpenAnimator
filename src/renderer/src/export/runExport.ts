@@ -7,6 +7,7 @@ import type { ExportPathRequest, ExportWriteResult, SaveAsResult } from '@shared
 
 import { FrameRasterizer, createDefaultFrameRasterDeps } from './frameRaster'
 import type { FrameRasterDeps } from './frameRaster'
+import { createEditorAudioMixdown } from './audioMixdown'
 import { reconcileEmbeddedFonts } from '../fontEmbedding'
 import { createResourceDataUrlResolver } from './resourceDataUrl'
 import { CanceledError, canEncodeVideo, encodeVideo } from './videoEncoder'
@@ -25,6 +26,9 @@ export interface ExportRunnerDeps extends FrameRasterDeps {
   /** Embeds the font subsets the document renders (optional; harnesses that
    * rasterize fixtures directly may omit it). */
   reconcileFonts?(): Promise<unknown>
+  /** Mixes the document's audible audio layers for the export range, or null
+   * when nothing is audible. Only used by the video formats. */
+  renderAudioMix?(options: ExportOptions): Promise<AudioBuffer | null>
 }
 
 export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps {
@@ -34,7 +38,8 @@ export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps 
     pickExportPath: (request) => window.api.pickExportPath(request),
     writeExportFile: (path, bytes) => window.api.writeExportFile(path, bytes),
     showMessage: (message) => editor.showMessage(message),
-    reconcileFonts: () => reconcileEmbeddedFonts(editor)
+    reconcileFonts: () => reconcileEmbeddedFonts(editor),
+    renderAudioMix: createEditorAudioMixdown(editor)
   }
 }
 
@@ -67,6 +72,7 @@ export async function runExport(
 
   const rasterizer = new FrameRasterizer(document, options, deps)
   const { width, height } = exportPixelSize(document, options)
+  let audioDropped = false
   try {
     // Embed the font subsets the document renders before rasterizing, so the
     // exported frames keep their typography everywhere.
@@ -95,7 +101,14 @@ export async function runExport(
       if (!canEncodeVideo()) {
         throw new Error('Video export needs WebCodecs, which this environment does not provide')
       }
-      bytes = await encodeVideo(
+      // Audio is best-effort: a mixdown failure exports the video silent.
+      const audioBuffer = deps.renderAudioMix
+        ? await deps.renderAudioMix(options).catch((error: unknown) => {
+            console.warn('OpenAnimator: audio mixdown failed', error)
+            return null
+          })
+        : null
+      const encoded = await encodeVideo(
         options,
         { width, height },
         async (canvas, frame) => {
@@ -104,13 +117,20 @@ export async function runExport(
           context?.drawImage(rasterized, 0, 0)
           reportProgress(deps, frame - options.fromFrame + 1, total)
         },
-        signal
+        signal,
+        audioBuffer ? { buffer: audioBuffer } : null
       )
+      bytes = encoded.bytes
+      audioDropped = audioBuffer !== null && !encoded.audioIncluded
     }
 
     const written = await deps.writeExportFile(pick.path, bytes)
     if (!written.ok) throw new Error(written.error)
-    deps.showMessage(`Exported to ${pick.path}`)
+    deps.showMessage(
+      audioDropped
+        ? `Exported to ${pick.path} without audio (no encoder available)`
+        : `Exported to ${pick.path}`
+    )
     return true
   } catch (error) {
     if (error instanceof CanceledError || signal.canceled) {

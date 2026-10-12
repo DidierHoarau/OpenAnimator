@@ -1,10 +1,11 @@
 import { evaluateEasing, isEasing } from './easing'
-import type { AnimatorDocument, Asset, DrawingCell, DrawingLayer, EmbeddedFont, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode } from './model'
-import { cloneNode, isObjectLayer } from './model'
-import { segmentControls } from './motionPath'
+import type { AnimatorDocument, Asset, AudioLayer, CameraKeyframe, CameraLayer, CameraPose, DrawingCell, DrawingLayer, EmbeddedFont, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode } from './model'
+import { cloneNode, isAudioLayer, isCameraLayer, isObjectLayer } from './model'
+import { cubicBezierPoint, segmentControls } from './motionPath'
 import { isPaintValue } from './paint'
 import { formatHexColor, parseHexColor } from './color'
 import { tweenNode } from './tween'
+import { lerp } from './geometry'
 import type { Vec2 } from './geometry'
 
 /** Maximum number of colors in the document palette. */
@@ -43,11 +44,44 @@ export function createDrawingLayer(name: string, resolutionScale = 1): DrawingLa
   }
 }
 
+/** A new camera layer starts without keyframes: it evaluates to no camera
+ * until the first keyframe is inserted at the playhead. */
+export function createCameraLayer(name: string): CameraLayer {
+  return {
+    kind: 'camera',
+    id: createId('layer'),
+    name,
+    visible: true,
+    locked: false,
+    keyframes: []
+  }
+}
+
+/** A new audio layer plays `resourceId` from frame 0 at full volume. */
+export function createAudioLayer(resourceId: string, name: string): AudioLayer {
+  return {
+    kind: 'audio',
+    id: createId('layer'),
+    name,
+    visible: true,
+    locked: false,
+    resourceId,
+    startFrame: 0,
+    volume: 1
+  }
+}
+
+/** The default camera pose of a document: identity view centered on the
+ * stage, used when the first camera keyframe has nothing to copy from. */
+export function defaultCameraPose(document: AnimatorDocument): CameraPose {
+  return { center: { x: document.width / 2, y: document.height / 2 }, zoom: 1, rotation: 0 }
+}
+
 export function createDocument(name: string, width: number, height: number, fps: number): AnimatorDocument {
   const layer = createLayer('Layer 1')
   layer.keyframes.push({ frame: 0, nodes: [] })
   return {
-    schemaVersion: 6,
+    schemaVersion: 7,
     name,
     width,
     height,
@@ -70,8 +104,8 @@ export function getLayer(document: AnimatorDocument, layerId: string): Layer | u
   return document.layers.find((layer) => layer.id === layerId)
 }
 
-/** Total number of frames: the furthest keyframe or cell + 1 and the authored
- * length (`frames`), whichever is larger; at least 1. */
+/** Total number of frames: the furthest keyframe, cell or clip start + 1 and
+ * the authored length (`frames`), whichever is larger; at least 1. */
 export function documentDuration(document: AnimatorDocument): number {
   let max = 0
   for (const layer of document.layers) {
@@ -79,6 +113,12 @@ export function documentDuration(document: AnimatorDocument): number {
       for (const keyframe of layer.keyframes) {
         max = Math.max(max, keyframe.frame)
       }
+    } else if (isCameraLayer(layer)) {
+      for (const keyframe of layer.keyframes) {
+        max = Math.max(max, keyframe.frame)
+      }
+    } else if (isAudioLayer(layer)) {
+      max = Math.max(max, layer.startFrame)
     } else {
       for (const cell of layer.cells) {
         max = Math.max(max, cell.frame)
@@ -248,6 +288,165 @@ export function evaluateLayerAtFrame(layer: ObjectLayer, frame: number): SceneNo
   return result
 }
 
+/** The document's camera layer, when it has one (at most one is allowed). */
+export function cameraLayerOf(document: AnimatorDocument): CameraLayer | undefined {
+  return document.layers.find((layer): layer is CameraLayer => isCameraLayer(layer))
+}
+
+/** Index of the last camera keyframe at or before `frame`, or -1 when none exists. */
+export function findCameraKeyframeIndexForFrame(layer: CameraLayer, frame: number): number {
+  let index = -1
+  for (let i = 0; i < layer.keyframes.length; i++) {
+    if (layer.keyframes[i].frame <= frame) index = i
+    else break
+  }
+  return index
+}
+
+export function findCameraKeyframeAtFrame(layer: CameraLayer, frame: number): CameraKeyframe | undefined {
+  return layer.keyframes.find((keyframe) => keyframe.frame === frame)
+}
+
+/** Bezier center-path controls for the smooth segment starting at camera
+ * keyframe index `sourceIndex`: the Catmull-Rom handles derived from the
+ * neighbouring keyframe centers, mirroring the node math of
+ * `smoothControlsFor`. */
+function smoothCameraControlsFor(layer: CameraLayer, sourceIndex: number): { c1: Vec2; c2: Vec2 } | undefined {
+  if (sourceIndex < 0 || sourceIndex >= layer.keyframes.length - 1) return undefined
+  return segmentControls(
+    layer.keyframes.map((keyframe) => keyframe.pose.center),
+    sourceIndex
+  )
+}
+
+/** Independent copy of a camera pose. */
+export function cloneCameraPose(pose: CameraPose): CameraPose {
+  return { center: { ...pose.center }, zoom: pose.zoom, rotation: pose.rotation }
+}
+
+/**
+ * Pose of the document camera at `frame`: null when the document has no
+ * camera layer, the layer is hidden (a hidden camera is switched off) or it
+ * has no keyframes yet. Hold-first/hold-last like object layers; a tweened
+ * keyframe interpolates center, zoom and rotation toward the next camera
+ * keyframe — `path: 'smooth'` bends the center along the Catmull-Rom path
+ * through the camera keyframe centers.
+ */
+export function evaluateCameraAtFrame(document: AnimatorDocument, frame: number): CameraPose | null {
+  const layer = cameraLayerOf(document)
+  if (!layer || !layer.visible || layer.keyframes.length === 0) return null
+  const index = findCameraKeyframeIndexForFrame(layer, frame)
+  if (index === -1) return cloneCameraPose(layer.keyframes[0].pose)
+  const source = layer.keyframes[index]
+  const next = layer.keyframes[index + 1]
+  if (!source.tween || !next) return cloneCameraPose(source.pose)
+  const progress = (frame - source.frame) / (next.frame - source.frame)
+  const eased = evaluateEasing(source.tween.easing, progress)
+  const controls = source.tween.path === 'smooth' ? smoothCameraControlsFor(layer, index) : undefined
+  return {
+    center: controls
+      ? cubicBezierPoint(source.pose.center, controls.c1, controls.c2, next.pose.center, eased)
+      : {
+          x: lerp(source.pose.center.x, next.pose.center.x, eased),
+          y: lerp(source.pose.center.y, next.pose.center.y, eased)
+        },
+    zoom: lerp(source.pose.zoom, next.pose.zoom, eased),
+    rotation: lerp(source.pose.rotation, next.pose.rotation, eased)
+  }
+}
+
+/**
+ * Inserts a camera keyframe at `frame`, copying the pose evaluated there
+ * (hold-first/last, tween sampled) when `pose` is omitted — the document's
+ * default identity pose when the camera has no keyframes yet. Returns the
+ * created keyframe, or null when one already exists at `frame` or the
+ * document has no camera layer.
+ */
+export function insertCameraKeyframe(
+  document: AnimatorDocument,
+  frame: number,
+  pose?: CameraPose
+): CameraKeyframe | null {
+  const layer = cameraLayerOf(document)
+  if (!layer || findCameraKeyframeAtFrame(layer, frame)) return null
+  const keyframe: CameraKeyframe = {
+    frame,
+    pose: pose ? cloneCameraPose(pose) : (evaluateCameraAtFrame(document, frame) ?? defaultCameraPose(document))
+  }
+  layer.keyframes.push(keyframe)
+  layer.keyframes.sort((a, b) => a.frame - b.frame)
+  return keyframe
+}
+
+/** Removes the camera keyframe at `frame`. Returns true when one was removed. */
+export function removeCameraKeyframe(document: AnimatorDocument, frame: number): boolean {
+  const layer = cameraLayerOf(document)
+  if (!layer) return false
+  const index = layer.keyframes.findIndex((keyframe) => keyframe.frame === frame)
+  if (index === -1) return false
+  layer.keyframes.splice(index, 1)
+  return true
+}
+
+/** One camera retime: the keyframe at `fromFrame` moves to `toFrame`. */
+export interface CameraKeyframeMove {
+  fromFrame: number
+  toFrame: number
+}
+
+/**
+ * Retimes camera keyframes (the timeline's marker drag). Effective moves
+ * detach first, then re-attach at their target frames, merging over a
+ * keyframe already there — the moved pose wins and its tween travels with
+ * it. Returns false (and changes nothing) when no move has a matching source
+ * keyframe, is out of range or is a no-op.
+ */
+export function moveCameraKeyframes(
+  layer: CameraLayer,
+  moves: readonly CameraKeyframeMove[],
+  totalFrames: number
+): boolean {
+  const effective = moves.filter(
+    (move) =>
+      move.fromFrame !== move.toFrame &&
+      move.toFrame >= 0 &&
+      move.toFrame <= totalFrames - 1 &&
+      layer.keyframes.some((keyframe) => keyframe.frame === move.fromFrame)
+  )
+  if (effective.length === 0) return false
+  const detached: Array<{ toFrame: number; keyframe: CameraKeyframe }> = []
+  for (const move of effective) {
+    const index = layer.keyframes.findIndex((keyframe) => keyframe.frame === move.fromFrame)
+    if (index === -1) continue
+    const [keyframe] = layer.keyframes.splice(index, 1)
+    detached.push({ toFrame: move.toFrame, keyframe })
+  }
+  for (const entry of detached) {
+    const existing = layer.keyframes.findIndex((keyframe) => keyframe.frame === entry.toFrame)
+    if (existing !== -1) layer.keyframes.splice(existing, 1)
+    entry.keyframe.frame = entry.toFrame
+    layer.keyframes.push(entry.keyframe)
+  }
+  layer.keyframes.sort((a, b) => a.frame - b.frame)
+  return true
+}
+
+/** End frame of an audio clip of `durationSeconds` starting at the layer's
+ * `startFrame` (callers supply the decoded duration; the document stores
+ * none). */
+export function audioClipEndFrame(document: AnimatorDocument, layer: AudioLayer, durationSeconds: number): number {
+  return layer.startFrame + Math.max(0, Math.round(durationSeconds * document.fps))
+}
+
+/** Moves an audio clip to `startFrame`, clamped to frame 0. Returns true
+ * when the clip moved. */
+export function setAudioClipStart(layer: AudioLayer, startFrame: number): boolean {
+  const clamped = Math.max(0, Math.round(startFrame))
+  if (clamped === layer.startFrame) return false
+  layer.startFrame = clamped
+  return true
+}
+
 /**
  * Inserts a keyframe at `frame` holding a copy of the content active at that
  * frame. Returns the created keyframe, or null when one already exists there.
@@ -404,18 +603,21 @@ export function setKeyframeTween(
   return true
 }
 
-/** Inserts a frame on the timeline: shifts the keyframes of object layers and
- * the cells of drawing layers strictly after `frame` one frame later
- * (extending the hold of the content active at the playhead) and grows the
- * document's authored timeline so the playhead can move past the last content. */
+/** Inserts a frame on the timeline: shifts the keyframes of object and
+ * camera layers, the cells of drawing layers and the clip starts of audio
+ * layers strictly after `frame` one frame later (extending the hold of the
+ * content active at the playhead) and grows the document's authored timeline
+ * so the playhead can move past the last content. */
 export function insertFrame(document: AnimatorDocument, layerId: string, frame: number): void {
   const layer = getLayer(document, layerId)
   if (!layer) return
   for (const target of document.layers) {
-    if (isObjectLayer(target)) {
+    if (isObjectLayer(target) || isCameraLayer(target)) {
       for (const keyframe of target.keyframes) {
         if (keyframe.frame > frame) keyframe.frame += 1
       }
+    } else if (isAudioLayer(target)) {
+      if (target.startFrame > frame) target.startFrame += 1
     } else {
       for (const cell of target.cells) {
         if (cell.frame > frame) cell.frame += 1
@@ -708,6 +910,17 @@ export function removeFrame(document: AnimatorDocument, frame: number): void {
         if (keyframe.frame > frame) keyframe.frame -= 1
       }
       if (layer.keyframes.length > 1) removeKeyframe(layer, frame)
+    } else if (isCameraLayer(layer)) {
+      for (const keyframe of layer.keyframes) {
+        if (keyframe.frame > frame) keyframe.frame -= 1
+      }
+      // Like object layers, never strip the layer of its last keyframe.
+      if (layer.keyframes.length > 1) {
+        const index = layer.keyframes.findIndex((keyframe) => keyframe.frame === frame)
+        if (index !== -1) layer.keyframes.splice(index, 1)
+      }
+    } else if (isAudioLayer(layer)) {
+      if (layer.startFrame > frame) layer.startFrame -= 1
     } else {
       for (const cell of layer.cells) {
         if (cell.frame > frame) cell.frame -= 1
@@ -754,10 +967,31 @@ export function addLayer(
 export function addLayer(
   document: AnimatorDocument,
   name: string,
+  position: 'top' | 'bottom' | undefined,
+  kind: 'camera'
+): CameraLayer
+export function addLayer(
+  document: AnimatorDocument,
+  name: string,
+  position: 'top' | 'bottom' | undefined,
+  kind: 'audio',
+  resourceId: string
+): AudioLayer
+export function addLayer(
+  document: AnimatorDocument,
+  name: string,
   position: 'top' | 'bottom' = 'top',
-  kind: Layer['kind'] = 'object'
+  kind: Layer['kind'] = 'object',
+  resourceId?: string
 ): Layer {
-  const layer: Layer = kind === 'drawing' ? createDrawingLayer(name) : createLayer(name)
+  const layer: Layer =
+    kind === 'drawing'
+      ? createDrawingLayer(name)
+      : kind === 'camera'
+        ? createCameraLayer(name)
+        : kind === 'audio'
+          ? createAudioLayer(resourceId ?? '', name)
+          : createLayer(name)
   if (isObjectLayer(layer)) {
     layer.keyframes.push({ frame: 0, nodes: [] })
   }
@@ -850,16 +1084,44 @@ export function isSceneNode(value: unknown): value is SceneNode {
   }
 }
 
+function isTween(value: unknown): value is KeyframeTween {
+  if (typeof value !== 'object' || value === null) return false
+  const tween = value as { easing?: unknown; path?: unknown }
+  if (tween.path !== undefined && tween.path !== 'linear' && tween.path !== 'smooth') return false
+  return isEasing(tween.easing)
+}
+
 function isKeyframe(value: unknown): value is Keyframe {
   if (typeof value !== 'object' || value === null) return false
   const keyframe = value as Record<string, unknown> & Partial<Keyframe>
   if (!Number.isInteger(keyframe.frame) || (keyframe.frame as number) < 0) return false
   if (!Array.isArray(keyframe.nodes) || !keyframe.nodes.every(isSceneNode)) return false
-  if (keyframe.tween === undefined) return true
-  if (typeof keyframe.tween !== 'object' || keyframe.tween === null) return false
-  const tween = keyframe.tween as { easing?: unknown; path?: unknown }
-  if (tween.path !== undefined && tween.path !== 'linear' && tween.path !== 'smooth') return false
-  return isEasing(tween.easing)
+  return keyframe.tween === undefined || isTween(keyframe.tween)
+}
+
+/** Structural validation for one camera pose: finite center, zoom > 0 and a
+ * finite rotation. */
+export function isCameraPose(value: unknown): value is CameraPose {
+  if (typeof value !== 'object' || value === null) return false
+  const pose = value as { center?: unknown; zoom?: unknown; rotation?: unknown }
+  return (
+    typeof pose.center === 'object' &&
+    pose.center !== null &&
+    isFiniteNumber((pose.center as { x?: unknown }).x) &&
+    isFiniteNumber((pose.center as { y?: unknown }).y) &&
+    isFiniteNumber(pose.zoom) &&
+    pose.zoom > 0 &&
+    isFiniteNumber(pose.rotation)
+  )
+}
+
+/** Structural validation for one camera keyframe. */
+export function isCameraKeyframe(value: unknown): value is CameraKeyframe {
+  if (typeof value !== 'object' || value === null) return false
+  const keyframe = value as Record<string, unknown> & Partial<CameraKeyframe>
+  if (!Number.isInteger(keyframe.frame) || (keyframe.frame as number) < 0) return false
+  if (!isCameraPose(keyframe.pose)) return false
+  return keyframe.tween === undefined || isTween(keyframe.tween)
 }
 
 function isDrawingCell(value: unknown): value is DrawingCell {
@@ -888,6 +1150,19 @@ function isLayer(value: unknown): value is Layer {
       (layer.resolutionScale as number) >= 1 &&
       Array.isArray(layer.cells) &&
       layer.cells.every(isDrawingCell)
+    )
+  }
+  if (layer.kind === 'camera') {
+    return Array.isArray(layer.keyframes) && layer.keyframes.every(isCameraKeyframe)
+  }
+  if (layer.kind === 'audio') {
+    return (
+      typeof layer.resourceId === 'string' &&
+      Number.isInteger(layer.startFrame) &&
+      (layer.startFrame as number) >= 0 &&
+      isFiniteNumber(layer.volume) &&
+      (layer.volume as number) >= 0 &&
+      (layer.volume as number) <= 1
     )
   }
   return false
@@ -975,7 +1250,7 @@ export function normalizePaletteColors(colors: readonly string[]): string[] {
 }
 
 /** Deep structural validation for documents restored from persistence.
- * Requires `schemaVersion: 6` and fully typed content; older documents go
+ * Requires `schemaVersion: 7` and fully typed content; older documents go
  * through `migrateDocument` first. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
@@ -990,7 +1265,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
       candidate.holdStep >= 1 &&
       candidate.holdStep <= 16)
   return (
-    candidate.schemaVersion === 6 &&
+    candidate.schemaVersion === 7 &&
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
     typeof candidate.height === 'number' &&

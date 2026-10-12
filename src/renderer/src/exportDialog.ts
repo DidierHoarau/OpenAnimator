@@ -57,7 +57,13 @@ export function showExportDialog(editor: Editor): void {
     'Video formats always render on the document background; PNG and GIF keep transparency.'
   )
 
-  form.append(formatField, scaleField, fpsField, rangeField, transparentField, transparentHint)
+  const audioHint = el(
+    'p',
+    'modal-subtitle',
+    'WebM and MP4 include the mixed audio tracks (audible audio layers); PNG sequence and GIF are silent.'
+  )
+
+  form.append(formatField, scaleField, fpsField, rangeField, transparentField, transparentHint, audioHint)
 
   const progressWrap = el('div', 'export-progress hidden')
   const progressBar = el('div', 'export-progress-bar')

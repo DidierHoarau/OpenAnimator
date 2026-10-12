@@ -7,6 +7,8 @@ export type SectionId =
   | 'image'
   | 'group'
   | 'symbol'
+  | 'camera'
+  | 'audio'
   | 'draw'
   | 'cell'
   | 'palette'
@@ -30,6 +32,8 @@ export const DEFAULT_SECTION_STATE: SectionState = {
   image: true,
   group: true,
   symbol: true,
+  camera: true,
+  audio: true,
   draw: true,
   cell: true,
   palette: true

@@ -41,6 +41,14 @@ describe('showExportDialog', () => {
     expect(overlay.textContent).toContain('Transparent background')
   })
 
+  it('documents which formats carry audio and which stay silent', () => {
+    showExportDialog(editor())
+    const overlay = document.querySelector('.modal-overlay')!
+    expect(overlay.textContent).toContain(
+      'WebM and MP4 include the mixed audio tracks (audible audio layers); PNG sequence and GIF are silent.'
+    )
+  })
+
   it('hands sanitized options to the runner and closes on success', async () => {
     runExport.mockResolvedValue(true)
     showExportDialog(editor())
