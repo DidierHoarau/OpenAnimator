@@ -13,11 +13,12 @@ import { LibraryView } from './library'
 import { attachPanelSplitters } from './panelLayout'
 import { PropertiesView } from './properties'
 import { showExportDialog } from './exportDialog'
-import { fileLabel, newDocument, openDocument, saveDocument, showStartupDialog } from './projects'
+import { fileLabel, newDocument, openDocument, openProjectFromPath, saveDocument, saveRecoverySnapshot, showStartupDialog } from './projects'
 import { showScriptConsole } from './scripting/scriptConsole'
 import { StageView } from './stage'
 import { TimelineView } from './timeline'
 import { buildToolsPanel } from './toolsPanel'
+import { showUpdateBanner } from './updateBanner'
 
 function buildToolbar(editor: Editor, layout: HTMLElement, libraryView: LibraryView): HTMLElement {
   const toolbar = el('header', 'toolbar')
@@ -265,6 +266,10 @@ async function bootstrap(): Promise<void> {
     if (command === 'undo') editor.undo()
     else editor.redo()
   })
+  // A `.oanim` handed over by the OS (file association, second instance or
+  // macOS open-file) opens through the regular load path.
+  window.api.onOpenFile((path) => void openProjectFromPath(editor, path))
+  window.api.onUpdateAvailable((info) => showUpdateBanner(info))
   showStartupDialog(editor)
 
   // Warm the image cache for every drawing cell when playback starts so the
@@ -273,14 +278,15 @@ async function bootstrap(): Promise<void> {
     if (editor.playing) preloadDrawingCells(editor)
   })
 
-  // Debounced autosave to the project file on every document change; the
-  // scratch document of a symbol edit session is never autosaved.
+  // Debounced autosave to a recovery snapshot; the project file itself is
+  // only written by an explicit save. The scratch document of a symbol edit
+  // session is never autosaved.
   let saveTimer: number | undefined
   editor.onDocChange(() => {
     window.clearTimeout(saveTimer)
     saveTimer = window.setTimeout(() => {
       if (editor.editingAssetId) return
-      if (editor.filePath && editor.dirty) void saveDocument(editor, { as: false })
+      if (editor.filePath && editor.dirty) void saveRecoverySnapshot(editor)
     }, 400)
   })
 }

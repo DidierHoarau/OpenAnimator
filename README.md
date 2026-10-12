@@ -13,7 +13,7 @@ The application now provides a working authoring core: layers with keyframes, fr
 - Vanilla TypeScript renderer rendering scene nodes as SVG — no UI framework
 - [ESLint](https://eslint.org/) with typescript-eslint for linting
 - [Vitest](https://vitest.dev/) for unit tests with v8 coverage (the document model lives in `src/shared/` and is fully testable without Electron)
-- [electron-builder](https://www.electron.build/) for Linux packaging (AppImage, deb, rpm, Flatpak, tar.gz)
+- [electron-builder](https://www.electron.build/) for packaging: Linux (AppImage, deb, rpm, Flatpak, tar.gz), Windows (NSIS installer + portable) and macOS (dmg)
 
 ## Authoring features
 
@@ -51,7 +51,7 @@ The application now provides a working authoring core: layers with keyframes, fr
 - **Camera**: one keyframed camera layer per document pans, zooms (0.05×–64×) and rotates the framing; the stage shows a camera-framing overlay while the camera layer is selected, and the pose is baked into every in-app and CLI render. Camera keyframe markers live on the timeline row (drag to retime, right-click to key/tween) and the Camera properties section edits the pose at the playhead with the same easing/smooth-path controls as object tweens.
 - **Audio**: import WAV/MP3/OGG (toolbar, or drop the file onto the stage) into content-addressed resources; the timeline shows each audio layer as a draggable clip with a decoded **waveform**, start frame, volume (%) and mute (layer visibility) controls in the Audio properties section. Playback schedules the clips against the timeline — with an optional `Scrub audio` blip while moving the playhead — and the Export dialog mixes the same plan into WebM/MP4 (PNG sequence and GIF are silent). See `src/shared/audio.ts`.
 - **Export**: the toolbar's Export dialog writes eight formats for a chosen resolution scale, fps and frame range — raster outputs (PNG sequence as ZIP, animated GIF, spritesheet as a PNG atlas ZIP), WebM/MP4 video, and the **natively built vector exports** (Lottie bodymovin JSON, dotLottie ZIP, animated CSS-keyframes SVG). PNG/GIF/spritesheet and the vector formats keep transparency; WebM adds **VP9 alpha** when the environment's encoder supports it (otherwise the video is opaque, reported in the status bar) and MP4 is always opaque. WebM/MP4 include the mixed audio tracks (silent when no audio codec is available, also reported), all other formats are silent. Lottie/dotLottie and animated-SVG exports run without rasterization and never embed fonts — text ships as outlines, and unsupported content degrades to dashed placeholders with per-export diagnostics (the full feature matrix lives in `docs/export-formats.md`). The same frame evaluation runs headless through the CLI (`npm run cli -- render …`; video needs `ffmpeg` on PATH), so camera framing and audio timing are identical between the app and the command line.
-- **Projects**: save and open `.oanim` project files with an explicit Save/Save As/Open, Ctrl+S / Ctrl+Shift+S / Ctrl+O shortcuts and debounced autosave to the current file. Since v0.9.0 the container is a **ZIP archive**: `document.json` plus the referenced binary resources under `resources/<sha256>.<ext>` (stored uncompressed), written atomically (temp file + rename). The loader sniffs the magic bytes: ZIP containers take the archive path; legacy plain-JSON documents (v1 shapes and pre-0.9.0 v2 JSON) still open through the migration/validation path. Resources are content-addressed by SHA-256, so identical content dedupes automatically; a missing or corrupt resource renders a dashed placeholder box while the document still opens, and unknown node types are reported as errors (pre-1.0, no forward-compat shims). `Purge Unused` in the toolbar removes resources no object references from the session store — nothing is garbage-collected silently.
+- **Projects**: save and open `.oanim` project files with an explicit Save/Save As/Open, Ctrl+S / Ctrl+Shift+S / Ctrl+O shortcuts. The project file itself only ever changes through an explicit save; the debounced autosave writes a **recovery snapshot** under the Electron user-data folder instead, and reopening a project whose snapshot is newer than the last save offers a recovery dialog (see *Platform notes*). Since v0.9.0 the container is a **ZIP archive**: `document.json` plus the referenced binary resources under `resources/<sha256>.<ext>` (stored uncompressed), written atomically (temp file + rename). The loader sniffs the magic bytes: ZIP containers take the archive path; legacy plain-JSON documents (v1 shapes and pre-0.9.0 v2 JSON) still open through the migration/validation path. Resources are content-addressed by SHA-256, so identical content dedupes automatically; a missing or corrupt resource renders a dashed placeholder box while the document still opens, and unknown node types are reported as errors (pre-1.0, no forward-compat shims). `Purge Unused` in the toolbar removes resources no object references from the session store — nothing is garbage-collected silently.
 - **Startup dialog**: shown on launch to start a new project, open a file, or reopen one of the recent projects (stored in the Electron `userData` folder).
 
 ## Project layout
@@ -67,6 +67,9 @@ The application now provides a working authoring core: layers with keyframes, fr
 │   │   ├── library.ts     # Persistent global "My Library" store and IPC handlers
 │   │   ├── palette.ts     # Persistent global color palette store and IPC handlers
 │   │   ├── fonts.ts       # System font enumeration (fontconfig) + embedding policy store
+│   │   ├── recovery.ts    # Autosave recovery snapshots + IPC handlers
+│   │   ├── updates.ts     # Update checks (electron-updater / GitHub Releases API)
+│   │   ├── openFiles.ts   # `.oanim` launch-argument extraction
 │   │   └── projects.ts    # Project file IO, resource/image IPC handlers
 │   ├── preload/           # Preload scripts (contextBridge API)
 │   ├── shared/            # Pure TypeScript document model + unit tests
@@ -93,6 +96,8 @@ The application now provides a working authoring core: layers with keyframes, fr
 │   │   ├── renderSvg.ts   # Shared SVG fragment builder for the render tree
 │   │   ├── viewTransform.ts # Stage zoom/pan math (view state, not document)
 │   │   ├── recentProjects.ts # Recent-projects list logic
+│   │   ├── recovery.ts    # Recovery snapshot rules (offer when newer than the file)
+│   │   ├── updates.ts     # Release version parsing and comparison (pure)
 │   │   ├── textOutline.ts # Text→outline math shared by Convert-to-Outlines and the vector exporters
 │   │   ├── lottieExport.ts # Lottie (bodymovin) / dotLottie builder with placeholder degradation
 │   │   ├── exportSvgAnimation.ts # Animated-SVG (CSS keyframes) builder
@@ -117,7 +122,8 @@ The application now provides a working authoring core: layers with keyframes, fr
 │           ├── properties.ts # Right panel: layer / shape / path / text / image / group / symbol / camera / audio / draw / cell / palette sections
 │           ├── sectionState.ts # Panel-section collapse state persistence
 │           ├── panelLayout.ts  # Panel sizes, splitters and persistence
-│           ├── projects.ts   # Save / open / startup dialog orchestration
+│           ├── projects.ts   # Save / open / startup dialog / recovery orchestration
+│           ├── updateBanner.ts # Update-available banner
 │           ├── timeline.ts # Timeline panel (ruler, rows, playhead, drag-to-move)
 │           ├── main.ts    # Bootstrap, toolbar, shortcuts, autosave
 │           └── style.css
@@ -146,6 +152,8 @@ npm run dev        # start the app with hot reload
 | `npm test`              | Run unit tests with Vitest                               |
 | `npm run test:coverage` | Run unit tests with v8 coverage thresholds               |
 | `npm run dist:linux`    | Package Linux installers (AppImage, deb, rpm, Flatpak, tar.gz) |
+| `npm run dist:win`      | Package Windows installers (NSIS + portable exe)         |
+| `npm run dist:mac`      | Package macOS disk images (dmg, x64 + arm64)             |
 | `npm run check-version` | Check that the version is greater than the base branch   |
 
 ## Keyboard shortcuts
@@ -185,7 +193,14 @@ npm run dev        # start the app with hot reload
 The application follows [semantic versioning](https://semver.org/) with the version tracked in `package.json`.
 
 - **Pull requests** (`pr-check.yml`): install, verify that `package.json` version is strictly greater than the version on the base branch, typecheck, lint, build and test with coverage thresholds. Every PR must bump the version.
-- **Merges to main** (`main-build.yml`): typecheck, lint, test with coverage, build, then package Linux artifacts (AppImage, deb, rpm, Flatpak, tar.gz) and publish a GitHub release tagged `v<version>` with generated release notes. If the tag already exists, the release step is skipped.
+- **Merges to main** (`main-build.yml`): a **validate** job runs typecheck, lint, tests with coverage and the build; three packaging jobs then run on native runners — Linux (AppImage, deb, rpm, Flatpak, tar.gz), Windows (NSIS installer + portable exe) and macOS (dmg for x64 and arm64) — and a single GitHub release tagged `v<version>` is published with every artifact plus the `latest*.yml` update metadata files consumed by the in-app updater. If the tag already exists, the packaging and release steps are skipped.
+
+## Platform notes
+
+- **Unsigned downloads**: Windows and macOS builds ship unsigned for now (code signing is a tracked follow-up, which will also enable silent auto-update). Windows shows a SmartScreen warning ("More info → Run anyway"); on macOS, right-click the app → Open, or run `xattr -dr com.apple.quarantine /Applications/OpenAnimator.app`. Every release body repeats this notice.
+- **`.oanim` file association**: registered by the Windows NSIS installer, the macOS app bundle and the Linux deb/rpm/Flatpak desktop entries (MIME type `application/x-oanim`), so double-clicking a project opens it and dropping one onto the dock/taskbar icon forwards it to the running window. AppImage, tar.gz and the portable exe cannot register associations — open the file through the app instead.
+- **Update-available notification**: packaged builds check for a newer release once at startup (silent on failure) and show a dismissible banner linking to the release page. Nothing is downloaded or executed automatically; deb/rpm/Flatpak/tar.gz installs use a read-only GitHub Releases check since electron-updater can only update AppImage in place. Silent auto-update follows with code signing.
+- **Save model and crash recovery**: the project file changes only through an explicit Save/Save As; the debounced autosave writes a recovery snapshot under the Electron user-data folder (`recovery/`). When a project is reopened and its snapshot is newer than the last manual save, a dialog offers to **Recover** (load the autosaved state), **Discard** (delete the snapshot) or keep it for later. Snapshots of never-saved documents do not exist — autosave needs a known file path.
 
 ## License
 

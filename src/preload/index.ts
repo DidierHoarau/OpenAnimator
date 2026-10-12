@@ -4,6 +4,9 @@ import type { IpcRendererEvent } from 'electron'
 import {
   APP_API_CHANNEL,
   APP_MENU_COMMAND_CHANNEL,
+  APP_OPEN_FILE_CHANNEL,
+  APP_OPEN_RELEASE_CHANNEL,
+  APP_UPDATE_AVAILABLE_CHANNEL,
   AUDIO_PICK_CHANNEL,
   DOCUMENT_OPEN_DIALOG_CHANNEL,
   DOCUMENT_READ_CHANNEL,
@@ -23,11 +26,15 @@ import {
   PALETTE_SET_CHANNEL,
   RECENT_ADD_CHANNEL,
   RECENT_LIST_CHANNEL,
+  RECOVERY_CHECK_CHANNEL,
+  RECOVERY_CLEAR_CHANNEL,
+  RECOVERY_READ_CHANNEL,
+  RECOVERY_WRITE_CHANNEL,
   RESOURCE_ADD_CHANNEL,
   RESOURCE_PURGE_CHANNEL,
   RESOURCE_RESET_CHANNEL
 } from '../shared/api'
-import type { MenuCommand, OpenAnimatorApi } from '../shared/api'
+import type { MenuCommand, OpenAnimatorApi, UpdateAvailableInfo } from '../shared/api'
 
 const api: OpenAnimatorApi = {
   versions: () => ipcRenderer.invoke(APP_API_CHANNEL),
@@ -54,13 +61,32 @@ const api: OpenAnimatorApi = {
   listSystemFonts: () => ipcRenderer.invoke(FONT_LIST_CHANNEL),
   readSystemFont: (family, weight) => ipcRenderer.invoke(FONT_READ_CHANNEL, family, weight),
   getFontEmbeddingPolicy: () => ipcRenderer.invoke(FONT_POLICY_CHANNEL),
+  openReleasePage: (version) => ipcRenderer.invoke(APP_OPEN_RELEASE_CHANNEL, version),
   onMenuCommand: (listener) => {
     const handler = (_event: IpcRendererEvent, command: MenuCommand): void => listener(command)
     ipcRenderer.on(APP_MENU_COMMAND_CHANNEL, handler)
     return () => {
       ipcRenderer.removeListener(APP_MENU_COMMAND_CHANNEL, handler)
     }
-  }
+  },
+  onUpdateAvailable: (listener) => {
+    const handler = (_event: IpcRendererEvent, info: UpdateAvailableInfo): void => listener(info)
+    ipcRenderer.on(APP_UPDATE_AVAILABLE_CHANNEL, handler)
+    return () => {
+      ipcRenderer.removeListener(APP_UPDATE_AVAILABLE_CHANNEL, handler)
+    }
+  },
+  onOpenFile: (listener) => {
+    const handler = (_event: IpcRendererEvent, path: string): void => listener(path)
+    ipcRenderer.on(APP_OPEN_FILE_CHANNEL, handler)
+    return () => {
+      ipcRenderer.removeListener(APP_OPEN_FILE_CHANNEL, handler)
+    }
+  },
+  writeRecovery: (path, document) => ipcRenderer.invoke(RECOVERY_WRITE_CHANNEL, path, document),
+  checkRecovery: (path) => ipcRenderer.invoke(RECOVERY_CHECK_CHANNEL, path),
+  readRecovery: (path) => ipcRenderer.invoke(RECOVERY_READ_CHANNEL, path),
+  clearRecovery: (path) => ipcRenderer.invoke(RECOVERY_CLEAR_CHANNEL, path)
 }
 
 if (process.contextIsolated) {
