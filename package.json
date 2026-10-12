@@ -1,7 +1,7 @@
 {
   "name": "openanimator",
   "productName": "OpenAnimator",
-  "version": "0.20.0",
+  "version": "0.20.1",
   "description": "OpenAnimator is an open-source vector-based animation tool.",
   "main": "./out/main/index.js",
   "bin": {
