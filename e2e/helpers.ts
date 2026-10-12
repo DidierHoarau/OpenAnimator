@@ -7,6 +7,9 @@ import { join } from 'node:path'
 // Playwright transpiles this suite to CommonJS, so `__dirname` is available.
 const appRoot = join(__dirname, '..')
 
+/** userData dirs by application: `evaluate` no longer works once the app is gone. */
+const userDataDirs = new WeakMap<ElectronApplication, string>()
+
 export interface DialogPatches {
   /** Every save dialog (Save As…, export destination) resolves to this path. */
   savePath?: string
@@ -35,6 +38,7 @@ export async function launchApp(
     cwd: appRoot,
     env: { ...process.env, OPENANIMATOR_USER_DATA_DIR: userDataDir }
   })
+  userDataDirs.set(app, userDataDir)
   const page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   await patchDialogs(app, patches)
@@ -64,33 +68,48 @@ export async function dismissStartup(page: Page): Promise<void> {
 }
 
 /**
+ * True once the application is gone. `app.process()` throws after the app's
+ * Playwright dispatcher has been disposed — the client dereferences a removed
+ * dispatch entry — which is exactly the already-closed case.
+ */
+function processExited(app: ElectronApplication): boolean {
+  try {
+    const child = app.process()
+    return child.exitCode !== null || child.signalCode !== null
+  } catch {
+    return true
+  }
+}
+
+/**
  * Closes the application at the end of a test. A window close with a dirty
  * document shows the in-app unsaved-changes prompt, so the helper clicks
- * **Discard** when the prompt appears and waits for the process to exit. The
- * private userData directory is removed afterwards.
+ * **Discard** when the prompt appears and waits for the process to exit. A
+ * test that already closed the app itself is a no-op for the window flow.
+ * The private userData directory is removed either way.
  */
 export async function closeApp(app: ElectronApplication, page: Page): Promise<void> {
-  if (app.process().exitCode !== null || app.process().signalCode !== null) return
-  const userDataDir = await app
-    .evaluate(({ app: electronApp }) => electronApp.getPath('userData'))
-    .catch(() => null)
+  const userDataDir = userDataDirs.get(app)
+  try {
+    if (processExited(app)) return
 
-  const closed = app.waitForEvent('close')
-  await app
-    .evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows()[0]?.close()
-    })
-    .catch(() => undefined)
+    const closed = app.waitForEvent('close')
+    await app
+      .evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows()[0]?.close()
+      })
+      .catch(() => undefined)
 
-  const discard = page.locator('.modal-overlay .modal-actions button', { hasText: 'Discard' })
-  const promptHandled = discard
-    .waitFor({ state: 'visible', timeout: 5_000 })
-    .then(() => discard.click())
-    .catch(() => undefined)
-  await Promise.race([closed, promptHandled])
-  await closed
-
-  if (userDataDir?.includes('openanimator-e2e-')) {
-    await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined)
+    const discard = page.locator('.modal-overlay .modal-actions button', { hasText: 'Discard' })
+    const promptHandled = discard
+      .waitFor({ state: 'visible', timeout: 5_000 })
+      .then(() => discard.click())
+      .catch(() => undefined)
+    await Promise.race([closed, promptHandled])
+    await closed
+  } finally {
+    if (userDataDir?.includes('openanimator-e2e-')) {
+      await rm(userDataDir, { recursive: true, force: true }).catch(() => undefined)
+    }
   }
 }
