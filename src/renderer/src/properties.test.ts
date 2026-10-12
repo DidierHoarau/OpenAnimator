@@ -92,7 +92,8 @@ describe('PropertiesView sections', () => {
       'Group',
       'Symbol',
       'Draw',
-      'Cell'
+      'Cell',
+      'Palette'
     ])
   })
 

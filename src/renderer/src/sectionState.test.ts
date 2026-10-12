@@ -35,7 +35,8 @@ describe('section state', () => {
       group: true,
       symbol: true,
       draw: true,
-      cell: true
+      cell: true,
+      palette: true
     })
   })
 
@@ -50,7 +51,8 @@ describe('section state', () => {
       group: false,
       symbol: true,
       draw: false,
-      cell: true
+      cell: true,
+      palette: false
     }
     saveSectionState(storage, state)
     expect(storage.getItem(SECTION_STORAGE_KEY)).toBe(JSON.stringify(state))
@@ -79,7 +81,8 @@ describe('section state', () => {
       group: true,
       symbol: true,
       draw: true,
-      cell: true
+      cell: true,
+      palette: true
     })
   })
 

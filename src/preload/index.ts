@@ -15,6 +15,8 @@ import {
   LIBRARY_LIST_CHANNEL,
   LIBRARY_REMOVE_CHANNEL,
   LIBRARY_RENAME_CHANNEL,
+  PALETTE_GET_CHANNEL,
+  PALETTE_SET_CHANNEL,
   RECENT_ADD_CHANNEL,
   RECENT_LIST_CHANNEL,
   RESOURCE_ADD_CHANNEL,
@@ -42,6 +44,8 @@ const api: OpenAnimatorApi = {
   renameLibraryAsset: (id, name) => ipcRenderer.invoke(LIBRARY_RENAME_CHANNEL, id, name),
   pickExportPath: (request) => ipcRenderer.invoke(EXPORT_PICK_PATH_CHANNEL, request),
   writeExportFile: (path, bytes) => ipcRenderer.invoke(EXPORT_WRITE_CHANNEL, path, bytes),
+  loadGlobalPalette: () => ipcRenderer.invoke(PALETTE_GET_CHANNEL),
+  saveGlobalPalette: (colors) => ipcRenderer.invoke(PALETTE_SET_CHANNEL, colors),
   onMenuCommand: (listener) => {
     const handler = (_event: IpcRendererEvent, command: MenuCommand): void => listener(command)
     ipcRenderer.on(APP_MENU_COMMAND_CHANNEL, handler)

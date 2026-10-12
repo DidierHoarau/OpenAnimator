@@ -1,6 +1,17 @@
 import Ajv, { type ValidateFunction } from 'ajv'
 
-import { DOCUMENT_SCHEMA, EASING_VALUES, easingSchema, sceneNodeSchema } from './documentSchema'
+import { parseHexColor } from '../color'
+import { MAX_GRADIENT_STOPS, MIN_GRADIENT_STOPS } from '../paint'
+import {
+  DOCUMENT_SCHEMA,
+  EASING_VALUES,
+  easingSchema,
+  gradientPaintSchema,
+  HEX_COLOR_PATTERN,
+  MAX_PALETTE_COLORS,
+  paintSchema,
+  sceneNodeSchema
+} from './documentSchema'
 
 /**
  * The scripting command contract: a JSON list of atomic commands applied in
@@ -42,6 +53,7 @@ export type ScriptCommand =
   | { op: 'setCell'; layerId?: string; frame?: number; resourceId: string }
   | { op: 'setDuration'; frames: number }
   | { op: 'setFps'; fps: number }
+  | { op: 'setPalette'; colors: string[] }
   | { op: 'seek'; frame: number }
 
 /** One validation or application outcome, designed to be fed back to a model. */
@@ -71,6 +83,9 @@ export const COMMANDS_SCHEMA = {
     easing: easingSchema(),
     /** setTween's easing also accepts null, which turns the tween off. */
     tweenEasing: { anyOf: [{ $ref: '#/definitions/easing' }, { type: 'null' }] },
+    /** Paint value of fill/stroke fields: a flat color or a strict gradient. */
+    paint: paintSchema(),
+    gradientPaint: gradientPaintSchema(),
     sceneNode: sceneNodeSchema(false),
     /** Loose structural patch of a node: only known fields, no deep shape. */
     nodePatch: {
@@ -83,8 +98,8 @@ export const COMMANDS_SCHEMA = {
         height: { type: 'number', minimum: 0 },
         rotation: { type: 'number' },
         opacity: { type: 'number', minimum: 0, maximum: 1 },
-        fill: { type: 'string' },
-        stroke: { type: 'string' },
+        fill: { $ref: '#/definitions/paint' },
+        stroke: { $ref: '#/definitions/paint' },
         strokeWidth: { type: 'number', minimum: 0 },
         d: { type: 'string' },
         text: { type: 'string' },
@@ -116,6 +131,7 @@ export const COMMANDS_SCHEMA = {
             'setCell',
             'setDuration',
             'setFps',
+            'setPalette',
             'seek'
           ]
         },
@@ -134,6 +150,11 @@ export const COMMANDS_SCHEMA = {
         resourceId: { type: 'string' },
         frames: { type: 'integer', minimum: 1 },
         fps: { type: 'number', exclusiveMinimum: 0 },
+        colors: {
+          type: 'array',
+          maxItems: MAX_PALETTE_COLORS,
+          items: { type: 'string', pattern: HEX_COLOR_PATTERN }
+        },
         easing: { $ref: '#/definitions/tweenEasing' }
       },
       allOf: [
@@ -215,6 +236,10 @@ export const COMMANDS_SCHEMA = {
           then: { required: ['fps'], additionalProperties: false, properties: { op: {}, fps: {} } }
         },
         {
+          if: { properties: { op: { const: 'setPalette' } }, required: ['op'] },
+          then: { required: ['colors'], additionalProperties: false, properties: { op: {}, colors: {} } }
+        },
+        {
           if: { properties: { op: { const: 'seek' } }, required: ['op'] },
           then: { required: ['frame'], additionalProperties: false, properties: { op: {}, frame: {} } }
         }
@@ -225,7 +250,7 @@ export const COMMANDS_SCHEMA = {
 
 /** Field shape table mirrored from `COMMANDS_SCHEMA.definitions.command`. */
 interface FieldSpec {
-  type: 'string' | 'number' | 'integer' | 'boolean' | 'object'
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'object' | 'array'
   required?: boolean
   min?: number
   max?: number
@@ -234,6 +259,11 @@ interface FieldSpec {
   nullable?: boolean
   /** String field that may also be a closed cubic bezier object. */
   bezier?: boolean
+  /** Field that may also be a strict gradient object (paint). */
+  paint?: boolean
+  /** Array items must be `#rgb`/`#rrggbb` strings. */
+  hexColors?: boolean
+  maxItems?: number
 }
 
 const OPS = [
@@ -252,6 +282,7 @@ const OPS = [
   'setCell',
   'setDuration',
   'setFps',
+  'setPalette',
   'seek'
 ] as const
 
@@ -315,6 +346,7 @@ const OP_FIELDS: Record<(typeof OPS)[number], Record<string, FieldSpec>> = {
   },
   setDuration: { frames: { type: 'integer', min: 1, required: true } },
   setFps: { fps: { type: 'number', exclusiveMin: 0, required: true } },
+  setPalette: { colors: { type: 'array', hexColors: true, maxItems: MAX_PALETTE_COLORS, required: true } },
   seek: { frame: { type: 'integer', min: 0, required: true } }
 }
 
@@ -333,17 +365,22 @@ const NODE_BASE_FIELDS: Record<string, FieldSpec> = {
 const NODE_KIND_FIELDS: Record<string, Record<string, FieldSpec>> = {
   primitive: {
     primitive: { type: 'string', enum: ['rect', 'ellipse'], required: true },
-    fill: { type: 'string', required: true },
-    stroke: { type: 'string' },
+    fill: { type: 'string', paint: true, required: true },
+    stroke: { type: 'string', paint: true },
     strokeWidth: { type: 'number', min: 0 }
   },
-  path: { d: { type: 'string', required: true }, fill: { type: 'string' }, stroke: { type: 'string' }, strokeWidth: { type: 'number', min: 0 } },
+  path: {
+    d: { type: 'string', required: true },
+    fill: { type: 'string', paint: true },
+    stroke: { type: 'string', paint: true },
+    strokeWidth: { type: 'number', min: 0 }
+  },
   text: {
     text: { type: 'string', required: true },
     fontFamily: { type: 'string', required: true },
     fontSize: { type: 'number', exclusiveMin: 0, required: true },
     fontWeight: { type: 'number', min: 1, max: 1000, required: true },
-    fill: { type: 'string', required: true },
+    fill: { type: 'string', paint: true, required: true },
     align: { type: 'string', enum: ['left', 'center', 'right'], required: true }
   },
   image: {
@@ -363,8 +400,8 @@ const NODE_PATCH_FIELDS: Record<string, FieldSpec> = {
   height: { type: 'number', min: 0 },
   rotation: { type: 'number' },
   opacity: { type: 'number', min: 0, max: 1 },
-  fill: { type: 'string' },
-  stroke: { type: 'string' },
+  fill: { type: 'string', paint: true },
+  stroke: { type: 'string', paint: true },
   strokeWidth: { type: 'number', min: 0 },
   d: { type: 'string' },
   text: { type: 'string' },
@@ -392,6 +429,36 @@ function checkField(collector: Collector, path: string, spec: FieldSpec, value: 
   const kind = describeType(value)
   if (spec.bezier && kind === 'object') {
     checkBezierEasing(collector, path, value)
+    return
+  }
+  if (spec.paint) {
+    if (kind === 'string') {
+      if ((value as string).trim().length === 0) collector.at(path, 'must not be empty')
+      return
+    }
+    if (kind === 'object') {
+      checkGradientPaint(collector, path, value)
+      return
+    }
+    collector.at(path, `must be a color string or gradient object (got ${kind})`)
+    return
+  }
+  if (spec.type === 'array') {
+    if (kind !== 'array') {
+      collector.at(path, `must be array (got ${kind})`)
+      return
+    }
+    const items = value as unknown[]
+    if (spec.maxItems !== undefined && items.length > spec.maxItems) {
+      collector.at(path, `must have at most ${spec.maxItems} items`)
+    }
+    if (spec.hexColors) {
+      items.forEach((item, index) => {
+        if (typeof item !== 'string' || parseHexColor(item) === null) {
+          collector.at(`${path}/${index}`, 'must be a hex color (#rgb or #rrggbb)')
+        }
+      })
+    }
     return
   }
   if (spec.type === 'boolean') {
@@ -474,6 +541,77 @@ function checkBezierEasing(collector: Collector, path: string, value: unknown): 
       collector.at(`${path}/${key}`, 'must not have additional properties')
     }
   }
+}
+
+function checkGradientNumber(collector: Collector, path: string, value: unknown): void {
+  if (value === undefined) {
+    collector.at(path, 'is required')
+  } else if (typeof value !== 'number' || !Number.isFinite(value)) {
+    collector.at(path, 'must be number')
+  }
+}
+
+function checkGradientStop(collector: Collector, path: string, value: unknown): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    collector.at(path, 'must be object')
+    return
+  }
+  const stop = value as Record<string, unknown>
+  const offset = stop.offset
+  if (offset === undefined) collector.at(`${path}/offset`, 'is required')
+  else if (typeof offset !== 'number' || !Number.isFinite(offset)) {
+    collector.at(`${path}/offset`, 'must be number')
+  } else if (offset < 0 || offset > 1) {
+    collector.at(`${path}/offset`, 'must be >= 0 and <= 1')
+  }
+  const color = stop.color
+  if (color === undefined) collector.at(`${path}/color`, 'is required')
+  else if (typeof color !== 'string' || parseHexColor(color) === null) {
+    collector.at(`${path}/color`, 'must be a hex color (#rgb or #rrggbb)')
+  }
+  for (const key of Object.keys(stop)) {
+    if (key !== 'offset' && key !== 'color') {
+      collector.at(`${path}/${key}`, 'must not have additional properties')
+    }
+  }
+}
+
+/** Strict gradient paint check mirroring `gradientPaintSchema`: exactly one
+ * linear or radial shape, 2–8 stops with 0..1 offsets and hex colors. */
+function checkGradientPaint(collector: Collector, path: string, value: unknown): void {
+  const gradient = value as Record<string, unknown>
+  const type = gradient.type
+  if (type !== 'linear' && type !== 'radial') {
+    collector.at(`${path}/type`, 'must be one of "linear", "radial"')
+    return
+  }
+  const allowed = type === 'linear' ? ['type', 'angle', 'stops'] : ['type', 'cx', 'cy', 'r', 'stops']
+  for (const key of Object.keys(gradient)) {
+    if (!allowed.includes(key)) collector.at(`${path}/${key}`, 'must not have additional properties')
+  }
+  if (type === 'linear') {
+    checkGradientNumber(collector, `${path}/angle`, gradient.angle)
+  } else {
+    checkGradientNumber(collector, `${path}/cx`, gradient.cx)
+    checkGradientNumber(collector, `${path}/cy`, gradient.cy)
+    checkGradientNumber(collector, `${path}/r`, gradient.r)
+  }
+  const stops = gradient.stops
+  if (stops === undefined) {
+    collector.at(`${path}/stops`, 'is required')
+    return
+  }
+  if (!Array.isArray(stops)) {
+    collector.at(`${path}/stops`, 'must be array')
+    return
+  }
+  if (stops.length < MIN_GRADIENT_STOPS || stops.length > MAX_GRADIENT_STOPS) {
+    collector.at(
+      `${path}/stops`,
+      `must have between ${MIN_GRADIENT_STOPS} and ${MAX_GRADIENT_STOPS} items`
+    )
+  }
+  stops.forEach((stop, index) => checkGradientStop(collector, `${path}/stops/${index}`, stop))
 }
 
 function validateSceneNodes(collector: Collector, path: string, value: unknown): void {

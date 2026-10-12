@@ -63,7 +63,8 @@ function firstLayer(doc: AnimatorDocument): ObjectLayer {
 describe('document operations', () => {
   it('creates a document with one empty layer and keyframe at 0', () => {
     const doc = createDocument('test', 960, 540, 24)
-    expect(doc.schemaVersion).toBe(4)
+    expect(doc.schemaVersion).toBe(5)
+    expect(doc.palette).toEqual([])
     expect(doc.layers).toHaveLength(1)
     expect(firstLayer(doc).keyframes).toEqual([{ frame: 0, nodes: [] }])
     expect(documentDuration(doc)).toBe(1)

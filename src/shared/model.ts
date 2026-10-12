@@ -1,5 +1,6 @@
 import type { Vec2 } from './geometry'
 import type { Easing } from './easing'
+import type { Paint } from './paint'
 
 export type PrimitiveKind = 'rect' | 'ellipse'
 
@@ -22,8 +23,8 @@ export interface NodeBase {
 export interface PrimitiveNode extends NodeBase {
   type: 'primitive'
   primitive: PrimitiveKind
-  fill: string
-  stroke?: string
+  fill: Paint
+  stroke?: Paint
   strokeWidth?: number
 }
 
@@ -58,8 +59,8 @@ export interface SymbolNode extends NodeBase {
 export interface PathNode extends NodeBase {
   type: 'path'
   d: string
-  fill?: string
-  stroke?: string
+  fill?: Paint
+  stroke?: Paint
   strokeWidth?: number
 }
 
@@ -82,7 +83,7 @@ export interface TextNode extends NodeBase {
   fontFamily: string
   fontSize: number
   fontWeight: number
-  fill: string
+  fill: Paint
   align: 'left' | 'center' | 'right'
 }
 
@@ -162,13 +163,16 @@ export function isDrawingLayer(layer: Layer): layer is DrawingLayer {
 
 /** The authoring document. `layers[0]` is the topmost layer. */
 export interface AnimatorDocument {
-  schemaVersion: 4
+  schemaVersion: 5
   name: string
   width: number
   height: number
   fps: number
   background: string
   layers: Layer[]
+  /** Document color palette: up to 48 `#rrggbb` swatches shown in every color
+   * picker. Documents saved before this field existed get `[]` on migration. */
+  palette: string[]
   /**
    * Authored timeline length in frames. Optional for documents saved before
    * this field existed; when absent the duration is derived from keyframes.

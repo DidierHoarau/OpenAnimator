@@ -50,6 +50,7 @@ layer. Frames are 0-based.
 | `setCell` | `layerId?`, `frame?`, `resourceId` | Places a raster cell on a drawing layer. |
 | `setDuration` | `frames` | Sets the authored timeline length. |
 | `setFps` | `fps` | Sets frames per second. |
+| `setPalette` | `colors` | Replaces the document palette with up to 48 hex colors (`#rgb`/`#rrggbb`); entries are normalized, deduplicated and invalid ones dropped (warned). |
 | `seek` | `frame` | Moves the playhead (warnings when clamped). |
 
 ### Node kinds
@@ -68,6 +69,30 @@ The `patch` of `updateNode` accepts the whitelisted node fields (`name`,
 `center`, `width`, `height`, `rotation`, `opacity`, `fill`, `stroke`,
 `strokeWidth`, `d`, and the text fields); unknown fields are rejected by the
 schema, never silently ignored.
+
+### Paint values (fill / stroke)
+
+Every `fill` and `stroke` is a **paint**: either a flat color string
+(`#rrggbb`, `#rgb`, `none`) or a gradient object with 2–8 stops:
+
+```json
+{"op": "updateNode", "nodeId": "n1", "patch": {
+  "fill": {"type": "linear", "angle": 90,
+           "stops": [{"offset": 0, "color": "#f59e0b"},
+                     {"offset": 1, "color": "#7c2d12"}]}}}
+```
+
+- **linear** — `type`, `angle` (degrees, 0 = left→right, positive clockwise),
+  `stops`.
+- **radial** — `type`, `cx`, `cy`, `r` (fractions of the node's bounding box,
+  so the paint survives resizes), `stops`.
+- A stop is `{"offset": 0..1, "color": "#rrggbb"}`. Offsets need not be
+  sorted (the renderer sorts them); colors must be hex.
+
+Gradients interpolate when tweening between two poses that use the same
+gradient type and stop count; any mismatch snaps at the last frame (same
+behavior as unparseable solid colors). Unknown gradient fields are rejected
+by both the JSON Schema and the renderer validator.
 
 ## Validate-and-retry loop
 

@@ -1,18 +1,20 @@
-import { lerpHexColor } from './color'
 import { lerp } from './geometry'
 import type { Vec2 } from './geometry'
 import type { SceneNode } from './model'
 import { cloneNode } from './model'
 import { cubicBezierPoint } from './motionPath'
+import { lerpPaint } from './paint'
 
 /**
  * Interpolates a node between two keyframe contents matched by id. Every node
  * type lerps transform + opacity; primitives additionally lerp fill, stroke
- * and stroke width. Identity fields (id, name, type, resourceId, assetId,
- * children, …) never interpolate — they come from `from`. Nodes whose type
- * differs (or primitives of a different `primitive` kind) snap from `from` to
- * `to` at the ends. When `centerPath` is given the center follows that cubic
- * bezier (smooth motion path) instead of the straight lerp.
+ * and stroke width (paints through `lerpPaint`: solid↔solid lerps the color,
+ * matching gradients lerp geometry and stops, any mismatch snaps). Identity
+ * fields (id, name, type, resourceId, assetId, children, …) never
+ * interpolate — they come from `from`. Nodes whose type differs (or
+ * primitives of a different `primitive` kind) snap from `from` to `to` at the
+ * ends. When `centerPath` is given the center follows that cubic bezier
+ * (smooth motion path) instead of the straight lerp.
  */
 export function tweenNode(
   from: SceneNode,
@@ -92,8 +94,11 @@ export function tweenNode(
     ...base,
     type: 'primitive',
     primitive: from.primitive,
-    fill: lerpHexColor(from.fill, to.fill, t) ?? (t < 1 ? from.fill : to.fill),
-    stroke: lerpHexColor(from.stroke ?? '', to.stroke ?? '', t) ?? (from.stroke ?? to.stroke),
+    fill: lerpPaint(from.fill, to.fill, t),
+    stroke:
+      from.stroke !== undefined && to.stroke !== undefined
+        ? lerpPaint(from.stroke, to.stroke, t)
+        : (from.stroke ?? to.stroke),
     strokeWidth:
       from.strokeWidth !== undefined && to.strokeWidth !== undefined
         ? lerp(from.strokeWidth, to.strokeWidth, t)

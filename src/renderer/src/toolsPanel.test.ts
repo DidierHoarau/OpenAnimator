@@ -33,6 +33,7 @@ describe('buildToolsPanel', () => {
       'ellipse',
       'line',
       'pen',
+      'vector',
       'text'
     ])
     for (const button of toolButtons(panel)) {
@@ -71,6 +72,7 @@ describe('buildToolsPanel', () => {
       'ellipse',
       'line',
       'pen',
+      'vector',
       'text'
     ])
   })

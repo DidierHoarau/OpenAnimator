@@ -61,6 +61,26 @@ export function strokeSegments(points: StrokePoint[]): StrokeSegment[] {
   return segments
 }
 
+function formatPathNumber(value: number): string {
+  return String(Number(value.toFixed(2)))
+}
+
+/**
+ * Smoothed centerline of a pointer polyline as SVG path data (`d`): an `M`
+ * to the first point, then one `Q` per `strokeSegments` piece. The vector
+ * brush commits this as a `PathNode` with a uniform stroke width — the
+ * raster brush's pressure-width tapering is intentionally not modeled.
+ */
+export function strokeToPathData(points: StrokePoint[]): string {
+  const segments = strokeSegments(points)
+  if (segments.length === 0) return ''
+  let d = `M ${formatPathNumber(segments[0].from.x)} ${formatPathNumber(segments[0].from.y)}`
+  for (const segment of segments) {
+    d += ` Q ${formatPathNumber(segment.control.x)} ${formatPathNumber(segment.control.y)} ${formatPathNumber(segment.to.x)} ${formatPathNumber(segment.to.y)}`
+  }
+  return d
+}
+
 /** Injectable canvas dependencies (happy-dom has no canvas 2D). */
 export interface DrawingSessionDeps {
   /** Canvas of the given pixel size with a 2D context, or null. */

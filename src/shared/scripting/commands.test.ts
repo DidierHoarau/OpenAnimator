@@ -200,9 +200,144 @@ describe('hand-rolled validator vs JSON Schema', () => {
     { commands: [{ op: 'setHoldStep' }] },
     { commands: [{ op: 'setFps', fps: 0 }] },
     { commands: [{ op: 'setDuration', frames: 1.5 }] },
+    { commands: [{ op: 'setPalette', colors: ['#fff', '#123456', '#abcdEF'] }] },
+    { commands: [{ op: 'setPalette', colors: [] }] },
+    { commands: [{ op: 'setPalette' }] },
+    { commands: [{ op: 'setPalette', colors: ['red'] }] },
+    { commands: [{ op: 'setPalette', colors: ['#fff'], extra: 1 }] },
     { commands: [{ op: 'seek', frame: -1 }] },
     { commands: [{ op: 'deleteNode', nodeId: 'x', surprise: 1 }] },
-    { commands: [{ op: 'setKeyframe', nodeId: 'x', patch: { opacity: 2 } }] }
+    { commands: [{ op: 'setKeyframe', nodeId: 'x', patch: { opacity: 2 } }] },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 90,
+              stops: [
+                { offset: 0, color: '#f59e0b' },
+                { offset: 1, color: '#7c2d12' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'path',
+            d: 'M 0 0 L 10 10',
+            stroke: {
+              type: 'radial',
+              cx: 0.5,
+              cy: 0.5,
+              r: 0.5,
+              stops: [
+                { offset: 0, color: '#fff' },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    { commands: [{ op: 'updateNode', nodeId: 'x', patch: { stroke: 'none' } }] },
+    { commands: [{ op: 'addNode', node: { type: 'primitive', primitive: 'rect', fill: '' } }] },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: { type: 'linear', angle: 0, stops: [{ offset: 0, color: '#fff' }] }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 0,
+              stops: [
+                { offset: 0, color: 'red' },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'radial',
+              cx: 0.5,
+              stops: [
+                { offset: 0, color: '#fff' },
+                { offset: 1, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'addNode',
+          node: {
+            type: 'primitive',
+            primitive: 'rect',
+            fill: {
+              type: 'linear',
+              angle: 0,
+              stops: [
+                { offset: 0, color: '#fff' },
+                { offset: 1, color: '#000' }
+              ],
+              extra: 1
+            }
+          }
+        }
+      ]
+    },
+    {
+      commands: [
+        {
+          op: 'updateNode',
+          nodeId: 'x',
+          patch: {
+            fill: {
+              type: 'linear',
+              angle: -45,
+              stops: [
+                { offset: 0, color: '#fff' },
+                { offset: 2, color: '#000' }
+              ]
+            }
+          }
+        }
+      ]
+    }
   ]
 
   it('agrees with the compiled schema on every corpus entry', () => {

@@ -7,6 +7,7 @@ import { APP_API_CHANNEL, APP_MENU_COMMAND_CHANNEL } from '../shared/api'
 import type { AppVersions, MenuCommand } from '../shared/api'
 import { registerExportHandlers } from './exports'
 import { registerLibraryHandlers } from './library'
+import { registerPaletteHandlers } from './palette'
 import { registerProjectHandlers } from './projects'
 
 /** Routes a menu command to the focused renderer. */
@@ -92,6 +93,7 @@ app.whenReady().then(() => {
   registerProjectHandlers()
   registerLibraryHandlers()
   registerExportHandlers()
+  registerPaletteHandlers()
   installApplicationMenu()
 
   ipcMain.handle(APP_API_CHANNEL, (): AppVersions => ({

@@ -79,6 +79,15 @@ const TOOL_GROUPS: ToolEntry[][] = [
         '<path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/>' +
         '<path d="m2 2 7.586 7.586"/>' +
         '<circle cx="11" cy="11" r="2"/>'
+    },
+    {
+      tool: 'vector',
+      label: 'Vector brush',
+      title: 'Draw a smooth vector stroke, committed as an editable path (N)',
+      icon:
+        '<path d="M4 18c2.5-7 5-7 7.5-2.5S16.5 19 20 6"/>' +
+        '<circle cx="4" cy="18" r="1.6"/>' +
+        '<circle cx="20" cy="6" r="1.6"/>'
     }
   ],
   [

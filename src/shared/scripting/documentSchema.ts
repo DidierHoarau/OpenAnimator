@@ -1,5 +1,5 @@
 /**
- * JSON Schema of the OpenAnimator document (schemaVersion 4) — the generation
+ * JSON Schema of the OpenAnimator document (schemaVersion 5) — the generation
  * contract for tools and LLMs that produce `document.json` payloads. The
  * schema mirrors the structural validation in `document.ts`
  * (`isAnimatorDocument`/`isSceneNode`); documents are always re-validated
@@ -22,6 +22,12 @@ export interface Vec2 {
 
 export const EASING_VALUES = ['linear', 'ease-in', 'ease-out', 'ease-in-out'] as const
 
+/** Maximum number of colors in the document palette. */
+export const MAX_PALETTE_COLORS = 48
+
+/** Hex color pattern accepted by the document and command contracts. */
+export const HEX_COLOR_PATTERN = '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$'
+
 /** Shared non-null easing definition: a named easing or a closed cubic
  * bezier. Used by the document contract and the command contract. */
 export function easingSchema(): Record<string, unknown> {
@@ -40,6 +46,62 @@ export function easingSchema(): Record<string, unknown> {
         }
       }
     ]
+  }
+}
+
+/** Shared gradient paint definition: one strict linear or radial shape, 2–8
+ * stops with 0..1 offsets and hex colors; unknown fields are rejected. */
+export function gradientPaintSchema(): Record<string, unknown> {
+  const stop = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['offset', 'color'],
+    properties: {
+      offset: { type: 'number', minimum: 0, maximum: 1 },
+      color: { type: 'string', pattern: HEX_COLOR_PATTERN }
+    }
+  }
+  return {
+    oneOf: [
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['type', 'angle', 'stops'],
+        properties: {
+          type: { const: 'linear' },
+          angle: { type: 'number' },
+          stops: { type: 'array', minItems: 2, maxItems: 8, items: stop }
+        }
+      },
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['type', 'cx', 'cy', 'r', 'stops'],
+        properties: {
+          type: { const: 'radial' },
+          cx: { type: 'number' },
+          cy: { type: 'number' },
+          r: { type: 'number' },
+          stops: { type: 'array', minItems: 2, maxItems: 8, items: stop }
+        }
+      }
+    ]
+  }
+}
+
+/** Shared paint reference: a flat color string or a gradient object. */
+export function paintSchema(): Record<string, unknown> {
+  return {
+    oneOf: [{ type: 'string', minLength: 1 }, gradientPaintSchema()]
+  }
+}
+
+/** Shared palette definition: up to 48 hex colors. */
+export function paletteSchema(): Record<string, unknown> {
+  return {
+    type: 'array',
+    maxItems: MAX_PALETTE_COLORS,
+    items: { type: 'string', pattern: HEX_COLOR_PATTERN }
   }
 }
 
@@ -93,8 +155,8 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
       type: { enum: ['primitive', 'path', 'text', 'image', 'group', 'symbol'] },
       ...NODE_BASE_FIELDS,
       primitive: { enum: ['rect', 'ellipse'] },
-      fill: { type: 'string' },
-      stroke: { type: 'string' },
+      fill: { $ref: '#/definitions/paint' },
+      stroke: { $ref: '#/definitions/paint' },
       strokeWidth: { type: 'number', minimum: 0 },
       d: { type: 'string', minLength: 1 },
       text: { type: 'string' },
@@ -115,13 +177,13 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
 
 export const DOCUMENT_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v4.json',
-  title: 'OpenAnimator document (v4)',
+  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v5.json',
+  title: 'OpenAnimator document (v5)',
   type: 'object',
   additionalProperties: false,
-  required: ['schemaVersion', 'name', 'width', 'height', 'fps', 'background', 'layers', 'assets'],
+  required: ['schemaVersion', 'name', 'width', 'height', 'fps', 'background', 'layers', 'assets', 'palette'],
   properties: {
-    schemaVersion: { const: 4 },
+    schemaVersion: { const: 5 },
     name: { type: 'string', minLength: 1 },
     width: { type: 'number', exclusiveMinimum: 0 },
     height: { type: 'number', exclusiveMinimum: 0 },
@@ -130,7 +192,8 @@ export const DOCUMENT_SCHEMA = {
     frames: { type: 'integer', minimum: 1 },
     holdStep: { type: 'integer', minimum: 1, maximum: 16 },
     layers: { type: 'array', items: { $ref: '#/definitions/layer' } },
-    assets: { type: 'array', items: { $ref: '#/definitions/asset' } }
+    assets: { type: 'array', items: { $ref: '#/definitions/asset' } },
+    palette: { $ref: '#/definitions/palette' }
   },
   definitions: {
     vec2: {
@@ -140,6 +203,8 @@ export const DOCUMENT_SCHEMA = {
       properties: { x: { type: 'number' }, y: { type: 'number' } }
     },
     easing: easingSchema(),
+    paint: paintSchema(),
+    palette: paletteSchema(),
     sceneNode: sceneNodeSchema(true),
     keyframe: {
       type: 'object',

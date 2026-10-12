@@ -4,7 +4,7 @@ OpenAnimator is an open-source, vector-based animation tool built as an Electron
 
 ## Status
 
-The application now provides a working authoring core: layers with keyframes, frame-by-frame drawing layers painted with brush and eraser tools, a frame timeline with cell filmstrips, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, a reusable asset library with document and persistent global collections, symbol instances with isolated editing, raster image import, basic vector drawing and selection tools, onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
+The application now provides a working authoring core: layers with keyframes, frame-by-frame drawing layers painted with brush and eraser tools, a frame timeline with cell filmstrips, classic tweening with easing, a polymorphic scene graph (primitives, images, groups and symbols) with grouping, a reusable asset library with document and persistent global collections, symbol instances with isolated editing, raster image import, SVG import as editable vectors, basic vector drawing and selection tools, a vector brush, linear/radial gradient paints, a document and global color palette, onion skinning and playback — all rendered as SVG. Projects are saved as versioned ZIP `.oanim` containers that can carry binary resources.
 
 ## Tech stack
 
@@ -17,13 +17,15 @@ The application now provides a working authoring core: layers with keyframes, fr
 
 ## Authoring features
 
-- **Document model**: stage size, frame rate, background color, and a list of layers (`layers[0]` is the topmost). Layers come in two kinds: object layers (keyframed scene nodes) and drawing layers (frame-by-frame raster cells). The scene is a tree of polymorphic nodes — primitives (`rect`, `ellipse`), placed images, groups and symbol instances — all sharing one transform vocabulary (position, size, rotation, opacity). Documents serialize to the `schemaVersion: 4` JSON inside the project container; legacy `schemaVersion: 1`–`3` documents are migrated transparently on open and restamped to v4.
-- **Image import**: `Ctrl+I`, the toolbar button, or dropping image files from the OS onto the stage places the image on the current object layer — centered on the stage or at the drop point — at natural size capped to the stage, auto-selected. PNG/JPG/WebP keep their original bytes, GIFs become a PNG of their first frame and static SVGs are rasterized at 2×. Images render as `<image>` elements, tween on transform + opacity and hit-test by bounding box in v1.
+- **Document model**: stage size, frame rate, background color, a color palette, and a list of layers (`layers[0]` is the topmost). Layers come in two kinds: object layers (keyframed scene nodes) and drawing layers (frame-by-frame raster cells). The scene is a tree of polymorphic nodes — primitives (`rect`, `ellipse`), editable vector paths, styled text, placed images, groups and symbol instances — all sharing one transform vocabulary (position, size, rotation, opacity). Documents serialize to the `schemaVersion: 5` JSON inside the project container; legacy `schemaVersion: 1`–`4` documents are migrated transparently on open and restamped to v5 (older files get an empty palette).
+- **Paint**: every fill and stroke is either a flat color or a **linear/radial gradient** (`Paint`). Gradients carry 2–8 ordered stops, are stored in the document JSON, render as inline SVG `<defs>` (content-hashed, deduplicated per frame) with bounding-box units, and interpolate in classic tweens when both keyframes use a matching gradient — any mismatch snaps like other identity fields. Older documents migrate to flat paints untouched.
+- **Image import**: `Ctrl+I`, the toolbar button, or dropping image files from the OS onto the stage places the image on the current object layer — centered on the stage or at the drop point — at natural size capped to the stage, auto-selected. PNG/JPG/WebP keep their original bytes, GIFs become a PNG of their first frame. **SVG import**: SVGs covering a documented subset (shapes, paths, polygons, polylines, lines, groups, transforms, presentation attributes and CSS styles — see `docs/svg-import.md`) are imported as **editable vectors** — a group of primitives and paths with transforms baked in, auto-selected, all in one undo step — and repeated identical leaf shapes collapse into symbol assets. Files outside the subset (text, images, filters, gradients, masks, arcs…) are rasterized at 2× instead, with the reason shown in the status bar. Images render as `<image>` elements, tween on transform + opacity and hit-test by bounding box in v1.
 - **Layers**: visibility and lock toggles, add/remove layers of both kinds, per-layer keyframes.
 - **Frame-by-frame drawing layers**: paint raster cells directly on the stage with the Brush (`B`) and Eraser (`E`) tools — pointer-pressure-aware width, jitter-smoothed quadratic strokes, adjustable color, size (`[` / `]`) and opacity, and a live overlay that mirrors the in-progress stroke. Each stroke commits as one PNG resource in the content-addressed store (auto-deduped) and one undo step; drawing on a frame without a cell creates one automatically. Cells hold until the next cell; `F6` duplicates the previous cell, `F7` inserts a blank one, `Clear`/`Remove Cell` blank or drop the cell at the playhead, and the timeline shows a per-layer filmstrip of cell thumbnails with a per-layer buffer-resolution setting (1–4× stage size).
 - **Keyframes**: content keyframes and blank keyframes, insert/remove at the playhead, insert frame to extend holds. Keyframe markers drag between frames (shift-click selects several; a drag moves them all in one undo step, merging into existing keyframes) and copy/paste with `Ctrl+C`/`Ctrl+V`, keeping each pose's relative timing and its tween.
-- **Classic tweening**: a tween on a keyframe interpolates matching nodes (matched by id) toward the next keyframe — position, size, rotation and opacity for every node kind, plus fill and outline for primitives — with named easing curves (linear, ease-in, ease-out, ease-in-out), a cubic-bezier easing solver and a draggable curve editor in the properties panel. A tween can also follow a **smooth motion path** — the center swings along a curve through the node's neighbouring poses instead of straight lines — and the whole document can play on n's through the non-destructive **hold step**. Identity fields (image resource, group children, symbol asset) never interpolate; mismatched kinds snap.
-- **Drawing tools**: rectangle and ellipse creation by drag (click for a default-size shape), selection with rotation-aware hit testing, move, nudge (arrow keys) and delete.
+- **Classic tweening**: a tween on a keyframe interpolates matching nodes (matched by id) toward the next keyframe — position, size, rotation and opacity for every node kind, plus fill and outline (flat colors or gradients) for primitives — with named easing curves (linear, ease-in, ease-out, ease-in-out), a cubic-bezier easing solver and a draggable curve editor in the properties panel. A tween can also follow a **smooth motion path** — the center swings along a curve through the node's neighbouring poses instead of straight lines — and the whole document can play on n's through the non-destructive **hold step**. Identity fields (image resource, group children, symbol asset) never interpolate; mismatched kinds snap.
+- **Drawing tools**: rectangle and ellipse creation by drag (click for a default-size shape), a line tool (drag the endpoints; a plain click drops a default horizontal line), a pen tool (click for corner anchors, drag for curve handles, click the first anchor to close, `Enter` or double-click to commit, `Escape` to cancel) and a text tool that places a measured, auto-selected text node — plus selection with rotation-aware hit testing, move, nudge (arrow keys) and delete.
+- **Vector brush**: the `N` tool draws freehand strokes on the stage — pointer samples are smoothed into a quadratic-curve path and committed on release as one editable vector path node (stroked in the brush color, size and opacity, no fill), auto-selected, in a single undo step; a click without a drag draws a dot, and `Escape` or switching tools abandons an in-progress stroke.
 - **Groups**: `Ctrl+G` folds the selection of the active keyframe into one group (children re-expressed in group-local coordinates, z-order preserved) and `Ctrl+Shift+G` dissolves groups back into the layer space with an exact round-trip. Group transforms compose onto the children on ungroup; grouping and ungrouping are each a single undo step.
 - **Asset library & symbols**: `F8` (or `Save as Symbol…`) saves the selection as a reusable symbol asset and replaces it on stage with one instance; every instance references the asset, so `Edit Symbol` opens the artwork in an isolated scratch editor and commits the change back to all instances in one undo step, and `Break Apart` decouples an instance into an editable group. The left **Library panel** shows the document's assets and the persistent global **My Library** (stored in the Electron user-data folder) as searchable 72 px thumbnails with a context menu (place at center, rename, duplicate, delete with instance-count warning, save to My Library) and a pointer-based drag onto the stage that places an instance at the drop point; global assets are imported on use (resources are content-addressed, so re-use is cheap). Imported images are registered as image assets automatically. Symbol graphs may nest up to 16 levels; cycles and over-deep graphs never hang the renderer — unresolvable instances render as dashed placeholders and the problem is reported on load.
 - **Undo/redo**: snapshot history capped at 100 entries; a continuous drag or a color-swatch drag is a single undo step. `Ctrl+Z` / `Ctrl+Shift+Z` / `Ctrl+Y` with statusbar feedback, toolbar Undo/Redo buttons that enable with the history, and an application **Edit menu** whose Undo/Redo route to the editor (a focused text field keeps its native undo while it has focus). History resets when a new or opened document replaces the current one.
@@ -31,12 +33,16 @@ The application now provides a working authoring core: layers with keyframes, fr
 - **Multi-select**: the selection is a set — shift-click adds or toggles, rubber-band on empty stage area with the Select tool selects (shift unions). Move, nudge and delete apply to the whole selection; the properties panel edits the primary (last-selected) node.
 - **Properties panel**: a right-side panel of collapsible sections whose expanded/collapsed state is remembered across restarts. Sections adapt to the editor state — the node sections only appear while a matching node is selected:
   - **Layer**: keyframe operations on the selected object — insert/remove keyframe, classic tween toggle with an easing picker (named presets plus a draggable cubic-bezier curve editor) and a motion-path select (`Linear`/`Smooth`). Controls enable and disable according to the current layer, playhead and tween state. A `Move to` frame input shifts the selected objects so their first keyframes land on that frame, keeping their timing.
-  - **Shape**: edits the selected primitive — position, size, rotation, opacity, fill color (swatch or hex) and outline (color + width).
+  - **Shape**: edits the selected primitive — position, size, rotation, opacity, fill and outline — each paint edited either as a flat color (swatch or hex) or a linear/radial gradient (angle, or center + radius, with 2–8 color stops), plus the outline width.
+  - **Path**: the same transform inputs for a selected path, outline toggle with paint editor and width, fill toggle with paint editor, and the anchor count.
+  - **Text**: the same transform inputs for a selected text node — text content, font family, size and weight, alignment, and the fill paint editor.
   - **Image**: the same transform inputs for a selected image, the read-only source file name, a `Native size` reset and `Replace source…` (re-points the image at another file while keeping the placed size).
   - **Group**: the same transform inputs for a selected group, plus `Ungroup` and `Save as Symbol… (F8)`.
   - **Symbol**: the same transform inputs for a selected symbol instance, the read-only asset name, `Edit Symbol` (isolated editing) and `Break Apart` (decouple into an editable group).
-  - **Draw**: shown for drawing layers — brush color (swatch + hex), size and opacity, the onion-skin toggle and the cell operations (`◀ Prev`, `Duplicate`, `Clear`, `Next ▶`) for the cell at the playhead.
+  - **Draw**: shown for drawing layers — brush color (swatch + hex, with the palette strips), size and opacity, the onion-skin toggle and the cell operations (`◀ Prev`, `Duplicate`, `Clear`, `Next ▶`) for the cell at the playhead.
   - **Cell**: shown for drawing layers — the frame range the cell at the playhead occupies (`frames 3–7`, or `frames 3–end` when the last cell holds to the end) with `Start`, `End` and `Move to` frame inputs. Retiming a cell that is followed by another drags the next cell along to keep the hold contiguous; shortening the last cell splits off a transparent cell after the new end; every edit is a single undo step.
+  - **Palette**: the document palette (saved in the project file) and the global palette (persisted in the Electron user-data folder and shared by all projects) as clickable swatch rows — clicking a swatch applies it to the selected object or sets the brush color (the active swatch is highlighted), right-clicking removes it, and `+ Swatch` / `+ Global` capture the current color (up to 48 per palette). Every color control in the panel carries the combined strips.
+- **Color palettes**: the document palette travels inside the `.oanim` container (schemaVersion 5) so a project opens with its house colors on any machine; the global palette lives in a `palette.json` in the Electron user-data folder, written atomically, and is surfaced to the renderer through the preload API.
 - **Timeline panel**: frame ruler, expandable layer rows with per-row visibility/lock toggles and a kind badge, one object row per node (groups included) carrying its frame-span bar, keyframe markers and tween spans, a per-frame cell filmstrip for drawing layers, and the playhead. Objects move by dragging their span bar, keyframe markers by dragging between frames and cells by dragging their filmstrip thumbnail onto a target frame; right-clicking an object or drawing-layer row offers a numeric `Move to frame` plus keyframe actions (insert/remove/copy/paste). A `Hold` select plays the document on n's and the onion-skin options (ghost counts, tint colors, outline mode) live in the same header row.
 - **Panel layout**: the library, properties and timeline panes resize by dragging their splitters, which span the full boundary of the panel, and hiding the library from the toolbar collapses its column instead of leaving empty space.
 - **Playback**: play/pause/stop, optional looping, frame-stepping at the document fps.
@@ -55,6 +61,7 @@ The application now provides a working authoring core: layers with keyframes, fr
 │   │   ├── projectContainer.ts # ZIP .oanim v2 codec (pack/parse, magic sniffing)
 │   │   ├── resources.ts   # Content-addressed session resource store (SHA-256)
 │   │   ├── library.ts     # Persistent global "My Library" store and IPC handlers
+│   │   ├── palette.ts     # Persistent global color palette store and IPC handlers
 │   │   └── projects.ts    # Project file IO, resource/image IPC handlers
 │   ├── preload/           # Preload scripts (contextBridge API)
 │   ├── shared/            # Pure TypeScript document model + unit tests
@@ -66,6 +73,8 @@ The application now provides a working authoring core: layers with keyframes, fr
 │   │   ├── migrate.ts     # v1 → v2 document migration and validation
 │   │   ├── resources.ts   # Resource refcount walk over the document
 │   │   ├── imagePlacement.ts # Import placement math (stage-capped fit)
+│   │   ├── paint.ts       # Flat-color / gradient paint model (validate, interpolate, hash)
+│   │   ├── svgImport.ts   # SVG → editable vector import (subset parser, transforms baked in)
 │   │   ├── document.ts    # Document operations and per-frame evaluation
 │   │   ├── tween.ts       # Node interpolation between keyframes
 │   │   ├── easing.ts      # Named eases and cubic-bezier solver
@@ -85,9 +94,11 @@ The application now provides a working authoring core: layers with keyframes, fr
 │           ├── drawing.ts # Stroke smoothing + DrawingSession (overlay-then-commit)
 │           ├── cellPreload.ts # Playback preloader for drawing-cell images
 │           ├── resourceCache.ts # Blob/object-URL cache with decode validation
-│           ├── imageImport.ts   # Image import (dialog, drag-drop) and replace-source
+│           ├── imageImport.ts   # Image import (dialog, drag-drop, SVG vectors) and replace-source
+│           ├── gradientEditor.ts # Paint editor widget (solid/linear/radial + stop list)
+│           ├── swatches.ts # Palette swatch-strip widget
 │           ├── library.ts # Left panel: document + global asset library, drag to stage
-│           ├── properties.ts # Right panel: layer / shape / image / group / symbol / draw / cell sections
+│           ├── properties.ts # Right panel: layer / shape / path / text / image / group / symbol / draw / cell / palette sections
 │           ├── sectionState.ts # Panel-section collapse state persistence
 │           ├── panelLayout.ts  # Panel sizes, splitters and persistence
 │           ├── projects.ts   # Save / open / startup dialog orchestration
@@ -126,6 +137,8 @@ npm run dev        # start the app with hot reload
 | Keys                | Action                                  |
 | ------------------- | --------------------------------------- |
 | `V` / `R` / `O`     | Select / Rectangle / Ellipse tool       |
+| `L` / `P` / `T`     | Line / Pen / Text tool                  |
+| `N`                 | Vector brush tool (object layers)       |
 | `B` / `E`           | Brush / Eraser tool (drawing layers)    |
 | `[` / `]`           | Decrease / increase the brush size      |
 | `H`                 | Hand tool (pan the stage view)          |
@@ -143,7 +156,8 @@ npm run dev        # start the app with hot reload
 | `Ctrl+O`            | Open a project file                     |
 | `Ctrl+I`            | Import an image onto the stage          |
 | `Space`             | Play / pause                            |
-| `Escape`            | Stop and return to frame 1              |
+| `Enter`             | Commit an open pen path                 |
+| `Escape`            | Cancel the pen path or vector stroke, otherwise stop and return to frame 1 |
 | `F5` / `F6` / `F7`  | Insert frame / keyframe or duplicate cell / blank keyframe or cell |
 | Shift-click         | Add to or toggle the selection          |
 | Rubber-band on empty stage | Select objects (Shift unions)    |

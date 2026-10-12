@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import { escapeXmlAttribute, nodeToSvgMarkup, renderLayersToSvgMarkup } from './renderSvg'
 import type { GroupNode, ImageNode, PathNode, PrimitiveNode, SymbolNode, TextNode } from './model'
+import type { GradientPaint } from './paint'
+import { paintGradientId } from './paint'
 import type { RenderLayer } from './render'
 
 function shape(overrides: Partial<PrimitiveNode> = {}): PrimitiveNode {
@@ -327,6 +329,139 @@ describe('renderSvg', () => {
     const markup = nodeToSvgMarkup(node)
     expect(markup).not.toContain('<script>')
     expect(markup).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+  })
+})
+
+describe('renderSvg — gradients', () => {
+  const linear: GradientPaint = {
+    type: 'linear',
+    angle: 0,
+    stops: [
+      { offset: 0, color: '#ff0000' },
+      { offset: 1, color: '#0000ff' }
+    ]
+  }
+  const radial: GradientPaint = {
+    type: 'radial',
+    cx: 0.25,
+    cy: 0.75,
+    r: 0.5,
+    stops: [
+      { offset: 0, color: '#ffffff' },
+      { offset: 1, color: '#000000' }
+    ]
+  }
+
+  it('emits a content-hashed linearGradient defs block and references it', () => {
+    const id = paintGradientId(linear)
+    const markup = nodeToSvgMarkup(shape({ fill: linear }))
+    expect(markup.startsWith(`<defs><linearGradient id="${id}" gradientUnits="objectBoundingBox" x1="0" y1="0.5" x2="1" y2="0.5">`)).toBe(true)
+    expect(markup).toContain('<stop offset="0" stop-color="#ff0000"/>')
+    expect(markup).toContain('<stop offset="1" stop-color="#0000ff"/>')
+    expect(markup).toContain('fill="url(#' + id + ')"')
+    expect(markup.endsWith('/>')).toBe(true)
+  })
+
+  it('maps the gradient angle onto the axis endpoints', () => {
+    const id = paintGradientId({ ...linear, angle: 90 })
+    const markup = nodeToSvgMarkup(shape({ fill: { ...linear, angle: 90 } }))
+    expect(markup).toContain(`<linearGradient id="${id}" gradientUnits="objectBoundingBox" x1="0.5" y1="0" x2="0.5" y2="1">`)
+  })
+
+  it('emits radial defs with the paint geometry and rounds stop offsets', () => {
+    const paint: GradientPaint = {
+      ...radial,
+      stops: [
+        { offset: 0.33333, color: '#ffffff' },
+        { offset: 1, color: '#000000' }
+      ]
+    }
+    const id = paintGradientId(paint)
+    const markup = nodeToSvgMarkup(shape({ fill: paint }))
+    expect(markup).toContain(
+      `<radialGradient id="${id}" gradientUnits="objectBoundingBox" cx="0.25" cy="0.75" r="0.5">`
+    )
+    expect(markup).toContain('<stop offset="0.3333" stop-color="#ffffff"/>')
+  })
+
+  it('shares one defs entry per unique paint across the whole fragment', () => {
+    const layers: RenderLayer[] = [
+      {
+        layerId: 'l',
+        name: 'l',
+        nodes: [shape({ id: 'a', fill: linear }), shape({ id: 'b', fill: linear }), shape({ id: 'c', fill: radial })]
+      }
+    ]
+    const markup = renderLayersToSvgMarkup(layers)
+    expect(markup.match(/<linearGradient/g)).toHaveLength(1)
+    expect(markup.match(/<radialGradient/g)).toHaveLength(1)
+    expect(markup.match(/<defs>/g)).toHaveLength(1)
+  })
+
+  it('references gradient strokes and emits both paints of one node', () => {
+    const id = paintGradientId(radial)
+    const markup = nodeToSvgMarkup(shape({ fill: linear, stroke: radial, strokeWidth: 4 }))
+    expect(markup).toContain('fill="url(#' + paintGradientId(linear) + ')"')
+    expect(markup).toContain(`stroke="url(#${id})" stroke-width="4"`)
+    expect(markup.match(/<linearGradient/g)).toHaveLength(1)
+    expect(markup.match(/<radialGradient/g)).toHaveLength(1)
+  })
+
+  it('keeps the placed transform around gradient paths and text', () => {
+    const path: PathNode = {
+      type: 'path',
+      id: 'p1',
+      center: { x: 10, y: 20 },
+      width: 40,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      d: 'M-20 -10L20 10',
+      fill: linear
+    }
+    const pathMarkup = nodeToSvgMarkup(path)
+    expect(pathMarkup).toContain('transform="translate(10 20) rotate(0) scale(1 1)"')
+    expect(pathMarkup).toContain('fill="url(#' + paintGradientId(linear) + ')"')
+
+    const text: TextNode = {
+      type: 'text',
+      id: 't1',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 30,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 24,
+      fontWeight: 400,
+      fill: linear,
+      align: 'left'
+    }
+    expect(nodeToSvgMarkup(text)).toContain('fill="url(#' + paintGradientId(linear) + ')"')
+  })
+
+  it('suppresses gradient paints entirely in outline mode', () => {
+    const markup = nodeToSvgMarkup(shape({ fill: linear, stroke: radial }), undefined, {
+      outline: { color: '#e05050' }
+    })
+    expect(markup).not.toContain('<defs>')
+    expect(markup).not.toContain('url(#')
+    expect(markup).toContain('stroke="#e05050"')
+  })
+
+  it('escapes hostile stop colors so defs cannot inject markup', () => {
+    const hostile: GradientPaint = {
+      type: 'linear',
+      angle: 0,
+      stops: [
+        { offset: 0, color: '"><script>alert(1)</script>' },
+        { offset: 1, color: '#000000' }
+      ]
+    }
+    const markup = nodeToSvgMarkup(shape({ fill: hostile }))
+    expect(markup).not.toContain('<script>')
+    expect(markup).toContain('stop-color="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;"')
   })
 })
 

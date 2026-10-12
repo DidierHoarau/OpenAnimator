@@ -1,6 +1,6 @@
 import type { ScriptCommand, ScriptIssue } from '@shared/scripting/commands'
 import type { SceneNode, NodeBase } from '@shared/model'
-import { createId, extractKeyframeChunk } from '@shared/document'
+import { MAX_PALETTE_COLORS, createId, extractKeyframeChunk } from '@shared/document'
 import { isObjectLayer } from '@shared/model'
 
 import type { Editor } from '../editor'
@@ -234,6 +234,18 @@ function applyCommand(
       if (editor.document.fps === before && before !== command.fps) {
         issue(issues, index, `setFps: ${command.fps} rejected (valid range 1–120)`, 'warning')
         return false
+      }
+      return true
+    }
+    case 'setPalette': {
+      editor.setPalette(command.colors)
+      if (editor.document.palette.length !== command.colors.length) {
+        issue(
+          issues,
+          index,
+          `setPalette: kept ${editor.document.palette.length} of ${command.colors.length} colors (invalid or duplicate entries dropped, max ${MAX_PALETTE_COLORS})`,
+          'warning'
+        )
       }
       return true
     }

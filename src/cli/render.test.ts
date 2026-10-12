@@ -12,13 +12,14 @@ import { sanitizeExportOptions } from '../shared/exportOptions'
 import { createResourceResolver, loadDocumentAndResources, renderDocument, renderFrame, renderToFile } from './render'
 
 const DOCUMENT: AnimatorDocument = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   name: 'CLI test',
   width: 96,
   height: 64,
   fps: 12,
   frames: 4,
   background: '#223344',
+  palette: [],
   layers: [
     {
       kind: 'object',

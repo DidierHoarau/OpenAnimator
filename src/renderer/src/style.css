@@ -1098,6 +1098,58 @@ input:disabled {
   font-size: 12px;
 }
 
+/* Paint editor (solid color / gradient) */
+
+.gradient-editor,
+.gradient-rows,
+.gradient-stops {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gradient-stops {
+  gap: 4px;
+}
+
+.gradient-stop input[type='number'] {
+  width: 56px;
+}
+
+.gradient-stop-remove {
+  padding: 2px 7px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Palette swatch strips (properties rows and the Palette section) */
+
+.swatch-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
+.swatch-chip {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.swatch-chip.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.swatch-chip:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* Layer explorer tree (legacy – kept for properties-panel if needed) */
 .explorer-tree {
   display: flex;

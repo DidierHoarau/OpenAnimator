@@ -101,6 +101,10 @@ export function registerKeyboard(editor: Editor, stageView: StageView, timelineV
       case 'T':
         editor.setTool('text')
         break
+      case 'n':
+      case 'N':
+        editor.setTool('vector')
+        break
       case 'Enter':
         // Enter commits an open pen path.
         if (editor.tool === 'pen') {
@@ -122,8 +126,9 @@ export function registerKeyboard(editor: Editor, stageView: StageView, timelineV
         stageView.setSpacePressed(true)
         break
       case 'Escape':
-        // Escape cancels an in-progress pen path, otherwise playback.
+        // Escape cancels an in-progress pen path or vector stroke, otherwise playback.
         if (editor.tool === 'pen') stageView.cancelPen()
+        else if (editor.tool === 'vector') stageView.cancelVectorStroke()
         else editor.stopPlayback()
         break
       case 'F5':
