@@ -100,7 +100,7 @@ describe('packProject / parseProject — round trip', () => {
     const document = migrateDocument(loadV1Fixture('tweened-strokes'))
     const packed = packProject(document, new Map())
     const parsed = parseProject(packed)
-    expect(parsed.document.schemaVersion).toBe(3)
+    expect(parsed.document.schemaVersion).toBe(4)
     expect(evaluateDocumentAtFrame(parsed.document, 0).length).toBeGreaterThan(0)
   })
 

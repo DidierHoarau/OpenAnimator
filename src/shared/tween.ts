@@ -1,7 +1,9 @@
 import { lerpHexColor } from './color'
 import { lerp } from './geometry'
+import type { Vec2 } from './geometry'
 import type { SceneNode } from './model'
 import { cloneNode } from './model'
+import { cubicBezierPoint } from './motionPath'
 
 /**
  * Interpolates a node between two keyframe contents matched by id. Every node
@@ -9,19 +11,27 @@ import { cloneNode } from './model'
  * and stroke width. Identity fields (id, name, type, resourceId, assetId,
  * children, …) never interpolate — they come from `from`. Nodes whose type
  * differs (or primitives of a different `primitive` kind) snap from `from` to
- * `to` at the ends.
+ * `to` at the ends. When `centerPath` is given the center follows that cubic
+ * bezier (smooth motion path) instead of the straight lerp.
  */
-export function tweenNode(from: SceneNode, to: SceneNode, t: number): SceneNode {
+export function tweenNode(
+  from: SceneNode,
+  to: SceneNode,
+  t: number,
+  centerPath?: { c1: Vec2; c2: Vec2 }
+): SceneNode {
   if (from.type !== to.type) {
     return t < 1 ? cloneNode(from) : cloneNode(to)
   }
   const base = {
     id: from.id,
     ...(from.name !== undefined ? { name: from.name } : {}),
-    center: {
-      x: lerp(from.center.x, to.center.x, t),
-      y: lerp(from.center.y, to.center.y, t)
-    },
+    center: centerPath
+      ? cubicBezierPoint(from.center, centerPath.c1, centerPath.c2, to.center, t)
+      : {
+          x: lerp(from.center.x, to.center.x, t),
+          y: lerp(from.center.y, to.center.y, t)
+        },
     width: lerp(from.width, to.width, t),
     height: lerp(from.height, to.height, t),
     rotation: lerp(from.rotation, to.rotation, t),

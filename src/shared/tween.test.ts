@@ -74,6 +74,17 @@ describe('tweenNode', () => {
     expect(result.opacity).toBe(0.5)
   })
 
+  it('follows a center bezier path when given one', () => {
+    const from = shape('a', { center: { x: 0, y: 0 } })
+    const to = shape('a', { center: { x: 100, y: 0 } })
+    // Straight chord would put the midpoint at (50, 0); the arc lifts it.
+    const lifted = tweenNode(from, to, 0.5, { c1: { x: 0, y: 80 }, c2: { x: 100, y: 80 } })
+    expect(lifted.center.x).toBeCloseTo(50)
+    expect(lifted.center.y).toBeCloseTo(60)
+    // The other interpolated fields are unaffected.
+    expect(lifted.width).toBe(100)
+  })
+
   it('interpolates fill colors', () => {
     const result = tweenNode(shape('a', { fill: '#000000' }), shape('a', { fill: '#ffffff' }), 0.5)
     expect((result as PrimitiveNode).fill).toBe('#808080')
@@ -294,6 +305,65 @@ describe('evaluateLayerAtFrame', () => {
     expect(evaluateLayerAtFrame(layer, 5)[0].center.x).toBe(50)
   })
 
+  it('evaluates cubic bezier easing definitions', () => {
+    const eased: ObjectLayer = {
+      ...layer,
+      keyframes: [
+        { frame: 0, nodes: [shape('a', { center: { x: 0, y: 0 } })], tween: { easing: { x1: 0, y1: 0, x2: 1, y2: 1 } } },
+        { frame: 10, nodes: [shape('a', { center: { x: 100, y: 0 } })] }
+      ]
+    }
+    // The identity bezier approximates linear within solver tolerance.
+    expect(evaluateLayerAtFrame(eased, 5)[0].center.x).toBeCloseTo(50, 1)
+  })
+
+  it('bows the center along a smooth path across three waypoints', () => {
+    const smoothLayer: ObjectLayer = {
+      ...layer,
+      keyframes: [
+        {
+          frame: 0,
+          nodes: [shape('a', { center: { x: 0, y: 0 } })],
+          tween: { easing: 'linear', path: 'smooth' }
+        },
+        { frame: 10, nodes: [shape('a', { center: { x: 100, y: 100 } })], tween: { easing: 'linear', path: 'smooth' } },
+        { frame: 20, nodes: [shape('a', { center: { x: 200, y: 0 } })] }
+      ]
+    }
+    // Mid-segment the center leaves the straight chord (catmull-rom at the
+    // middle waypoint): y overshoots above the 0→100 chord or deviates
+    // laterally from it, while x stays strictly inside the segment.
+    const atFive = evaluateLayerAtFrame(smoothLayer, 5)[0].center
+    const chordY = 50
+    expect(atFive.x).toBeGreaterThan(0)
+    expect(atFive.x).toBeLessThan(100)
+    expect(Math.abs(atFive.y - chordY)).toBeGreaterThan(1)
+
+    // With `path: 'linear'` (or absent) the same waypoints follow the chord.
+    const straightLayer: ObjectLayer = {
+      ...layer,
+      keyframes: smoothLayer.keyframes.map((keyframe) =>
+        keyframe.tween ? { ...keyframe, tween: { easing: 'linear' as const } } : keyframe
+      )
+    }
+    expect(evaluateLayerAtFrame(straightLayer, 5)[0].center.x).toBe(50)
+    expect(evaluateLayerAtFrame(straightLayer, 5)[0].center.y).toBe(50)
+  })
+
+  it('keeps the straight chord when a smooth segment lacks a neighbour (2 waypoints)', () => {
+    const twoWaypoints: ObjectLayer = {
+      ...layer,
+      keyframes: [
+        { frame: 0, nodes: [shape('a', { center: { x: 0, y: 0 } })], tween: { easing: 'linear', path: 'smooth' } },
+        { frame: 10, nodes: [shape('a', { center: { x: 100, y: 50 } })] }
+      ]
+    }
+    // Clamped handles ride the chord itself: the sampled center stays on it.
+    const atFive = evaluateLayerAtFrame(twoWaypoints, 5)[0].center
+    expect(atFive.x).toBeCloseTo(50)
+    expect(atFive.y).toBeCloseTo(25)
+  })
+
   it('uses the target keyframe content at its frame', () => {
     expect(evaluateLayerAtFrame(layer, 10)[0].center.x).toBe(100)
   })
@@ -375,7 +445,7 @@ describe('document validation', () => {
   it('isAnimatorDocument accepts valid documents and rejects junk', async () => {
     const { isAnimatorDocument } = await import('./document')
     const valid: AnimatorDocument = {
-      schemaVersion: 3,
+      schemaVersion: 4,
       name: 'test',
       width: 100,
       height: 100,

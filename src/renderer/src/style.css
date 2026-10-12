@@ -315,6 +315,22 @@ input:disabled {
   pointer-events: none;
 }
 
+/* Read-only motion-path overlay of a selected tweened node */
+.stage__motion-path {
+  fill: none;
+  stroke: var(--accent-blue);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+.stage__motion-key {
+  fill: var(--panel-deep);
+  stroke: var(--accent-blue);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
 /* Timeline (bottom panel) */
 
 .timeline {
@@ -333,6 +349,31 @@ input:disabled {
   gap: 10px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
+}
+
+/* Hold step + onion-skin options row */
+.tl-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tl-options .tl-number {
+  width: 44px;
+}
+
+.tl-options .tl-color {
+  width: 26px;
+  height: 20px;
+}
+
+.tl-check {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--accent-blue);
 }
 
 .tl-group {
@@ -512,6 +553,10 @@ input:disabled {
   border: 1px solid var(--accent-blue);
 }
 
+.tl-key.selected {
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.45);
+}
+
 .tl-tween {
   position: absolute;
   top: 50%;
@@ -531,6 +576,17 @@ input:disabled {
   margin-left: -1px;
   background: var(--accent);
   z-index: 4;
+  pointer-events: none;
+}
+
+/* Ruler-dragged frame range band (copy/paste scope) */
+.tl-range {
+  position: absolute;
+  top: 18px;
+  bottom: 0;
+  background: rgba(56, 189, 248, 0.12);
+  border-left: 1px solid rgba(56, 189, 248, 0.5);
+  border-right: 1px solid rgba(56, 189, 248, 0.5);
   pointer-events: none;
 }
 
@@ -945,6 +1001,35 @@ input:disabled {
 
 .panel-buttons input[type='number'] {
   width: 56px;
+}
+
+/* Cubic-bezier easing widget (preset picker + curve plot + components) */
+.easing-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.easing-editor.disabled {
+  opacity: 0.55;
+}
+
+.easing-editor__canvas {
+  width: 100%;
+  max-width: 170px;
+  aspect-ratio: 1 / 1;
+  align-self: center;
+  touch-action: none;
+}
+
+.easing-editor__fields {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
+.easing-editor__fields input[type='number'] {
+  width: 100%;
 }
 
 .panel-section-title {

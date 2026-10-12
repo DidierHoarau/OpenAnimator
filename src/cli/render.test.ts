@@ -12,7 +12,7 @@ import { sanitizeExportOptions } from '../shared/exportOptions'
 import { createResourceResolver, loadDocumentAndResources, renderDocument, renderFrame, renderToFile } from './render'
 
 const DOCUMENT: AnimatorDocument = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   name: 'CLI test',
   width: 96,
   height: 64,

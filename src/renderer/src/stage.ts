@@ -4,8 +4,11 @@ import { hitTestNodes, nodeBounds, rectIntersectsRect } from '@shared/hitTesting
 import type { Rect } from '@shared/hitTesting'
 import { evaluateDocumentAtFrame } from '@shared/render'
 import { renderLayersToSvgMarkup } from '@shared/renderSvg'
+import type { SvgRenderOptions } from '@shared/renderSvg'
 import { isObjectLayer } from '@shared/model'
-import type { PathAnchor, PathNode, PrimitiveNode, TextNode } from '@shared/model'
+import type { AnimatorDocument, PathAnchor, PathNode, PrimitiveNode, TextNode } from '@shared/model'
+import { motionPathForNode } from '@shared/motionPath'
+import type { MotionPath } from '@shared/motionPath'
 import { buildPathData, normalizePathData, pathDataBounds } from '@shared/pathModel'
 import { applyTextMetrics } from '@shared/textModel'
 import { identityView, panView, zoomAtView } from '@shared/viewTransform'
@@ -25,6 +28,8 @@ const ZOOM_STEP = 1.25
 const PEN_CLOSE_RADIUS = 10
 const PEN_STROKE = '#e2e8f0'
 const PEN_STROKE_WIDTH = 3
+/** Flat stroke color of outlined onion ghosts (a neutral slate). */
+const ONION_OUTLINE_COLOR = '#94a3b8'
 
 interface DragState {
   mode: 'create' | 'move' | 'marquee' | 'pan' | 'pen'
@@ -754,15 +759,25 @@ export class StageView {
     if (editor.onionSkin && !editor.playing) {
       const ghosts = document.createElementNS(SVG_NS, 'g')
       ghosts.classList.add('stage__onion')
-      for (const offset of [-2, -1, 1, 2]) {
-        const frame = editor.currentFrame + offset
-        if (frame < 0 || frame >= editor.duration) continue
-        const group = document.createElementNS(SVG_NS, 'g')
-        group.setAttribute('opacity', String(0.24 / Math.abs(offset)))
-        group.innerHTML = renderLayersToSvgMarkup(evaluateDocumentAtFrame(doc, frame), (id) =>
-          editor.resources.getUrl(id)
-        )
-        ghosts.appendChild(group)
+      const tint = editor.onionTint
+        ? {
+            before: this.appendOnionTintFilter(ghosts, 'stage-onion-before', editor.onionTintBefore),
+            after: this.appendOnionTintFilter(ghosts, 'stage-onion-after', editor.onionTintAfter)
+          }
+        : null
+      const outline: SvgRenderOptions | undefined = editor.onionOutline
+        ? { outline: { color: ONION_OUTLINE_COLOR } }
+        : undefined
+      const step = editor.holdStep
+      for (let depth = 1; depth <= editor.onionBefore; depth++) {
+        const frame = editor.currentFrame - depth * step
+        if (frame < 0) continue
+        ghosts.appendChild(this.onionGhost(doc, frame, depth, tint?.before, outline))
+      }
+      for (let depth = 1; depth <= editor.onionAfter; depth++) {
+        const frame = editor.currentFrame + depth * step
+        if (frame >= editor.duration) continue
+        ghosts.appendChild(this.onionGhost(doc, frame, depth, tint?.after, outline))
       }
       this.svg.appendChild(ghosts)
     }
@@ -791,6 +806,9 @@ export class StageView {
         )
         overlay.setAttribute('vector-effect', 'non-scaling-stroke')
         this.svg.appendChild(overlay)
+        // Read-only trajectory preview for tweened selected nodes.
+        const motionPath = motionPathForNode(layer, node.id)
+        if (motionPath) this.appendMotionPath(motionPath)
       }
     }
     this.updateCursor()
@@ -801,5 +819,75 @@ export class StageView {
     }
     if (this.session) this.paintOverlay()
     else this.clearOverlay()
+  }
+
+  /**
+   * Defines the tint filter for one onion direction inside the ghost group and
+   * returns its `url(#…)` reference: the ghost's pixels are replaced by a flat
+   * flood color via `feFlood` + `feComposite operator="in"`.
+   */
+  private appendOnionTintFilter(parent: SVGGElement, id: string, color: string): string {
+    const defs = document.createElementNS(SVG_NS, 'defs')
+    const filter = document.createElementNS(SVG_NS, 'filter')
+    filter.setAttribute('id', id)
+    filter.setAttribute('color-interpolation-filters', 'sRGB')
+    const flood = document.createElementNS(SVG_NS, 'feFlood')
+    flood.setAttribute('flood-color', color)
+    flood.setAttribute('result', 'tint')
+    const composite = document.createElementNS(SVG_NS, 'feComposite')
+    composite.setAttribute('in', 'tint')
+    composite.setAttribute('in2', 'SourceGraphic')
+    composite.setAttribute('operator', 'in')
+    filter.append(flood, composite)
+    defs.appendChild(filter)
+    parent.appendChild(defs)
+    return `url(#${id})`
+  }
+
+  /** One onion ghost at `frame`; the opacity ramp stays `0.24 / depth`. */
+  private onionGhost(
+    doc: AnimatorDocument,
+    frame: number,
+    depth: number,
+    tintFilter: string | undefined,
+    outline: SvgRenderOptions | undefined
+  ): SVGGElement {
+    const group = document.createElementNS(SVG_NS, 'g')
+    group.setAttribute('opacity', String(0.24 / depth))
+    if (tintFilter) group.setAttribute('filter', tintFilter)
+    group.innerHTML = renderLayersToSvgMarkup(
+      evaluateDocumentAtFrame(doc, frame),
+      (id) => this.editor.resources.getUrl(id),
+      outline
+    )
+    return group
+  }
+
+  /**
+   * Read-only motion-path overlay for one selected node: the tweened
+   * trajectory as a polyline plus one dot per keyframe waypoint, in document
+   * coordinates (no pointer handlers — the hit layer stays authoritative).
+   */
+  private appendMotionPath(motionPath: MotionPath): void {
+    if (motionPath.polyline.length > 1) {
+      const first = motionPath.polyline[0]
+      let d = `M ${first.x} ${first.y}`
+      for (let i = 1; i < motionPath.polyline.length; i++) {
+        d += ` L ${motionPath.polyline[i].x} ${motionPath.polyline[i].y}`
+      }
+      const line = document.createElementNS(SVG_NS, 'path')
+      line.classList.add('stage__motion-path')
+      line.setAttribute('d', d)
+      line.setAttribute('vector-effect', 'non-scaling-stroke')
+      this.svg.appendChild(line)
+    }
+    for (const waypoint of motionPath.waypoints) {
+      const dot = document.createElementNS(SVG_NS, 'circle')
+      dot.classList.add('stage__motion-key')
+      dot.setAttribute('cx', String(waypoint.point.x))
+      dot.setAttribute('cy', String(waypoint.point.y))
+      dot.setAttribute('r', String(3 / this.view.scale))
+      this.svg.appendChild(dot)
+    }
   }
 }

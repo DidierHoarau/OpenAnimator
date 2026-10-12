@@ -1,5 +1,5 @@
 /**
- * JSON Schema of the OpenAnimator document (schemaVersion 3) — the generation
+ * JSON Schema of the OpenAnimator document (schemaVersion 4) — the generation
  * contract for tools and LLMs that produce `document.json` payloads. The
  * schema mirrors the structural validation in `document.ts`
  * (`isAnimatorDocument`/`isSceneNode`); documents are always re-validated
@@ -21,6 +21,27 @@ export interface Vec2 {
 }
 
 export const EASING_VALUES = ['linear', 'ease-in', 'ease-out', 'ease-in-out'] as const
+
+/** Shared non-null easing definition: a named easing or a closed cubic
+ * bezier. Used by the document contract and the command contract. */
+export function easingSchema(): Record<string, unknown> {
+  return {
+    anyOf: [
+      { enum: [...EASING_VALUES] },
+      {
+        type: 'object',
+        additionalProperties: false,
+        required: ['x1', 'y1', 'x2', 'y2'],
+        properties: {
+          x1: { type: 'number', minimum: 0, maximum: 1 },
+          y1: { type: 'number' },
+          x2: { type: 'number', minimum: 0, maximum: 1 },
+          y2: { type: 'number' }
+        }
+      }
+    ]
+  }
+}
 
 const NODE_BASE_FIELDS = {
   id: { type: 'string', minLength: 1 },
@@ -94,19 +115,20 @@ export function sceneNodeSchema(requireBase: boolean): Record<string, unknown> {
 
 export const DOCUMENT_SCHEMA = {
   $schema: 'http://json-schema.org/draft-07/schema#',
-  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v3.json',
-  title: 'OpenAnimator document (v3)',
+  $id: 'https://github.com/DidierHoarau/OpenAnimator/document-v4.json',
+  title: 'OpenAnimator document (v4)',
   type: 'object',
   additionalProperties: false,
   required: ['schemaVersion', 'name', 'width', 'height', 'fps', 'background', 'layers', 'assets'],
   properties: {
-    schemaVersion: { const: 3 },
+    schemaVersion: { const: 4 },
     name: { type: 'string', minLength: 1 },
     width: { type: 'number', exclusiveMinimum: 0 },
     height: { type: 'number', exclusiveMinimum: 0 },
     fps: { type: 'number', exclusiveMinimum: 0 },
     background: { type: 'string' },
     frames: { type: 'integer', minimum: 1 },
+    holdStep: { type: 'integer', minimum: 1, maximum: 16 },
     layers: { type: 'array', items: { $ref: '#/definitions/layer' } },
     assets: { type: 'array', items: { $ref: '#/definitions/asset' } }
   },
@@ -117,7 +139,7 @@ export const DOCUMENT_SCHEMA = {
       required: ['x', 'y'],
       properties: { x: { type: 'number' }, y: { type: 'number' } }
     },
-    easing: { enum: [...EASING_VALUES] },
+    easing: easingSchema(),
     sceneNode: sceneNodeSchema(true),
     keyframe: {
       type: 'object',
@@ -130,7 +152,10 @@ export const DOCUMENT_SCHEMA = {
           type: 'object',
           additionalProperties: false,
           required: ['easing'],
-          properties: { easing: { $ref: '#/definitions/easing' } }
+          properties: {
+            easing: { $ref: '#/definitions/easing' },
+            path: { enum: ['linear', 'smooth'] }
+          }
         }
       }
     },

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { createCubicBezierEasing, evaluateEasing } from './easing'
+import {
+  EASING_PRESETS,
+  canonicalBezierFor,
+  createCubicBezierEasing,
+  evaluateEasing,
+  isEasing
+} from './easing'
 
 describe('evaluateEasing (named)', () => {
   it('maps bounds to themselves for every named easing', () => {
@@ -63,5 +69,68 @@ describe('createCubicBezierEasing', () => {
     // x1 > 0 with strong curvature exercises the bisection fallback.
     const ease = createCubicBezierEasing({ x1: 0.9, y1: 0, x2: 0.1, y2: 1 })
     expect(ease(0.5)).toBeCloseTo(0.5, 2)
+  })
+})
+
+describe('evaluateEasing (bezier definitions)', () => {
+  it('evaluates cubic bezier definitions like their solver', () => {
+    const bezier = { x1: 0.25, y1: 0.1, x2: 0.25, y2: 1 }
+    const ease = createCubicBezierEasing(bezier)
+    for (const t of [0, 0.2, 0.5, 0.8, 1]) {
+      expect(evaluateEasing(bezier, t)).toBe(ease(t))
+    }
+  })
+})
+
+describe('isEasing', () => {
+  it('accepts named easings', () => {
+    for (const name of ['linear', 'ease-in', 'ease-out', 'ease-in-out']) {
+      expect(isEasing(name)).toBe(true)
+    }
+  })
+
+  it('accepts closed cubic bezier objects', () => {
+    expect(isEasing({ x1: 0, y1: 0, x2: 1, y2: 1 })).toBe(true)
+    expect(isEasing({ x1: 0.42, y1: 0, x2: 0.58, y2: 1 })).toBe(true)
+    // Overshooting y values are legal (ease-out-back).
+    expect(isEasing({ x1: 0.34, y1: 1.56, x2: 0.64, y2: 1 })).toBe(true)
+  })
+
+  it('rejects junk, unknown names, extra keys and out-of-range x', () => {
+    expect(isEasing('wobble')).toBe(false)
+    expect(isEasing(null)).toBe(false)
+    expect(isEasing(42)).toBe(false)
+    expect(isEasing([])).toBe(false)
+    expect(isEasing({})).toBe(false)
+    expect(isEasing({ x1: 0, y1: 0, x2: 1 })).toBe(false)
+    expect(isEasing({ x1: 0, y1: 0, x2: 1, y2: 1, extra: true })).toBe(false)
+    expect(isEasing({ x1: -0.1, y1: 0, x2: 1, y2: 1 })).toBe(false)
+    expect(isEasing({ x1: 0, y1: 0, x2: 1.1, y2: 1 })).toBe(false)
+    expect(isEasing({ x1: 0, y1: NaN, x2: 1, y2: 1 })).toBe(false)
+    expect(isEasing({ x1: '0', y1: 0, x2: 1, y2: 1 })).toBe(false)
+  })
+})
+
+describe('easing presets', () => {
+  it('exposes the named curves plus extra bezier presets with unique ids', () => {
+    expect(EASING_PRESETS.length).toBeGreaterThanOrEqual(10)
+    const ids = EASING_PRESETS.map((preset) => preset.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    for (const preset of EASING_PRESETS) {
+      expect(isEasing(preset.bezier)).toBe(true)
+    }
+    const named = EASING_PRESETS.filter((preset) => preset.named !== undefined).map((preset) => preset.named)
+    expect(named.sort()).toEqual(['ease-in', 'ease-in-out', 'ease-out', 'linear'])
+  })
+
+  it('canonicalBezierFor returns detached, correct named beziers', () => {
+    const linear = canonicalBezierFor('linear')
+    expect(linear).toEqual({ x1: 0, y1: 0, x2: 1, y2: 1 })
+    expect(canonicalBezierFor('ease-in-out')).toEqual({ x1: 0.42, y1: 0, x2: 0.58, y2: 1 })
+    const other = canonicalBezierFor('ease-in')
+    expect(other).toEqual({ x1: 0.42, y1: 0, x2: 1, y2: 1 })
+    // Mutating the result must not corrupt the shared table.
+    other.x1 = 99
+    expect(canonicalBezierFor('ease-in').x1).toBe(0.42)
   })
 })

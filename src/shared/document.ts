@@ -1,8 +1,9 @@
-import { evaluateEasing } from './easing'
-import type { EasingName } from './easing'
-import type { AnimatorDocument, Asset, DrawingCell, DrawingLayer, Keyframe, Layer, ObjectLayer, SceneNode } from './model'
+import { evaluateEasing, isEasing } from './easing'
+import type { AnimatorDocument, Asset, DrawingCell, DrawingLayer, Keyframe, KeyframeTween, Layer, ObjectLayer, SceneNode } from './model'
 import { cloneNode, isObjectLayer } from './model'
+import { segmentControls } from './motionPath'
 import { tweenNode } from './tween'
+import type { Vec2 } from './geometry'
 
 let idCounter = 0
 
@@ -41,7 +42,7 @@ export function createDocument(name: string, width: number, height: number, fps:
   const layer = createLayer('Layer 1')
   layer.keyframes.push({ frame: 0, nodes: [] })
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     name,
     width,
     height,
@@ -51,6 +52,11 @@ export function createDocument(name: string, width: number, height: number, fps:
     frames: 1,
     assets: []
   }
+}
+
+/** The document's hold step: absent ≡ 1 (every frame is addressed). */
+export function holdStepOf(document: AnimatorDocument): number {
+  return document.holdStep ?? 1
 }
 
 export function getLayer(document: AnimatorDocument, layerId: string): Layer | undefined {
@@ -150,6 +156,29 @@ export function findNearestNodeKeyframeIndex(layer: ObjectLayer, nodeId: string,
 }
 
 /**
+ * Bezier center-path controls for the smooth segment starting at keyframe
+ * index `sourceIndex` of `nodeId`: the Catmull-Rom handles derived from the
+ * node's neighbouring keyframe centers. Falsy when the node has no full
+ * segment there (callers then keep the straight lerp).
+ */
+function smoothControlsFor(
+  layer: ObjectLayer,
+  nodeId: string,
+  sourceIndex: number
+): { c1: Vec2; c2: Vec2 } | undefined {
+  const points: Vec2[] = []
+  let segmentIndex = -1
+  for (let i = 0; i < layer.keyframes.length; i++) {
+    const node = layer.keyframes[i].nodes.find((candidate) => candidate.id === nodeId)
+    if (!node) continue
+    if (i === sourceIndex) segmentIndex = points.length
+    points.push(node.center)
+  }
+  if (segmentIndex === -1 || segmentIndex >= points.length - 1) return undefined
+  return segmentControls(points, segmentIndex)
+}
+
+/**
  * Object-level content of a layer at a given frame: every node exists only
  * within its own span — from its first keyframe to its last keyframe — and
  * keeps the pose from its latest keyframe at or before `frame`, interpolated
@@ -198,7 +227,11 @@ export function evaluateLayerAtFrame(layer: ObjectLayer, frame: number): SceneNo
         if (target) {
           const progress = (frame - source.frame) / (next.frame - source.frame)
           const eased = evaluateEasing(source.tween.easing, progress)
-          result.push(tweenNode(entry.node, target, eased))
+          const centerPath =
+            source.tween.path === 'smooth'
+              ? smoothControlsFor(layer, id, entry.index)
+              : undefined
+          result.push(tweenNode(entry.node, target, eased, centerPath))
           continue
         }
       }
@@ -508,11 +541,159 @@ export function moveNodeKeyframes(
 }
 
 /**
- * Removes a frame from the timeline: keyframes of object layers and cells of
- * drawing layers after `frame` shift one frame earlier and the content exactly
- * at `frame` is deleted, so the content of frame `frame + 1` collapses into
- * `frame`. A layer's last remaining keyframe or cell is never removed.
+ * One requested single-entry move: the node's own pose at `fromFrame` moves
+ * to `toFrame`. The move carries only the pose — a tween always belongs to
+ * the keyframe it was set on.
  */
+export interface KeyframeEntryMove {
+  nodeId: string
+  fromFrame: number
+  toFrame: number
+}
+
+/**
+ * Moves keyframe entries (one node's pose per move) to new frames — the
+ * timeline's drag operation. All entries detach first, keyframes emptied by
+ * the move are dropped (their tween goes with them), then every entry
+ * re-attaches at its target frame, merging into a keyframe already there
+ * (replace semantics) with the other nodes untouched. The tween belongs to
+ * the source keyframe and never transfers; the destination keyframe keeps
+ * its own tween. Returns false (and changes nothing) when no move has a
+ * matching source entry, is out of range or is a no-op.
+ */
+export function moveKeyframeEntries(
+  layer: ObjectLayer,
+  moves: readonly KeyframeEntryMove[],
+  totalFrames: number
+): boolean {
+  const effective = moves.filter(
+    (move) =>
+      move.fromFrame !== move.toFrame &&
+      move.toFrame >= 0 &&
+      move.toFrame <= totalFrames - 1 &&
+      layer.keyframes.some(
+        (keyframe) =>
+          keyframe.frame === move.fromFrame &&
+          keyframe.nodes.some((node) => node.id === move.nodeId)
+      )
+  )
+  if (effective.length === 0) return false
+  const detached: Array<{ nodeId: string; toFrame: number; node: SceneNode }> = []
+  for (const move of effective) {
+    const keyframe = layer.keyframes.find((candidate) => candidate.frame === move.fromFrame)!
+    const index = keyframe.nodes.findIndex((node) => node.id === move.nodeId)
+    if (index === -1) continue
+    const [node] = keyframe.nodes.splice(index, 1)
+    detached.push({ nodeId: move.nodeId, toFrame: move.toFrame, node })
+    if (keyframe.nodes.length === 0) {
+      layer.keyframes.splice(layer.keyframes.indexOf(keyframe), 1)
+    }
+  }
+  for (const entry of detached) {
+    let target = layer.keyframes.find((keyframe) => keyframe.frame === entry.toFrame)
+    if (!target) {
+      target = { frame: entry.toFrame, nodes: [] }
+      layer.keyframes.push(target)
+    }
+    const existing = target.nodes.findIndex((node) => node.id === entry.nodeId)
+    if (existing !== -1) target.nodes.splice(existing, 1)
+    target.nodes.push(entry.node)
+  }
+  layer.keyframes.sort((a, b) => a.frame - b.frame)
+  return true
+}
+
+/** Single-entry convenience wrapper over `moveKeyframeEntries`. */
+export function moveNodeKeyframeEntry(
+  layer: ObjectLayer,
+  nodeId: string,
+  fromFrame: number,
+  toFrame: number,
+  totalFrames: number
+): boolean {
+  return moveKeyframeEntries(layer, [{ nodeId, fromFrame, toFrame }], totalFrames)
+}
+
+/** One copied keyframe entry: a node pose at an offset from the chunk start. */
+export interface KeyframeChunkEntry {
+  nodeId: string
+  /** Keyframe frame of the source minus the chunk's `fromFrame`. */
+  offset: number
+  node: SceneNode
+  /** Tween of the source keyframe, carried only by entries that owned it. */
+  tween?: KeyframeTween
+}
+
+/**
+ * Extracts keyframe content as a reusable chunk (the clipboard): for every
+ * keyframe in `[fromFrame, toFrame]` that holds one of `nodeIds` (all nodes
+ * when omitted), the node's pose becomes an entry at
+ * `offset = keyframe.frame - fromFrame`. A keyframe's tween is carried by the
+ * entry that owns it — each source keyframe has at most one such entry, the
+ * first node id present in it, so applying the chunk can restore it exactly.
+ */
+export function extractKeyframeChunk(
+  layer: ObjectLayer,
+  fromFrame: number,
+  toFrame: number,
+  nodeIds?: readonly string[]
+): KeyframeChunkEntry[] {
+  const filter = nodeIds ? new Set(nodeIds) : null
+  const entries: KeyframeChunkEntry[] = []
+  for (const keyframe of layer.keyframes) {
+    if (keyframe.frame < fromFrame || keyframe.frame > toFrame) continue
+    let tweenOwner = -1
+    keyframe.nodes.forEach((node) => {
+      if (filter && !filter.has(node.id)) return
+      if (tweenOwner === -1) tweenOwner = entries.length
+      entries.push({
+        nodeId: node.id,
+        offset: keyframe.frame - fromFrame,
+        node: cloneNode(node)
+      })
+    })
+    if (keyframe.tween !== undefined && tweenOwner !== -1 && tweenOwner < entries.length) {
+      entries[tweenOwner].tween = structuredClone(keyframe.tween)
+    }
+  }
+  return entries
+}
+
+/**
+ * Applies a chunk at `targetFrame`: every entry lands on
+ * `targetFrame + offset` (out-of-range entries are skipped). A keyframe is
+ * found or created there; an entry for the same node already present is
+ * replaced, otherwise the pose is appended — existing keyframes and their
+ * other nodes survive, and an existing tween is never cleared. Returns true
+ * when content changed.
+ */
+export function applyKeyframeChunk(
+  layer: ObjectLayer,
+  chunk: readonly KeyframeChunkEntry[],
+  targetFrame: number,
+  totalFrames: number
+): boolean {
+  let changed = false
+  for (const entry of chunk) {
+    const frame = targetFrame + entry.offset
+    if (frame < 0 || frame > totalFrames - 1) continue
+    let keyframe = layer.keyframes.find((candidate) => candidate.frame === frame)
+    if (!keyframe) {
+      keyframe = { frame, nodes: [] }
+      layer.keyframes.push(keyframe)
+    }
+    const index = keyframe.nodes.findIndex((node) => node.id === entry.nodeId)
+    if (index !== -1) keyframe.nodes.splice(index, 1)
+    keyframe.nodes.push(cloneNode(entry.node))
+    if (entry.tween !== undefined && keyframe.tween === undefined) {
+      keyframe.tween = structuredClone(entry.tween)
+    }
+    changed = true
+  }
+  if (changed) layer.keyframes.sort((a, b) => a.frame - b.frame)
+  return changed
+}
+
 export function removeFrame(document: AnimatorDocument, frame: number): void {
   for (const layer of document.layers) {
     if (isObjectLayer(layer)) {
@@ -590,8 +771,6 @@ export function cloneDocument(document: AnimatorDocument): AnimatorDocument {
   return structuredClone(document)
 }
 
-const EASING_NAMES: EasingName[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out']
-
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
@@ -661,7 +840,9 @@ function isKeyframe(value: unknown): value is Keyframe {
   if (!Array.isArray(keyframe.nodes) || !keyframe.nodes.every(isSceneNode)) return false
   if (keyframe.tween === undefined) return true
   if (typeof keyframe.tween !== 'object' || keyframe.tween === null) return false
-  return EASING_NAMES.includes((keyframe.tween as { easing?: unknown }).easing as EasingName)
+  const tween = keyframe.tween as { easing?: unknown; path?: unknown }
+  if (tween.path !== undefined && tween.path !== 'linear' && tween.path !== 'smooth') return false
+  return isEasing(tween.easing)
 }
 
 function isDrawingCell(value: unknown): value is DrawingCell {
@@ -720,7 +901,7 @@ export function isAsset(value: unknown): value is Asset {
 }
 
 /** Deep structural validation for documents restored from persistence.
- * Requires `schemaVersion: 3` and fully typed content; older documents go
+ * Requires `schemaVersion: 4` and fully typed content; older documents go
  * through `migrateDocument` first. */
 export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   if (typeof value !== 'object' || value === null) return false
@@ -728,8 +909,14 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
   const framesValid =
     candidate.frames === undefined ||
     (typeof candidate.frames === 'number' && Number.isInteger(candidate.frames) && candidate.frames >= 1)
+  const holdStepValid =
+    candidate.holdStep === undefined ||
+    (typeof candidate.holdStep === 'number' &&
+      Number.isInteger(candidate.holdStep) &&
+      candidate.holdStep >= 1 &&
+      candidate.holdStep <= 16)
   return (
-    candidate.schemaVersion === 3 &&
+    candidate.schemaVersion === 4 &&
     typeof candidate.name === 'string' &&
     typeof candidate.width === 'number' &&
     typeof candidate.height === 'number' &&
@@ -737,6 +924,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     candidate.fps > 0 &&
     typeof candidate.background === 'string' &&
     framesValid &&
+    holdStepValid &&
     Array.isArray(candidate.layers) &&
     candidate.layers.every(isLayer) &&
     Array.isArray(candidate.assets) &&

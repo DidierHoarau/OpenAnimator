@@ -150,4 +150,173 @@ describe('executeScriptCommands', () => {
     const layer = ballLayer(editor)
     expect(layer.keyframes.every((keyframe) => !keyframe.nodes.some((node) => node.id === 'ball'))).toBe(true)
   })
+
+  it('applies the retimed slide example: bezier ease, smooth path, moved keyframe, hold step', () => {
+    const editor = createEditor()
+    const commands = validated({ commands: SCRIPT_EXAMPLES[2].commands })
+    const result = executeScriptCommands(editor, commands)
+    expect(result.issues).toEqual([])
+    expect(result.applied).toBe(commands.length)
+
+    const layer = editor.document.layers.find((entry) => entry.name === 'Square')
+    if (!layer || !isObjectLayer(layer)) throw new Error('expected the Square object layer')
+    // updateNode keyed 0/11/23, then moveKeyframe retimed the middle pose to 9.
+    expect(layer.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 9, 23])
+    expect(layer.keyframes[0].tween).toEqual({
+      easing: { x1: 0.42, y1: 0, x2: 0.58, y2: 1 },
+      path: 'smooth'
+    })
+    expect(editor.holdStep).toBe(2)
+    expect(editor.document.holdStep).toBe(2)
+    expect(editor.duration).toBe(24)
+  })
+
+  it('moveKeyframe retimes a pose as one undo entry and warns when nothing moves', () => {
+    const editor = createEditor()
+    const setup = validated({
+      commands: [
+        { op: 'addLayer', name: 'Ball' },
+        {
+          op: 'addNode',
+          frame: 0,
+          node: {
+            type: 'primitive',
+            id: 'ball',
+            primitive: 'ellipse',
+            fill: '#ff5252',
+            center: { x: 480, y: 100 },
+            width: 90,
+            height: 90,
+            rotation: 0,
+            opacity: 1
+          }
+        },
+        { op: 'updateNode', nodeId: 'ball', frame: 11, patch: { rotation: 45 } },
+        { op: 'moveKeyframe', nodeId: 'ball', fromFrame: 11, toFrame: 7 }
+      ]
+    })
+    const result = executeScriptCommands(editor, setup)
+    expect(result.issues).toEqual([])
+    expect(result.applied).toBe(4)
+    expect(ballLayer(editor).keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 7])
+
+    editor.undo()
+    expect(ballLayer(editor).keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 11])
+
+    // No-op, missing-source and unknown-node moves warn without changing anything.
+    const warnings = executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'moveKeyframe', nodeId: 'ball', fromFrame: 11, toFrame: 11 },
+          { op: 'moveKeyframe', nodeId: 'ball', fromFrame: 20, toFrame: 3 },
+          { op: 'moveKeyframe', nodeId: 'ghost', fromFrame: 0, toFrame: 3 }
+        ]
+      })
+    )
+    expect(warnings.applied).toBe(0)
+    expect(warnings.issues).toHaveLength(3)
+    expect(warnings.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
+    expect(warnings.issues[1]).toMatchObject({ index: 1, severity: 'warning' })
+    expect(warnings.issues[2]).toMatchObject({ index: 2, severity: 'error' })
+  })
+
+  it('copyKeyframes copies a chunk to the target frame, carrying a tween once', () => {
+    const editor = createEditor()
+    const setup = validated({
+      commands: [
+        { op: 'addLayer', name: 'Ball' },
+        {
+          op: 'addNode',
+          frame: 0,
+          node: {
+            type: 'primitive',
+            id: 'ball',
+            primitive: 'ellipse',
+            fill: '#ff5252',
+            center: { x: 480, y: 100 },
+            width: 90,
+            height: 90,
+            rotation: 0,
+            opacity: 1
+          }
+        },
+        { op: 'setTween', frame: 0, easing: 'ease-in' },
+        { op: 'updateNode', nodeId: 'ball', frame: 5, patch: { center: { x: 480, y: 450 } } },
+        { op: 'copyKeyframes', nodeId: 'ball', fromFrame: 0, toFrame: 5, targetFrame: 12 }
+      ]
+    })
+    const result = executeScriptCommands(editor, setup)
+    expect(result.issues).toEqual([])
+    expect(result.applied).toBe(5)
+    const layer = ballLayer(editor)
+    expect(layer.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 5, 12, 17])
+    const at = (frame: number) =>
+      layer.keyframes.find((keyframe) => keyframe.frame === frame)?.nodes.find((node) => node.id === 'ball')
+    expect(at(12)).toMatchObject({ center: { x: 480, y: 100 } })
+    expect(at(17)).toMatchObject({ center: { x: 480, y: 450 } })
+    expect(layer.keyframes.find((keyframe) => keyframe.frame === 12)?.tween).toEqual({ easing: 'ease-in' })
+
+    editor.undo()
+    expect(ballLayer(editor).keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 5])
+
+    // No poses in the requested range and an out-of-bounds target warn.
+    const warnings = executeScriptCommands(
+      editor,
+      validated({
+        commands: [
+          { op: 'copyKeyframes', nodeId: 'ball', fromFrame: 20, toFrame: 22, targetFrame: 0 },
+          { op: 'copyKeyframes', nodeId: 'ball', fromFrame: 0, toFrame: 0, targetFrame: 999 }
+        ]
+      })
+    )
+    expect(warnings.applied).toBe(0)
+    expect(warnings.issues).toHaveLength(2)
+    expect(warnings.issues[0]).toMatchObject({ index: 0, severity: 'warning' })
+    expect(warnings.issues[1]).toMatchObject({ index: 1, severity: 'warning' })
+  })
+
+  it('setHoldStep plays the document on n\u2019s without touching the frame data', () => {
+    const editor = createEditor()
+    const setup = validated({
+      commands: [
+        { op: 'addLayer', name: 'Ball' },
+        {
+          op: 'addNode',
+          frame: 0,
+          node: {
+            type: 'primitive',
+            id: 'ball',
+            primitive: 'ellipse',
+            fill: '#ff5252',
+            center: { x: 480, y: 100 },
+            width: 90,
+            height: 90,
+            rotation: 0,
+            opacity: 1
+          }
+        },
+        { op: 'setHoldStep', step: 3 }
+      ]
+    })
+    const result = executeScriptCommands(editor, setup)
+    expect(result.issues).toEqual([])
+    expect(editor.holdStep).toBe(3)
+    expect(editor.document.holdStep).toBe(3)
+    const before = JSON.stringify(ballLayer(editor).keyframes)
+    executeScriptCommands(editor, validated({ commands: [{ op: 'seek', frame: 4 }] }))
+    expect(editor.holdStep).toBe(3)
+    expect(JSON.stringify(ballLayer(editor).keyframes)).toBe(before)
+
+    // 1 removes the field entirely; undo walks back one command at a time.
+    executeScriptCommands(editor, validated({ commands: [{ op: 'setHoldStep', step: 1 }] }))
+    expect(editor.holdStep).toBe(1)
+    expect('holdStep' in editor.document).toBe(false)
+    editor.undo()
+    expect(editor.holdStep).toBe(3)
+    editor.undo()
+    expect(editor.holdStep).toBe(3)
+    editor.undo()
+    expect(editor.holdStep).toBe(1)
+  })
 })

@@ -8,7 +8,6 @@ import {
   findPreviousCellFrame
 } from '@shared/document'
 import type { CellRange } from '@shared/document'
-import type { EasingName } from '@shared/easing'
 import { isDrawingLayer, isObjectLayer } from '@shared/model'
 import type { ImageNode, SceneNode } from '@shared/model'
 import { pathDataToAnchors } from '@shared/pathModel'
@@ -16,6 +15,7 @@ import { applyTextMetrics } from '@shared/textModel'
 
 import type { Editor } from './editor'
 import { el } from './dom'
+import { EasingEditor } from './easingEditor'
 import type { ImageImportDeps } from './imageImport'
 import { pickImageFile, prepareImageResource } from './imageImport'
 import { convertSelectedTextToOutlines } from './textOutlines'
@@ -30,7 +30,6 @@ const DEFAULT_FILL = '#38bdf8'
 const DEFAULT_STROKE = '#e6edf3'
 const DEFAULT_STROKE_WIDTH = 2
 const DEFAULT_TEXT_FILL = '#e2e8f0'
-const EASINGS: EasingName[] = ['linear', 'ease-in', 'ease-out', 'ease-in-out']
 
 function normalizeHex(value: string, fallback: string): string {
   const parsed = parseHexColor(value)
@@ -94,7 +93,8 @@ export class PropertiesView {
   private readonly keyframeButton: HTMLButtonElement
   private readonly removeKeyframeButton: HTMLButtonElement
   private readonly tweenButton: HTMLButtonElement
-  private readonly easingSelect: HTMLSelectElement
+  private readonly easingEditor: EasingEditor
+  private readonly tweenPathSelect: HTMLSelectElement
   private readonly moveNodeInput: HTMLInputElement
 
   /** Shared transform rows, parked in whichever node section is visible. */
@@ -176,20 +176,32 @@ export class PropertiesView {
       "Toggle a classic tween from the selected object's keyframe at the current frame",
       () => editor.toggleTweenHere()
     )
-    this.easingSelect = el('select', 'tl-select') as HTMLSelectElement
-    for (const easing of EASINGS) {
-      const option = el('option', undefined, easing)
-      option.value = easing
-      this.easingSelect.appendChild(option)
+    this.easingEditor = new EasingEditor({
+      onChange: (easing) => editor.setTweenEasingHere(easing),
+      // A handle drag is one coalesced interaction: one undo entry.
+      onDragStart: () => editor.beginInteraction(),
+      onDragEnd: () => editor.endInteraction()
+    })
+    this.tweenPathSelect = el('select', 'tl-select') as HTMLSelectElement
+    for (const [value, label] of [
+      ['linear', 'Linear'],
+      ['smooth', 'Smooth']
+    ] as const) {
+      const option = el('option', undefined, label)
+      option.value = value
+      this.tweenPathSelect.appendChild(option)
     }
-    this.easingSelect.title = 'Easing of the tween starting at the current keyframe'
-    this.easingSelect.addEventListener('change', () => {
-      editor.setTweenEasingHere(this.easingSelect.value as EasingName)
+    this.tweenPathSelect.title =
+      'Spatial trajectory of the tween starting at the current keyframe (Smooth bends through the neighbouring poses)'
+    this.tweenPathSelect.addEventListener('change', () => {
+      editor.setTweenPathHere(this.tweenPathSelect.value as 'linear' | 'smooth')
     })
     layerButtons.append(this.keyframeButton, this.removeKeyframeButton)
     const tweenRow = el('div', 'panel-buttons')
-    tweenRow.append(this.tweenButton, this.easingSelect)
-    layer.content.append(layerButtons, tweenRow)
+    tweenRow.append(this.tweenButton)
+    layer.content.append(layerButtons, tweenRow, this.easingEditor.root)
+    const pathRow = this.row(layer.content, 'Motion path')
+    pathRow.appendChild(this.tweenPathSelect)
     // Moves the whole selection so its first keyframe lands on this frame
     // (1-based), keeping each object's relative timing.
     this.moveNodeInput = this.numberInput(layer.content, 'Move to', 'f', () => {
@@ -857,8 +869,13 @@ export class PropertiesView {
     const keyframe =
       layer && isObjectLayer(layer) ? findKeyframeAtFrame(layer, editor.currentFrame) : undefined
     this.tweenButton.classList.toggle('active', ownsKeyframe && keyframe?.tween !== undefined)
-    this.easingSelect.disabled = !ownsKeyframe || keyframe?.tween === undefined
-    if (keyframe?.tween) this.easingSelect.value = keyframe.tween.easing
+    const tween = ownsKeyframe ? keyframe?.tween : undefined
+    this.easingEditor.setDisabled(tween === undefined)
+    this.tweenPathSelect.disabled = tween === undefined
+    if (tween) {
+      this.easingEditor.setValue(tween.easing)
+      this.tweenPathSelect.value = tween.path ?? 'linear'
+    }
 
     // "Move to" shows the primary object's first keyframe; a whole selection
     // moves relative to the target of its primary.

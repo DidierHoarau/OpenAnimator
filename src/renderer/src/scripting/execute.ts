@@ -1,12 +1,12 @@
 import type { ScriptCommand, ScriptIssue } from '@shared/scripting/commands'
 import type { SceneNode, NodeBase } from '@shared/model'
-import { createId } from '@shared/document'
+import { createId, extractKeyframeChunk } from '@shared/document'
 import { isObjectLayer } from '@shared/model'
 
 import type { Editor } from '../editor'
 import { applyTextMetrics } from '@shared/textModel'
 import type { MeasureLineWidth } from '@shared/textModel'
-import type { EasingName } from '@shared/easing'
+import type { Easing } from '@shared/easing'
 
 const NODE_KINDS = new Set(['primitive', 'path', 'text', 'image', 'group', 'symbol'])
 
@@ -144,7 +144,68 @@ function applyCommand(
         return true
       }
       if (!keyframe.tween) editor.toggleTweenHere()
-      editor.setTweenEasingHere((command.easing ?? 'ease-in-out') as EasingName)
+      editor.setTweenEasingHere((command.easing ?? 'ease-in-out') as Easing)
+      if (command.path) editor.setTweenPathHere(command.path)
+      return true
+    }
+    case 'moveKeyframe': {
+      const layerId = command.layerId ?? findLayerOfNode(editor, command.nodeId)
+      if (!layerId) {
+        issue(issues, index, `moveKeyframe: node ${command.nodeId} not found on any layer`)
+        return false
+      }
+      editor.setCurrentLayer(layerId)
+      if (!editor.moveNodeKeyframeEntry(command.nodeId, command.fromFrame, command.toFrame, layerId)) {
+        issue(
+          issues,
+          index,
+          `moveKeyframe: ${command.nodeId} has no keyframe at frame ${command.fromFrame} (or the move is out of range or a no-op)`,
+          'warning'
+        )
+        return false
+      }
+      return true
+    }
+    case 'copyKeyframes': {
+      const layerId = command.layerId ?? findLayerOfNode(editor, command.nodeId)
+      if (!layerId) {
+        issue(issues, index, `copyKeyframes: node ${command.nodeId} not found on any layer`)
+        return false
+      }
+      const layer = findLayer(editor, layerId)
+      if (!layer || !isObjectLayer(layer)) {
+        issue(issues, index, `copyKeyframes: layer ${layerId} is not an object layer`)
+        return false
+      }
+      const toFrame = command.toFrame ?? command.fromFrame
+      const chunk = extractKeyframeChunk(layer, command.fromFrame, toFrame, [command.nodeId])
+      if (chunk.length === 0) {
+        issue(
+          issues,
+          index,
+          `copyKeyframes: ${command.nodeId} has no keyframe in frames ${command.fromFrame}–${toFrame}`,
+          'warning'
+        )
+        return false
+      }
+      if (!editor.copyKeyframeChunk(layerId, chunk, command.targetFrame)) {
+        issue(
+          issues,
+          index,
+          `copyKeyframes: no copied entry lands inside the timeline at target frame ${command.targetFrame}`,
+          'warning'
+        )
+        return false
+      }
+      return true
+    }
+    case 'setHoldStep': {
+      const before = editor.holdStep
+      editor.setHoldStep(command.step)
+      if (editor.holdStep === before && before !== command.step) {
+        issue(issues, index, `setHoldStep: step ${command.step} rejected (valid range 1–16)`, 'warning')
+        return false
+      }
       return true
     }
     case 'setCell': {
