@@ -27,6 +27,7 @@ this page records what landed and what is being considered next.
 | v0.25.0 | Motion & Text Depth — path shape morphing between keyframes, per-property tween easing channels (`transform`/`opacity`/`fill`), kerning-true font subsets with italic embedding and a ligature toggle, and frame-locked continuous audio scrub (plus a path-morphing E2E golden path) |
 | v0.26.0 | Interchange & Automation — Lottie gradients (with stop alpha), `ty:6` audio layers (embedded in Lottie JSON, `audio/` files in dotLottie), baked smooth paths and text strokes; SVG gradient import (kept in the native gradient model, rasterize fallback for the rest); export presets with last-used persistence, GIF palette/dithering/loop and MP4/WebM quality tiers; CLI multi-format rendering; scripted `export`/file-import/view ops and the UI-gesture script recorder; a gradient→Lottie E2E golden path |
 | v0.27.0 | Fixes — the timeline ruler seeks on click (frames are selectable on long timelines) and the layer explorer auto-expands to reveal created objects |
+| v0.28.0 | Tests — regression coverage pinning the reported 2–36 span from bug 20026.10.13: every displayed frame 2–36 is selectable from the ruler (no behavior change) |
 
 ## What's next
 

@@ -743,6 +743,30 @@ describe('TimelineView — keyframe markers, range copy/paste and options', () =
     expect(editor.currentFrame).toBe(6)
   })
 
+  // Bug 20026.10.13 reported a project whose object spans displayed frames
+  // "2 to 36" as unselectable; the span label pins that exact scenario.
+  it('selects every frame of the reported 2\u201336 span from the ruler', () => {
+    editor.insertFrameHere()
+    editor.seekToFrame(1)
+    editor.addNode(rect('a'))
+    extend(35)
+    editor.seekToFrame(35)
+    editor.ensureNodeKeyframe('a')
+
+    const row = (selector: string): HTMLElement =>
+      container.querySelector<HTMLElement>(`.tl-shape-row[data-shape-id="a"] ${selector}`)!
+    expect(row('.tl-kf-label').textContent).toBe('2\u201336')
+    expect(row('.tl-shape-span').title).toBe('frames 2\u201336')
+
+    const ruler = container.querySelector<HTMLElement>('.tl-ruler')!
+    const at = (frame: number): number => 180 + frame * 14 + 7
+    for (let frame = 1; frame <= 35; frame++) {
+      ruler.dispatchEvent(new MouseEvent('pointerdown', { clientX: at(frame), clientY: 5, bubbles: true }))
+      window.dispatchEvent(new MouseEvent('pointerup', { clientX: at(frame), clientY: 5 }))
+      expect(editor.currentFrame).toBe(frame)
+    }
+  })
+
   it('copies the ruler range and pastes it at the playhead with the carried tween', () => {
     editor.addNode(rect('a'))
     extend(9)
