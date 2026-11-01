@@ -1,7 +1,7 @@
 {
   "name": "openanimator",
   "productName": "OpenAnimator",
-  "version": "0.28.0",
+  "version": "0.28.1",
   "description": "OpenAnimator is an open-source vector-based animation tool.",
   "main": "./out/main/index.js",
   "bin": {
@@ -40,39 +40,38 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@expo-google-fonts/noto-sans": "^0.4.2",
-    "@playwright/test": "^1.64.0",
+    "@playwright/test": "^1.64.1",
     "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^24.10.1",
     "@types/opentype.js": "^1.3.10",
     "@types/pngjs": "^6.0.5",
     "@types/semver": "^7.8.0",
-    "@vitest/coverage-v8": "^5.0.3",
+    "@vitest/coverage-v8": "^5.0.5",
     "ajv": "^8.20.0",
-    "electron": "^44.7.0",
-    "electron-builder": "^26.15.3",
-    "electron-vite": "^5.0.0",
-    "eslint": "^10.12.0",
+    "electron": "^45.2.1",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "eslint": "^10.14.0",
     "fflate": "^0.8.3",
     "gifenc": "^1.0.3",
-    "happy-dom": "^20.14.6",
+    "happy-dom": "^21.0.4",
     "lottie-web": "^5.13.0",
-    "marked": "^18.1.0",
-    "mediabunny": "^1.61.3",
+    "marked": "^18.1.2",
+    "mediabunny": "^1.65.0",
     "opentype.js": "^2.0.0",
     "pngjs": "^7.0.0",
     "semver": "^7.8.5",
     "tsx": "^4.23.15",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.71.1",
-    "vite": "^7.1.0",
-    "vitest": "^5.0.3"
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
   },
   "dependencies": {
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.11"
   },
   "allowScripts": {
-    "electron@44.7.0": true,
-    "esbuild@0.25.12": true,
+    "electron@45.2.1": true,
     "esbuild@0.28.2": true
   }
 }
