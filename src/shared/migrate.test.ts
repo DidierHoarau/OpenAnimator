@@ -1005,3 +1005,67 @@ describe('migrateDocument — v9 documents', () => {
     expect(() => migrateDocument(JSON.parse(JSON.stringify(future)))).toThrow(MigrationError)
   })
 })
+
+describe('migrateDocument — hardening', () => {
+  function legacyDocument(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      name: 'legacy',
+      width: 320,
+      height: 180,
+      fps: 12,
+      background: '#10151b',
+      layers: [
+        {
+          id: 'l1',
+          name: 'Layer',
+          visible: true,
+          locked: false,
+          keyframes: [
+            {
+              frame: 0,
+              shapes: [
+                {
+                  id: 'ball',
+                  kind: 'ellipse',
+                  center: { x: 10, y: 10 },
+                  width: 10,
+                  height: 10,
+                  rotation: 0,
+                  fill: '#ff0000',
+                  opacity: 1
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      ...overrides
+    }
+  }
+
+  it('rejects a legacy background that is not a hex color', () => {
+    expect(() =>
+      migrateDocument(legacyDocument({ background: '#10151b"/><script>alert(1)</script>' }))
+    ).toThrow(/"background" must be a hex color/)
+    expect(() => migrateDocument(legacyDocument({ background: 'red' }))).toThrow(MigrationError)
+  })
+
+  it('rejects legacy keyframes that are not strictly increasing', () => {
+    const document = legacyDocument()
+    const layer = (document.layers as Array<Record<string, unknown>>)[0]
+    const keyframes = layer.keyframes as Array<Record<string, unknown>>
+    keyframes.push({ ...structuredClone(keyframes[0]) })
+    expect(() => migrateDocument(document)).toThrow(/strictly increasing/)
+    keyframes[1].frame = -1
+    expect(() => migrateDocument(document)).toThrow(MigrationError)
+  })
+
+  it('rejects duplicate node ids inside a legacy keyframe', () => {
+    const document = legacyDocument()
+    const layer = (document.layers as Array<Record<string, unknown>>)[0]
+    const keyframes = layer.keyframes as Array<Record<string, unknown>>
+    const shapes = keyframes[0].shapes as Array<Record<string, unknown>>
+    shapes.push(structuredClone(shapes[0]))
+    expect(() => migrateDocument(document)).toThrow(/duplicate node id/)
+  })
+})

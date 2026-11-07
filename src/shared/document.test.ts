@@ -292,6 +292,13 @@ describe('document operations', () => {
     expect(isAnimatorDocument({ ...valid, fonts: [{ ...embeddedFont(), weight: 0 }] })).toBe(false)
     expect(isAnimatorDocument({ ...valid, fonts: [{ ...embeddedFont(), glyphs: 'ab' }] })).toBe(false)
     expect(isAnimatorDocument({ ...valid, fonts: [{ ...embeddedFont(), license: 5 }] })).toBe(false)
+    // Only the generated id shape is accepted: the id is interpolated into CSS.
+    for (const id of ['oa-embed-400-ab12cd34i', 'oa-embed-700-deadbeef']) {
+      expect(isAnimatorDocument({ ...valid, fonts: [{ ...embeddedFont(), id }] })).toBe(true)
+    }
+    for (const id of ['../../escape', 'oa-embed-400-AB12CD34', 'oa-embed-400-ab12cd3', "x';}"]) {
+      expect(isAnimatorDocument({ ...valid, fonts: [{ ...embeddedFont(), id }] }), id).toBe(false)
+    }
   })
 
   it('isAnimatorDocument rejects malformed layers, keyframes and nodes', () => {
@@ -321,6 +328,118 @@ describe('document operations', () => {
       ]
     }
     expect(isAnimatorDocument(badNode)).toBe(false)
+  })
+
+  it('isAnimatorDocument requires a hex background', () => {
+    const valid = createDocument('test', 960, 540, 24)
+    expect(isAnimatorDocument({ ...valid, background: '#abc' })).toBe(true)
+    expect(isAnimatorDocument({ ...valid, background: '#aabbcc' })).toBe(true)
+    for (const background of [
+      '#10151b"/><script>alert(1)</script><rect fill="#000',
+      'red',
+      '#12345',
+      '#gggggg',
+      ''
+    ]) {
+      expect(isAnimatorDocument({ ...valid, background }), background).toBe(false)
+    }
+  })
+
+  it('isAnimatorDocument rejects duplicate and unsorted keyframes', () => {
+    const valid = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(valid)
+    layer.keyframes.push({ frame: 5, nodes: [rect('b', 0, 0)] })
+    expect(isAnimatorDocument(valid)).toBe(true)
+
+    const duplicate = {
+      ...valid,
+      layers: [{ ...layer, keyframes: [layer.keyframes[0], { ...layer.keyframes[0] }] }]
+    }
+    expect(isAnimatorDocument(duplicate)).toBe(false)
+
+    const unsorted = {
+      ...valid,
+      layers: [{ ...layer, keyframes: [layer.keyframes[1], layer.keyframes[0]] }]
+    }
+    expect(isAnimatorDocument(unsorted)).toBe(false)
+
+    const duplicateDrawingCell = {
+      ...valid,
+      layers: [
+        {
+          kind: 'drawing',
+          id: 'draw',
+          name: 'Draw',
+          visible: true,
+          locked: false,
+          resolutionScale: 1,
+          cells: [
+            { frame: 0, resourceId: 'a' },
+            { frame: 0, resourceId: 'b' }
+          ]
+        }
+      ]
+    }
+    expect(isAnimatorDocument(duplicateDrawingCell)).toBe(false)
+  })
+
+  it('isAnimatorDocument rejects duplicate node ids inside one keyframe', () => {
+    const valid = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(valid)
+    layer.keyframes[0].nodes.push(rect('same', 0, 0), rect('same', 10, 10))
+    expect(isAnimatorDocument(valid)).toBe(false)
+
+    layer.keyframes[0].nodes = [
+      {
+        type: 'group',
+        id: 'g',
+        center: { x: 0, y: 0 },
+        width: 10,
+        height: 10,
+        rotation: 0,
+        opacity: 1,
+        children: [rect('nested', 0, 0)]
+      },
+      rect('nested', 10, 10)
+    ]
+    expect(isAnimatorDocument(valid)).toBe(false)
+  })
+
+  it('isAnimatorDocument rejects duplicate camera keyframes', () => {
+    const valid = createDocument('test', 960, 540, 24)
+    const camera = createCameraLayer('Camera')
+    camera.keyframes.push(
+      { frame: 0, pose: { center: { x: 0, y: 0 }, zoom: 1, rotation: 0 } },
+      { frame: 0, pose: { center: { x: 10, y: 0 }, zoom: 1, rotation: 0 } }
+    )
+    expect(isAnimatorDocument({ ...valid, layers: [camera] })).toBe(false)
+  })
+
+  it('keeps malformed duplicate-frame evaluations finite', () => {
+    const document = createDocument('test', 960, 540, 24)
+    const layer = firstLayer(document)
+    layer.keyframes = [
+      { frame: 0, nodes: [rect('a', 0, 0)], tween: { easing: 'linear' } },
+      { frame: 0, nodes: [rect('a', 100, 100)] }
+    ]
+    for (const node of evaluateLayerAtFrame(layer, 0)) {
+      expect(Number.isFinite(node.center.x)).toBe(true)
+      expect(Number.isFinite(node.center.y)).toBe(true)
+      expect(Number.isFinite(node.width)).toBe(true)
+      expect(Number.isFinite(node.opacity)).toBe(true)
+    }
+
+    const camera = createCameraLayer('Camera')
+    camera.keyframes = [
+      { frame: 0, pose: { center: { x: 0, y: 0 }, zoom: 1, rotation: 0 }, tween: { easing: 'linear' } },
+      { frame: 0, pose: { center: { x: 100, y: 50 }, zoom: 2, rotation: 90 } }
+    ]
+    const pose = evaluateCameraAtFrame({ ...document, layers: [camera] }, 0)
+    expect(pose).not.toBeNull()
+    expect(Number.isFinite(pose!.center.x)).toBe(true)
+    expect(Number.isFinite(pose!.center.y)).toBe(true)
+    expect(Number.isFinite(pose!.zoom)).toBe(true)
+    expect(Number.isFinite(pose!.rotation)).toBe(true)
   })
 
   it('accepts valid stroke-style fields and rejects malformed ones', () => {

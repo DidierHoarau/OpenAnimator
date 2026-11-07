@@ -225,6 +225,14 @@ function smoothControlsFor(
   return segmentControls(points, segmentIndex)
 }
 
+/** Tween progress between two frame boundaries, clamped to `[0, 1]`. A
+ * malformed pair (`nextFrame <= sourceFrame`) yields 0 so evaluations stay
+ * finite even when unsorted in-memory data slips past validation. */
+function tweenProgress(frame: number, sourceFrame: number, nextFrame: number): number {
+  if (nextFrame <= sourceFrame) return 0
+  return Math.min(1, Math.max(0, (frame - sourceFrame) / (nextFrame - sourceFrame)))
+}
+
 /**
  * Object-level content of a layer at a given frame: every node exists only
  * within its own span — from its first keyframe to its last keyframe — and
@@ -272,7 +280,7 @@ export function evaluateLayerAtFrame(layer: ObjectLayer, frame: number): SceneNo
         const next = layer.keyframes[nextIndex]
         const target = next.nodes.find((node) => node.id === id)
         if (target) {
-          const progress = (frame - source.frame) / (next.frame - source.frame)
+          const progress = tweenProgress(frame, source.frame, next.frame)
           const eased = evaluateEasing(source.tween.easing, progress)
           const easings = source.tween.easings
           const channels =
@@ -348,7 +356,7 @@ export function evaluateCameraAtFrame(document: AnimatorDocument, frame: number)
   const source = layer.keyframes[index]
   const next = layer.keyframes[index + 1]
   if (!source.tween || !next) return cloneCameraPose(source.pose)
-  const progress = (frame - source.frame) / (next.frame - source.frame)
+  const progress = tweenProgress(frame, source.frame, next.frame)
   const eased = evaluateEasing(source.tween.easing, progress)
   const controls = source.tween.path === 'smooth' ? smoothCameraControlsFor(layer, index) : undefined
   return {
@@ -1191,6 +1199,29 @@ function isDrawingCell(value: unknown): value is DrawingCell {
   return Number.isInteger(cell.frame) && (cell.frame as number) >= 0 && typeof cell.resourceId === 'string'
 }
 
+/** True when every entry's frame is strictly greater than its predecessor. */
+function framesStrictlyIncreasing(frames: readonly { frame: number }[]): boolean {
+  for (let index = 1; index < frames.length; index++) {
+    if (frames[index].frame <= frames[index - 1].frame) return false
+  }
+  return true
+}
+
+/** True when every node id in the tree is unique (groups recurse into their
+ * children). Duplicate ids would make tween matching ambiguous. */
+function nodeIdsUnique(nodes: readonly SceneNode[]): boolean {
+  const seen = new Set<string>()
+  const walk = (list: readonly SceneNode[]): boolean => {
+    for (const node of list) {
+      if (seen.has(node.id)) return false
+      seen.add(node.id)
+      if (node.type === 'group' && !walk(node.children)) return false
+    }
+    return true
+  }
+  return walk(nodes)
+}
+
 function isLayer(value: unknown): value is Layer {
   if (typeof value !== 'object' || value === null) return false
   const layer = value as Record<string, unknown> & Partial<Layer>
@@ -1203,18 +1234,28 @@ function isLayer(value: unknown): value is Layer {
     return false
   }
   if (layer.kind === 'object') {
-    return Array.isArray(layer.keyframes) && layer.keyframes.every(isKeyframe)
+    return (
+      Array.isArray(layer.keyframes) &&
+      layer.keyframes.every(isKeyframe) &&
+      framesStrictlyIncreasing(layer.keyframes) &&
+      layer.keyframes.every((keyframe) => nodeIdsUnique(keyframe.nodes))
+    )
   }
   if (layer.kind === 'drawing') {
     return (
       isFiniteNumber(layer.resolutionScale) &&
       (layer.resolutionScale as number) >= 1 &&
       Array.isArray(layer.cells) &&
-      layer.cells.every(isDrawingCell)
+      layer.cells.every(isDrawingCell) &&
+      framesStrictlyIncreasing(layer.cells)
     )
   }
   if (layer.kind === 'camera') {
-    return Array.isArray(layer.keyframes) && layer.keyframes.every(isCameraKeyframe)
+    return (
+      Array.isArray(layer.keyframes) &&
+      layer.keyframes.every(isCameraKeyframe) &&
+      framesStrictlyIncreasing(layer.keyframes)
+    )
   }
   if (layer.kind === 'audio') {
     return (
@@ -1263,12 +1304,17 @@ export function isFontFallback(value: unknown): value is string[] {
   )
 }
 
+/** Generated embedded-font id shape (`embeddedFontId` in fontPolicy): the id
+ * is interpolated into CSS, so only generated values are accepted. */
+const EMBEDDED_FONT_ID_PATTERN = /^oa-embed-\d{1,4}-[0-9a-f]{8}i?$/
+
 /** Structural validation for one embedded font subset. */
 export function isEmbeddedFont(value: unknown): value is EmbeddedFont {
   if (typeof value !== 'object' || value === null) return false
   const font = value as Record<string, unknown> & Partial<EmbeddedFont>
   return (
     typeof font.id === 'string' &&
+    EMBEDDED_FONT_ID_PATTERN.test(font.id) &&
     typeof font.family === 'string' &&
     typeof font.weight === 'number' &&
     Number.isFinite(font.weight) &&
@@ -1334,6 +1380,7 @@ export function isAnimatorDocument(value: unknown): value is AnimatorDocument {
     typeof candidate.fps === 'number' &&
     candidate.fps > 0 &&
     typeof candidate.background === 'string' &&
+    parseHexColor(candidate.background) !== null &&
     framesValid &&
     holdStepValid &&
     isPalette(candidate.palette) &&

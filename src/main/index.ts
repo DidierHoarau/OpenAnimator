@@ -9,6 +9,7 @@ import { registerExportPresetsHandlers } from './exportPresets'
 import { registerFontHandlers } from './fonts'
 import { registerLibraryHandlers } from './library'
 import { installApplicationMenu } from './menu'
+import { isAllowedExternalUrl, isAllowedNavigationTarget } from './navigation'
 import { projectPathFromArgv } from './openFiles'
 import { registerPaletteHandlers } from './palette'
 import { registerPreferencesHandlers } from './preferences'
@@ -59,16 +60,13 @@ function sendMenuCommand(command: MenuCommand): void {
 }
 
 /** Hosts the About dialog is allowed to open in the system browser. */
-const EXTERNAL_URL_HOSTS = new Set(['github.com', 'didierhoarau.github.io'])
-
 function registerOpenExternalHandler(): void {
   ipcMain.handle(APP_OPEN_EXTERNAL_CHANNEL, async (_event, url: unknown): Promise<OpenExternalResult> => {
     try {
-      const parsed = new URL(String(url))
-      if (parsed.protocol !== 'https:' || !EXTERNAL_URL_HOSTS.has(parsed.hostname)) {
+      if (!isAllowedExternalUrl(String(url))) {
         return { ok: false, error: 'Only https links to GitHub or the documentation site are allowed' }
       }
-      await shell.openExternal(parsed.toString())
+      await shell.openExternal(new URL(String(url)).toString())
       return { ok: true }
     } catch {
       return { ok: false, error: 'Invalid URL' }
@@ -131,8 +129,17 @@ function createWindow(): void {
   })
 
   window.webContents.setWindowOpenHandler((details) => {
-    void shell.openExternal(details.url)
+    if (isAllowedExternalUrl(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+
+  // Defense in depth: the renderer must never navigate away from the app
+  // document. Same-document/dev-server-origin navigations keep working;
+  // allowlisted external links open in the system browser instead.
+  window.webContents.on('will-navigate', (event, url) => {
+    if (isAllowedNavigationTarget(url, window.webContents.getURL())) return
+    event.preventDefault()
+    if (isAllowedExternalUrl(url)) void shell.openExternal(url)
   })
 
   // electron-vite dev server URL in development, built renderer files otherwise.

@@ -1,4 +1,5 @@
 import type { EasingName } from './easing'
+import { parseHexColor } from './color'
 import { isAnimatorDocument, isCameraKeyframe, isPalette } from './document'
 import { isPaintValue } from './paint'
 import type { AnimatorDocument, Keyframe, Layer, PrimitiveNode, SceneNode } from './model'
@@ -231,15 +232,32 @@ function validateLegacyLayer(value: unknown, index: number): Layer {
   if (!Array.isArray(layer.keyframes)) {
     throw new MigrationError(`invalid layer ${where}: "keyframes" must be an array`)
   }
+  const keyframes = layer.keyframes.map((keyframe, keyframeIndex) =>
+    validateLegacyKeyframe(keyframe, `${where}, keyframe ${keyframeIndex + 1}`)
+  )
+  for (let index = 0; index < keyframes.length; index++) {
+    if (index > 0 && keyframes[index].frame <= keyframes[index - 1].frame) {
+      throw new MigrationError(
+        `invalid layer ${where}: keyframes must be strictly increasing by frame`
+      )
+    }
+    const ids = new Set<string>()
+    for (const node of keyframes[index].nodes) {
+      if (ids.has(node.id)) {
+        throw new MigrationError(
+          `invalid layer ${where}, keyframe ${index + 1}: duplicate node id ${JSON.stringify(node.id)}`
+        )
+      }
+      ids.add(node.id)
+    }
+  }
   return {
     kind: 'object',
     id: layer.id,
     name: layer.name,
     visible: layer.visible,
     locked: layer.locked,
-    keyframes: layer.keyframes.map((keyframe, keyframeIndex) =>
-      validateLegacyKeyframe(keyframe, `${where}, keyframe ${keyframeIndex + 1}`)
-    )
+    keyframes
   }
 }
 
@@ -257,8 +275,8 @@ function validateLegacyDocument(value: unknown): AnimatorDocument {
   if (!isFiniteNumber(document.fps) || document.fps <= 0) {
     throw new MigrationError('invalid document: "fps" must be a positive number')
   }
-  if (typeof document.background !== 'string') {
-    throw new MigrationError('invalid document: "background" must be a string')
+  if (typeof document.background !== 'string' || parseHexColor(document.background) === null) {
+    throw new MigrationError('invalid document: "background" must be a hex color (#rgb or #rrggbb)')
   }
   if (
     document.frames !== undefined &&
