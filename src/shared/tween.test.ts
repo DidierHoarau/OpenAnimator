@@ -557,7 +557,7 @@ describe('tweenNode', () => {
     expect(text.strokeDashoffset).toBe(3)
   })
 
-  it('tweens a text: font size lerps, content and font snap from `from`', () => {
+  it('tweens a text: font size and fill lerp, content and font snap from `from`', () => {
     const from: TextNode = {
       type: 'text',
       id: 't',
@@ -591,8 +591,148 @@ describe('tweenNode', () => {
     expect(result.text).toBe('From')
     expect(result.fontFamily).toBe('Noto Sans')
     expect(result.fontWeight).toBe(400)
-    expect(result.fill).toBe('#ffffff')
+    expect(result.fill).toBe('#808080')
     expect(result.align).toBe('left')
+  })
+
+  it('carries every text field and lerps spacing, line height and stroke width', () => {
+    const from: TextNode = {
+      type: 'text',
+      id: 't',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      text: 'From',
+      fontFamily: 'Noto Sans',
+      fontStyle: 'italic',
+      fontSize: 20,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left',
+      letterSpacing: 2,
+      lineHeight: 24,
+      verticalAlign: 'middle',
+      ligatures: false,
+      fontFallback: ['serif'],
+      stroke: '#000000',
+      strokeWidth: 1
+    }
+    const to: TextNode = {
+      ...from,
+      center: { x: 40, y: 0 },
+      width: 200,
+      height: 80,
+      text: 'To',
+      fontFamily: 'Lato',
+      fontStyle: 'normal',
+      fontSize: 40,
+      fontWeight: 700,
+      fill: '#ff0000',
+      align: 'right',
+      letterSpacing: 6,
+      lineHeight: 40,
+      verticalAlign: 'bottom',
+      ligatures: true,
+      fontFallback: ['sans-serif'],
+      stroke: '#0000ff',
+      strokeWidth: 5
+    }
+
+    for (const t of [0, 0.5, 1]) {
+      const node = tweenNode(from, to, t) as TextNode
+      // Identity fields always snap from `from`.
+      expect(node.text).toBe('From')
+      expect(node.fontFamily).toBe('Noto Sans')
+      expect(node.fontStyle).toBe('italic')
+      expect(node.fontWeight).toBe(400)
+      expect(node.align).toBe('left')
+      expect(node.verticalAlign).toBe('middle')
+      expect(node.ligatures).toBe(false)
+      expect(node.fontFallback).toEqual(['serif'])
+    }
+
+    const start = tweenNode(from, to, 0) as TextNode
+    const mid = tweenNode(from, to, 0.5) as TextNode
+    const end = tweenNode(from, to, 1) as TextNode
+    expect([start.fontSize, mid.fontSize, end.fontSize]).toEqual([20, 30, 40])
+    expect([start.letterSpacing, mid.letterSpacing, end.letterSpacing]).toEqual([2, 4, 6])
+    expect([start.lineHeight, mid.lineHeight, end.lineHeight]).toEqual([24, 32, 40])
+    expect([start.strokeWidth, mid.strokeWidth, end.strokeWidth]).toEqual([1, 3, 5])
+    expect([start.fill, mid.fill, end.fill]).toEqual(['#ffffff', '#ff8080', '#ff0000'])
+    expect([start.stroke, mid.stroke, end.stroke]).toEqual(['#000000', '#000080', '#0000ff'])
+  })
+
+  it('keeps one-ended text numerics and strokes from the defined end', () => {
+    const bare: TextNode = {
+      type: 'text',
+      id: 't',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 20,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left'
+    }
+
+    // Only `from` defines the fields: the authored values survive.
+    const fromOnly = tweenNode(
+      { ...bare, letterSpacing: 3, lineHeight: 2, stroke: '#112233', strokeWidth: 4 },
+      { ...bare, letterSpacing: undefined, lineHeight: undefined, stroke: undefined, strokeWidth: undefined },
+      0.5
+    ) as TextNode
+    expect(fromOnly.letterSpacing).toBe(3)
+    expect(fromOnly.lineHeight).toBe(2)
+    expect(fromOnly.stroke).toBe('#112233')
+    expect(fromOnly.strokeWidth).toBe(4)
+
+    // Only `to` defines them: the target values win as-is.
+    const toOnly = tweenNode(
+      bare,
+      { ...bare, letterSpacing: 3, lineHeight: 2, stroke: '#112233', strokeWidth: 4 },
+      0.5
+    ) as TextNode
+    expect(toOnly.letterSpacing).toBe(3)
+    expect(toOnly.lineHeight).toBe(2)
+    expect(toOnly.stroke).toBe('#112233')
+    expect(toOnly.strokeWidth).toBe(4)
+
+    // Absent at both ends stays absent (no accidental defaults).
+    for (const key of ['letterSpacing', 'lineHeight', 'stroke', 'strokeWidth'] as const) {
+      expect(tweenNode(bare, bare, 0.5)).not.toHaveProperty(key)
+    }
+  })
+
+  it('eases the text fill channel independently of the base progress', () => {
+    const from: TextNode = {
+      type: 'text',
+      id: 't',
+      center: { x: 0, y: 0 },
+      width: 100,
+      height: 50,
+      rotation: 0,
+      opacity: 1,
+      text: 'Hi',
+      fontFamily: 'Noto Sans',
+      fontSize: 20,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left',
+      stroke: '#000000'
+    }
+    const to: TextNode = { ...from, center: { x: 50, y: 0 }, fill: '#ff0000', stroke: '#0000ff' }
+
+    const eased = tweenNode(from, to, 0.5, undefined, { fill: 1 }) as TextNode
+    // Fill jumps to the target while position and stroke keep the base t.
+    expect(eased.fill).toBe('#ff0000')
+    expect(eased.center.x).toBe(25)
+    expect(eased.stroke).toBe('#000080')
   })
 })
 

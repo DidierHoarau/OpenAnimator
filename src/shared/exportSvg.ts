@@ -1,5 +1,5 @@
 import { evaluateDocumentAtFrame } from './render'
-import { renderLayersToSvgMarkup } from './renderSvg'
+import { escapeXmlAttribute, renderLayersToSvgMarkup } from './renderSvg'
 import type { ResourceResolver } from './renderSvg'
 import type { AnimatorDocument, CameraPose } from './model'
 
@@ -54,7 +54,7 @@ export function documentToSvgString(
     : layerMarkup
   const backdrop = options.transparent
     ? ''
-    : `<rect x="0" y="0" width="${document.width}" height="${document.height}" fill="${document.background}"/>`
+    : `<rect x="0" y="0" width="${document.width}" height="${document.height}" fill="${escapeXmlAttribute(document.background)}"/>`
   const fontStyle = options.embeddedFontStyle ? `<style>${options.embeddedFontStyle}</style>` : ''
   return (
     `<svg xmlns="http://www.w3.org/2000/svg" width="${document.width}" height="${document.height}"` +
