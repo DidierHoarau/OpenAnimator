@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createDocument, getLayer } from '@shared/document'
 import type { AudioLayer, DrawingLayer, PrimitiveNode, SceneNode } from '@shared/model'
@@ -1155,5 +1155,46 @@ describe('TimelineView — camera and audio layers', () => {
     editor.toggleScrubAudio()
     view.render()
     expect(box.checked).toBe(false)
+  })
+})
+
+describe('TimelineView — interaction coalescing', () => {
+  let editor: Editor
+  let container: HTMLElement
+  let view: TimelineView
+
+  beforeEach(() => {
+    document.body.textContent = ''
+    editor = new Editor(createDocument('test', 960, 540, 24))
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    view = new TimelineView(editor, container)
+  })
+
+  it('defers document renders to a single rebuild when the interaction ends', () => {
+    editor.addNode(rect('a'))
+    const render = vi.spyOn(view, 'render')
+
+    editor.beginInteraction('Move nodes')
+    editor.nudgeSelected(1, 0)
+    editor.nudgeSelected(1, 0)
+    // No per-pointermove rebuild while the drag is open.
+    expect(render).not.toHaveBeenCalled()
+
+    editor.endInteraction()
+    expect(render).toHaveBeenCalledTimes(1)
+
+    // Outside an interaction the timeline still re-renders per change.
+    editor.nudgeSelected(1, 0)
+    expect(render).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not rebuild when an interaction made no document change', () => {
+    const render = vi.spyOn(view, 'render')
+
+    editor.beginInteraction('Select')
+    editor.endInteraction()
+
+    expect(render).not.toHaveBeenCalled()
   })
 })

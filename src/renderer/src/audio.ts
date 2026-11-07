@@ -20,6 +20,8 @@ export interface AudioPlaybackBridge {
   peaks?(resourceId: string, buckets: number): PeakBucket[] | null
   /** Notified when a resource finishes decoding so views re-render. */
   onDecoded?(listener: () => void): () => void
+  /** Drops every decoded clip and any in-flight decode (document switch). */
+  clearDecoded?(): void
 }
 
 export const NOOP_AUDIO: AudioPlaybackBridge = {
@@ -27,7 +29,8 @@ export const NOOP_AUDIO: AudioPlaybackBridge = {
   stop: () => {},
   sync: () => {},
   scrub: () => {},
-  endScrub: () => {}
+  endScrub: () => {},
+  clearDecoded: () => {}
 }
 
 /** Gain multiplier of the scrub-session clips. */
@@ -116,6 +119,9 @@ export class AudioSystem implements AudioPlaybackBridge {
   private readonly decoded = new Map<string, DecodedClip>()
   private readonly decoding = new Set<string>()
   private readonly decodedListeners = new Set<() => void>()
+  /** Bumped by `clearDecoded`: late decode results from an older document are
+   * dropped instead of repopulating the cache. */
+  private decodeGeneration = 0
   private playing: PlayingClip[] = []
   private session: PlaybackSession | null = null
   private scrubSession: ScrubSession | null = null
@@ -202,6 +208,16 @@ export class AudioSystem implements AudioPlaybackBridge {
     this.scrubSession = null
     if (!session) return
     for (const clip of session.clips) this.releaseClip(clip)
+  }
+
+  /** Drops every decoded clip and in-flight decode: a newly loaded document
+   * must not keep the previous document's audio buffers alive, and a pending
+   * decode must not repopulate the cache afterwards. */
+  clearDecoded(): void {
+    this.stop()
+    this.decodeGeneration += 1
+    this.decoded.clear()
+    this.decoding.clear()
   }
 
   /** Decoded clip length in seconds, or null while not decoded yet. */
@@ -385,10 +401,14 @@ export class AudioSystem implements AudioPlaybackBridge {
     const blob = this.getBlob(resourceId)
     if (!context || !blob) return
     this.decoding.add(resourceId)
+    const generation = this.decodeGeneration
     void blob
       .arrayBuffer()
       .then((buffer) => context.decodeAudioData(buffer))
       .then((audioBuffer) => {
+        // A document switch cleared the cache while this decode was in
+        // flight: the stale buffer must not come back.
+        if (generation !== this.decodeGeneration) return
         this.decoding.delete(resourceId)
         this.decoded.set(resourceId, { buffer: audioBuffer, peaks: new Map() })
         // A clip that was skipped at playback start joins the running mix.
@@ -408,8 +428,9 @@ export class AudioSystem implements AudioPlaybackBridge {
         for (const listener of this.decodedListeners) listener()
       })
       .catch(() => {
-        // Missing or undecodable resource: silence, never an error.
-        this.decoding.delete(resourceId)
+        // Missing or undecodable resource: silence, never an error. A stale
+        // failure must not clear the `decoding` marker of a newer attempt.
+        if (generation === this.decodeGeneration) this.decoding.delete(resourceId)
       })
   }
 }

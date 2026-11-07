@@ -183,6 +183,8 @@ export class TimelineView {
   private rangeSelection: { start: number; end: number } | null = null
   /** Copied keyframe chunk (session clipboard for Ctrl+C / Ctrl+V). */
   private clipboard: { entries: KeyframeChunkEntry[] } | null = null
+  /** A document change landed mid-drag: rebuild once when the drag ends. */
+  private docChangedDuringInteraction = false
   private markerDrag: { layerId: string; startX: number; startY: number; pointerId: number; dragging: boolean } | null = null
   private rulerDrag: { startFrame: number; pointerId: number; active: boolean } | null = null
   private nodeKeyframeButtons: HTMLButtonElement[] = []
@@ -530,7 +532,20 @@ export class TimelineView {
 
     container.append(controls, options, scroll, this.menu)
 
-    editor.onDocChange(() => this.render())
+    editor.onDocChange(() => {
+      // A pointer drag fires one change per move; rebuilding the whole tree
+      // each time stalls the drag. Defer to the single end-of-drag rebuild.
+      if (editor.inInteraction) {
+        this.docChangedDuringInteraction = true
+        return
+      }
+      this.render()
+    })
+    editor.onInteractionEnd(() => {
+      if (!this.docChangedDuringInteraction) return
+      this.docChangedDuringInteraction = false
+      this.render()
+    })
     editor.onFrameChange(() => {
       this.updatePlayhead()
       this.refreshNodeKeyframeButtons()
