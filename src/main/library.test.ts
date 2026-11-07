@@ -11,6 +11,13 @@ import { LibraryStore } from './library'
 const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])
 const JPG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 8, 7])
 
+// Content-addressed ids are lowercase SHA-256 hex digests.
+const HASH_A = 'a'.repeat(64)
+const HASH_B = 'b'.repeat(64)
+const HASH_INNER = 'c'.repeat(64)
+const HASH_1 = '1'.repeat(64)
+const HASH_MISSING = 'd'.repeat(64)
+
 function imageNode(id: string, resourceId: string): SceneNode {
   return {
     id,
@@ -80,39 +87,39 @@ describe('LibraryStore', () => {
   })
 
   it('round-trips an image asset with its resource bytes', async () => {
-    resourceStore.reset(new Map([['hash-a', { bytes: PNG_BYTES, ext: 'png' }]]))
-    await store.add(imageAsset('a', 'hash-a'))
+    resourceStore.reset(new Map([[HASH_A, { bytes: PNG_BYTES, ext: 'png' }]]))
+    await store.add(imageAsset('a', HASH_A))
 
     const result = await store.list()
-    expect(result.assets).toEqual([imageAsset('a', 'hash-a')])
-    expect(result.resources['hash-a']).toEqual({ bytes: PNG_BYTES, ext: 'png' })
+    expect(result.assets).toEqual([imageAsset('a', HASH_A)])
+    expect(result.resources[HASH_A]).toEqual({ bytes: PNG_BYTES, ext: 'png' })
     // The resource landed in the resources folder, named by id + ext.
     const files = await readdir(join(baseDir, 'resources'))
-    expect(files).toEqual(['hash-a.png'])
+    expect(files).toEqual([`${HASH_A}.png`])
   })
 
   it('round-trips a symbol asset and the resources referenced by its content', async () => {
     resourceStore.reset(
       new Map([
-        ['hash-a', { bytes: PNG_BYTES, ext: 'png' }],
-        ['hash-b', { bytes: JPG_BYTES, ext: 'jpg' }]
+        [HASH_A, { bytes: PNG_BYTES, ext: 'png' }],
+        [HASH_B, { bytes: JPG_BYTES, ext: 'jpg' }]
       ])
     )
-    await store.add(symbolAsset('s', [imageNode('img', 'hash-a')]))
+    await store.add(symbolAsset('s', [imageNode('img', HASH_A)]))
 
     const result = await store.list()
     expect(result.assets).toHaveLength(1)
-    expect(result.resources['hash-a']).toEqual({ bytes: PNG_BYTES, ext: 'png' })
-    expect(result.resources['hash-b']).toBeUndefined()
+    expect(result.resources[HASH_A]).toEqual({ bytes: PNG_BYTES, ext: 'png' })
+    expect(result.resources[HASH_B]).toBeUndefined()
   })
 
   it('resolves nested symbol references against the stored context', async () => {
-    resourceStore.reset(new Map([['hash-inner', { bytes: PNG_BYTES, ext: 'png' }]]))
-    await store.add(symbolAsset('inner', [imageNode('img', 'hash-inner')]))
+    resourceStore.reset(new Map([[HASH_INNER, { bytes: PNG_BYTES, ext: 'png' }]]))
+    await store.add(symbolAsset('inner', [imageNode('img', HASH_INNER)]))
     await store.add(symbolAsset('outer', [symbolNode('ref', 'inner')]))
 
     const result = await store.list()
-    expect(Object.keys(result.resources)).toEqual(['hash-inner'])
+    expect(Object.keys(result.resources)).toEqual([HASH_INNER])
   })
 
   it('rejects invalid assets without writing the index', async () => {
@@ -123,15 +130,15 @@ describe('LibraryStore', () => {
   })
 
   it('replaces an existing entry with the same id (upsert)', async () => {
-    await store.add(imageAsset('a', 'hash-1'))
-    const renamed = { ...imageAsset('a', 'hash-1'), name: 'renamed' }
+    await store.add(imageAsset('a', HASH_1))
+    const renamed = { ...imageAsset('a', HASH_1), name: 'renamed' }
     await store.add(renamed)
     await expect(store.list()).resolves.toMatchObject({ assets: [renamed] })
   })
 
   it('removes an asset and reports unknown ids', async () => {
-    await store.add(imageAsset('a', 'hash-1'))
-    await store.add(imageAsset('b', 'hash-1'))
+    await store.add(imageAsset('a', HASH_1))
+    await store.add(imageAsset('b', HASH_1))
     await expect(store.remove('a')).resolves.toBe(true)
     const result = await store.list()
     expect(result.assets.map((asset) => asset.id)).toEqual(['b'])
@@ -139,15 +146,15 @@ describe('LibraryStore', () => {
   })
 
   it('keeps resource files when an asset is removed', async () => {
-    resourceStore.reset(new Map([['hash-a', { bytes: PNG_BYTES, ext: 'png' }]]))
-    await store.add(imageAsset('a', 'hash-a'))
+    resourceStore.reset(new Map([[HASH_A, { bytes: PNG_BYTES, ext: 'png' }]]))
+    await store.add(imageAsset('a', HASH_A))
     await store.remove('a')
     const files = await readdir(join(baseDir, 'resources'))
-    expect(files).toEqual(['hash-a.png'])
+    expect(files).toEqual([`${HASH_A}.png`])
   })
 
   it('renames an asset and reports unknown ids', async () => {
-    await store.add(imageAsset('a', 'hash-1'))
+    await store.add(imageAsset('a', HASH_1))
     await expect(store.rename('a', 'Rocket')).resolves.toBe(true)
     const result = await store.list()
     expect(result.assets[0].name).toBe('Rocket')
@@ -155,7 +162,7 @@ describe('LibraryStore', () => {
   })
 
   it('lists an asset whose resource file is missing (placeholder on use)', async () => {
-    await store.add(imageAsset('a', 'hash-missing'))
+    await store.add(imageAsset('a', HASH_MISSING))
     const result = await store.list()
     expect(result.assets.map((asset) => asset.id)).toEqual(['a'])
     expect(result.resources).toEqual({})
@@ -163,7 +170,7 @@ describe('LibraryStore', () => {
 
   it('drops invalid entries from the index but keeps valid ones', async () => {
     resourceStore.reset(new Map())
-    await store.add(imageAsset('a', 'hash-1'))
+    await store.add(imageAsset('a', HASH_1))
     const indexPath = join(baseDir, 'library.json')
     const raw = JSON.parse(await readFile(indexPath, 'utf8'))
     raw.assets.push({ garbage: true })
@@ -178,25 +185,33 @@ describe('LibraryStore', () => {
   })
 
   it('writes the index atomically (no leftover temp file)', async () => {
-    await store.add(imageAsset('a', 'hash-1'))
+    await store.add(imageAsset('a', HASH_1))
     const files = await readdir(baseDir)
     expect(files).toEqual(['library.json', 'resources'])
   })
 
   it('is independent from the session store contents at list time', async () => {
-    resourceStore.reset(new Map([['hash-a', { bytes: PNG_BYTES, ext: 'png' }]]))
-    await store.add(imageAsset('a', 'hash-a'))
+    resourceStore.reset(new Map([[HASH_A, { bytes: PNG_BYTES, ext: 'png' }]]))
+    await store.add(imageAsset('a', HASH_A))
     resourceStore.reset(new Map())
     const result = await store.list()
-    expect(result.resources['hash-a']).toEqual({ bytes: PNG_BYTES, ext: 'png' })
+    expect(result.resources[HASH_A]).toEqual({ bytes: PNG_BYTES, ext: 'png' })
+  })
+
+  it('rejects an asset whose resource id could escape the resources folder', async () => {
+    resourceStore.reset(new Map([['../../evil', { bytes: PNG_BYTES, ext: 'png' }]]))
+    await expect(store.add(imageAsset('evil', '../../evil'))).resolves.toBe(false)
+    // Nothing was written outside the library's resources folder.
+    const files = await readdir(baseDir)
+    expect(files).toEqual([])
   })
 
   it('sanitizes hostile resource extensions when writing files', async () => {
-    resourceStore.reset(new Map([['hash-a', { bytes: PNG_BYTES, ext: '../../evil' }]]))
-    await store.add(imageAsset('a', 'hash-a'))
+    resourceStore.reset(new Map([[HASH_A, { bytes: PNG_BYTES, ext: '../../evil' }]]))
+    await store.add(imageAsset('a', HASH_A))
     // Path separators and dots are stripped, so the write stays inside the
     // resources folder.
     const files = await readdir(join(baseDir, 'resources'))
-    expect(files).toEqual(['hash-a.evil'])
+    expect(files).toEqual([`${HASH_A}.evil`])
   })
 })

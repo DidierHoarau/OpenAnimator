@@ -12,6 +12,7 @@ import {
 import type { LibraryListResult, LibraryResource } from '../shared/api'
 import { collectAssetResourceIds } from '../shared/assets'
 import { isAsset } from '../shared/document'
+import { isContentAddressedResourceId } from '../shared/resources'
 import type { Asset } from '../shared/model'
 import type { ProjectResource } from './projectContainer'
 import { resourceStore } from './resources'
@@ -65,11 +66,15 @@ export class LibraryStore {
    */
   async add(asset: Asset, contextAssets: Asset[] = []): Promise<boolean> {
     if (!isAsset(asset)) return false
+    // Resource ids double as file names under `resources/`; a crafted asset
+    // must never reach the disk write with a traversal id.
+    const resourceIds = collectAssetResourceIds(asset, contextAssets)
+    if (!resourceIds.every(isContentAddressedResourceId)) return false
     const assets = (await this.readIndex()).filter((entry) => entry.id !== asset.id)
     assets.push(asset)
     await this.ensureDirs()
     const store = resourceStore.all()
-    for (const resourceId of collectAssetResourceIds(asset, contextAssets)) {
+    for (const resourceId of resourceIds) {
       const resource = store.get(resourceId)
       if (resource) await this.writeResource(resourceId, resource)
     }
@@ -118,6 +123,7 @@ export class LibraryStore {
   }
 
   private async writeResource(resourceId: string, resource: ProjectResource): Promise<void> {
+    if (!isContentAddressedResourceId(resourceId)) return
     const ext = resource.ext.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'bin'
     await writeFile(join(this.resourcesDir, `${resourceId}.${ext}`), resource.bytes)
   }
@@ -133,7 +139,9 @@ export class LibraryStore {
     for (const file of files) {
       const dot = file.lastIndexOf('.')
       if (dot <= 0) continue
-      byId.set(file.slice(0, dot), {
+      const id = file.slice(0, dot)
+      if (!isContentAddressedResourceId(id)) continue
+      byId.set(id, {
         path: join(this.resourcesDir, file),
         ext: file.slice(dot + 1).toLowerCase()
       })

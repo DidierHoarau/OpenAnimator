@@ -359,7 +359,7 @@ describe('parseProject — error handling', () => {
   })
 
   it('rejects a valid zip without a document.json entry', () => {
-    const packed = zipSync({ 'resources/ab.png': [PNG_BYTES, { level: 0 }] })
+    const packed = zipSync({ [`resources/${'a'.repeat(64)}.png`]: [PNG_BYTES, { level: 0 }] })
     expect(() => parseProject(packed)).toThrow(/document\.json/)
   })
 
@@ -399,5 +399,92 @@ describe('parseProject — error handling', () => {
     expect(isZipContainer(plain)).toBe(false)
     const migrated = migrateDocument(JSON.parse(new TextDecoder().decode(plain)))
     expect(migrated).toEqual(document)
+  })
+})
+
+describe('parseProject — container hardening', () => {
+  const resourceId = 'a'.repeat(64)
+
+  function packedDocument(): Uint8Array {
+    return packProject(documentWithNodes([]), new Map())
+  }
+
+  /** Patches the first central-directory entry's declared uncompressed size
+   * (offset 24 in the central header) — simulates a crafted archive header. */
+  function patchCentralUncompressedSize(zip: Uint8Array, size: number): Uint8Array {
+    const patched = zip.slice()
+    const view = new DataView(patched.buffer, patched.byteOffset, patched.byteLength)
+    // End of central directory record: signature 0x06054b50.
+    let eocd = patched.length - 22
+    while (eocd >= 0 && view.getUint32(eocd, true) !== 0x06054b50) eocd--
+    const centralOffset = view.getUint32(eocd + 16, true)
+    if (view.getUint32(centralOffset, true) !== 0x02014b50) throw new Error('no central entry')
+    view.setUint32(centralOffset + 24, size, true)
+    return patched
+  }
+
+  it('rejects an entry whose declared size exceeds the per-entry budget before inflating', () => {
+    const crafted = patchCentralUncompressedSize(packedDocument(), 300 * 1024 * 1024)
+    expect(() => parseProject(crafted)).toThrow(MigrationError)
+    expect(() => parseProject(crafted)).toThrow(/too large or malformed/)
+  })
+
+  it('rejects a container with more entries than the budget', () => {
+    const files: Record<string, [Uint8Array, { level: 0 }]> = {
+      'document.json': [strToU8(JSON.stringify(documentWithNodes([]))), { level: 0 }]
+    }
+    for (let index = 0; index < 4097; index += 1) {
+      files[`resources/${index.toString(16).padStart(64, '0')}.bin`] = [new Uint8Array(), { level: 0 }]
+    }
+    expect(() => parseProject(zipSync(files))).toThrow(/too large or malformed/)
+  })
+
+  it('rejects traversal, non-content-addressed and uppercase resource entry names', () => {
+    const documentEntry = strToU8(JSON.stringify(documentWithNodes([])))
+    for (const name of [
+      'resources/../evil.png',
+      'resources/abc.png',
+      `resources/${'A'.repeat(64)}.png`,
+      `resources/${'a'.repeat(63)}.png`,
+      `resources/${'a'.repeat(64)}.PNG`
+    ]) {
+      const zip = zipSync({
+        'document.json': [documentEntry, { level: 0 }],
+        [name]: [PNG_BYTES, { level: 0 }]
+      })
+      expect(() => parseProject(zip), name).toThrow(MigrationError)
+    }
+  })
+
+  it('rejects duplicate resource ids coming from different entry names', () => {
+    const zip = zipSync({
+      'document.json': [strToU8(JSON.stringify(documentWithNodes([]))), { level: 0 }],
+      [`resources/${resourceId}.png`]: [PNG_BYTES, { level: 0 }],
+      [`resources/${resourceId}.jpg`]: [JPG_BYTES, { level: 0 }]
+    })
+    expect(() => parseProject(zip)).toThrow(/duplicate resource/)
+  })
+
+  it('rejects a deflated entry whose compression ratio is absurd', () => {
+    const bomb = new Uint8Array(8 * 1024 * 1024)
+    const zip = zipSync({
+      'document.json': [strToU8(JSON.stringify(documentWithNodes([]))), { level: 0 }],
+      [`resources/${resourceId}.bin`]: [bomb, { level: 9 }]
+    })
+    expect(() => parseProject(zip)).toThrow(/too large or malformed/)
+  })
+
+  it('refuses to pack a resource map with a non-content-addressed id', () => {
+    const document = documentWithNodes([imageNode('img-1', '../escape')])
+    expect(() =>
+      packProject(document, new Map([['../escape', { bytes: PNG_BYTES, ext: 'png' }]]))
+    ).toThrow(/Invalid resource id/)
+    expect(() =>
+      packProjectIncremental(
+        document,
+        new Map([['../escape', { bytes: PNG_BYTES, ext: 'png' }]]),
+        new ProjectPackCache()
+      )
+    ).toThrow(/Invalid resource id/)
   })
 })

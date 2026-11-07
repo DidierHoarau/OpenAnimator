@@ -15,8 +15,14 @@ import type { ReadResult, SaveToResult } from '../shared/api'
 import type { AnimatorDocument } from '../shared/model'
 import { isRecoverySnapshotInfo, shouldOfferRecovery } from '../shared/recovery'
 import type { RecoveryInfo } from '../shared/recovery'
+import { collectResourceCounts, isContentAddressedResourceId } from '../shared/resources'
 import type { ProjectResourceMap } from './projectContainer'
-import { packProjectIncremental, parseProject, ProjectPackCache } from './projectContainer'
+import {
+  packProjectIncremental,
+  parseProject,
+  ProjectPackCache,
+  sanitizedExtension
+} from './projectContainer'
 import { resourceStore } from './resources'
 
 /** Untitled (never-saved) snapshots kept before the oldest is pruned. */
@@ -36,12 +42,16 @@ function slotId(path: string): string {
  */
 export class RecoveryStore {
   private readonly baseDir: string
-  /** Session pack cache: unchanged resource bytes survive autosave rewrites
-   * without being reframed or re-checksummed. */
+  /** Content-addressed resource files shared by every snapshot (one file per
+   * resource id); snapshots themselves carry only `document.json`. */
+  private readonly resourcesDir: string
+  /** Session pack cache handed to the incremental packer (snapshots carry no
+   * embedded resources; the directory holds them). */
   private readonly packCache = new ProjectPackCache()
 
   constructor(baseDir: string) {
     this.baseDir = baseDir
+    this.resourcesDir = join(baseDir, 'resources')
   }
 
   private snapshotPath(path: string): string {
@@ -52,7 +62,9 @@ export class RecoveryStore {
     return join(this.baseDir, `${slotId(path)}.json`)
   }
 
-  /** Writes the snapshot and its info atomically (temp file + rename). */
+  /** Writes the snapshot and its info atomically (temp file + rename).
+   * Referenced resources go to the shared content-addressed directory first,
+   * so a crash can never leave a snapshot pointing at missing files. */
   async write(
     path: string,
     document: AnimatorDocument,
@@ -61,8 +73,23 @@ export class RecoveryStore {
     untitled = false
   ): Promise<void> {
     await mkdir(this.baseDir, { recursive: true })
+    await mkdir(this.resourcesDir, { recursive: true })
+    const existing = await this.resourceFileById()
+    for (const resourceId of collectResourceCounts(document).keys()) {
+      // Content-addressed: an id already on disk holds these exact bytes.
+      if (!isContentAddressedResourceId(resourceId) || existing.has(resourceId)) continue
+      const resource = resources.get(resourceId)
+      if (!resource) continue
+      const filename = `${resourceId}.${sanitizedExtension(resource.ext)}`
+      const target = join(this.resourcesDir, filename)
+      await writeFile(`${target}.tmp`, resource.bytes)
+      await rename(`${target}.tmp`, target)
+      existing.set(resourceId, filename)
+    }
     const snapshot = this.snapshotPath(path)
-    await writeFile(`${snapshot}.tmp`, packProjectIncremental(document, resources, this.packCache).bytes)
+    // Resources live beside the snapshot now: the container is document-only.
+    const packed = packProjectIncremental(document, new Map(), this.packCache)
+    await writeFile(`${snapshot}.tmp`, packed.bytes)
     await rename(`${snapshot}.tmp`, snapshot)
     const info: RecoveryInfo = { path, name: document.name, savedAt, untitled }
     const infoPath = this.infoPath(path)
@@ -89,18 +116,92 @@ export class RecoveryStore {
     }
   }
 
-  /** Snapshot document and resources; throws when missing or corrupt. */
+  /** Snapshot document and resources; throws when missing or corrupt.
+   * Resources live in the content-addressed directory; snapshots written by
+   * older versions still embed theirs, and the embedded copy wins. */
   async read(path: string): Promise<{ document: AnimatorDocument; resources: ProjectResourceMap }> {
     const bytes = await readFile(this.snapshotPath(path))
-    return parseProject(new Uint8Array(bytes))
+    const parsed = parseProject(new Uint8Array(bytes))
+    const merged: ProjectResourceMap = new Map(parsed.resources)
+    const onDisk = await this.resourceFileById()
+    for (const resourceId of collectResourceCounts(parsed.document).keys()) {
+      if (merged.has(resourceId) || !isContentAddressedResourceId(resourceId)) continue
+      const filename = onDisk.get(resourceId)
+      if (!filename) continue
+      const ext = filename.slice(resourceId.length + 1)
+      merged.set(resourceId, {
+        bytes: new Uint8Array(await readFile(join(this.resourcesDir, filename))),
+        ext
+      })
+    }
+    return { document: parsed.document, resources: merged }
   }
 
-  /** Deletes the snapshot and its info (best-effort). */
+  /** Deletes the snapshot and its info (best-effort), then prunes resource
+   * files no remaining snapshot references. */
   async clear(path: string): Promise<void> {
     await Promise.all(
       [this.snapshotPath(path), this.infoPath(path)].map((file) =>
         unlink(file).catch(() => undefined)
       )
+    )
+    await this.pruneResources()
+  }
+
+  /** Id → filename of every content-addressed resource on disk. */
+  private async resourceFileById(): Promise<Map<string, string>> {
+    const byId = new Map<string, string>()
+    let files: string[]
+    try {
+      files = await readdir(this.resourcesDir)
+    } catch {
+      return byId
+    }
+    for (const file of files) {
+      const dot = file.lastIndexOf('.')
+      if (dot <= 0) continue
+      const resourceId = file.slice(0, dot)
+      if (isContentAddressedResourceId(resourceId) && !byId.has(resourceId)) {
+        byId.set(resourceId, file)
+      }
+    }
+    return byId
+  }
+
+  /** Unlinks resource files that no readable snapshot references. Ids are
+   * content-addressed, so a file left by a deleted slot is either shared by
+   * another snapshot (kept) or dead (removed). */
+  private async pruneResources(): Promise<void> {
+    const referenced = new Set<string>()
+    let files: string[]
+    try {
+      files = await readdir(this.baseDir)
+    } catch {
+      return
+    }
+    for (const file of files) {
+      if (!file.endsWith('.oanim')) continue
+      try {
+        const bytes = await readFile(join(this.baseDir, file))
+        const { document } = parseProject(new Uint8Array(bytes))
+        for (const resourceId of collectResourceCounts(document).keys()) referenced.add(resourceId)
+      } catch {
+        // A corrupt snapshot cannot vouch for any resource; skip it.
+      }
+    }
+    let resourceFiles: string[]
+    try {
+      resourceFiles = await readdir(this.resourcesDir)
+    } catch {
+      return
+    }
+    await Promise.all(
+      resourceFiles.map(async (file) => {
+        const dot = file.lastIndexOf('.')
+        const resourceId = dot > 0 ? file.slice(0, dot) : ''
+        if (isContentAddressedResourceId(resourceId) && referenced.has(resourceId)) return
+        await unlink(join(this.resourcesDir, file)).catch(() => undefined)
+      })
     )
   }
 

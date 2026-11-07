@@ -111,3 +111,18 @@ describe('extensionOf', () => {
     expect(extensionOf('.hidden')).toBe('')
   })
 })
+
+describe('ResourceStore.reset — invalid ids', () => {
+  it('drops entries whose id is not a content-addressed digest', () => {
+    const store = new ResourceStore()
+    const validId = store.add(PNG_BYTES, 'png').resourceId
+    store.reset(
+      new Map([
+        [validId, { bytes: PNG_BYTES, ext: 'png' }],
+        ['../escape', { bytes: JPG_BYTES, ext: 'jpg' }],
+        ['hash-a', { bytes: JPG_BYTES, ext: 'jpg' }]
+      ])
+    )
+    expect([...store.all().keys()]).toEqual([validId])
+  })
+})

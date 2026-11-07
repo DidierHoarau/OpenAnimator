@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import type { AnimatorDocument } from '../shared/model'
-import { collectResourceCounts } from '../shared/resources'
+import { collectResourceCounts, isContentAddressedResourceId } from '../shared/resources'
 import type { ProjectResourceMap } from './projectContainer'
 
 function sha256Hex(bytes: Uint8Array): string {
@@ -59,10 +59,14 @@ export class ResourceStore {
     return removed
   }
 
-  /** Replaces the store contents — used when a project file is opened. */
+  /** Replaces the store contents — used when a project file is opened.
+   * Entries whose id is not content-addressed are dropped: the id doubles as
+   * a file name in the library and recovery directories. */
   reset(resources: ProjectResourceMap): void {
     this.entries.clear()
-    for (const [resourceId, resource] of resources) this.entries.set(resourceId, resource)
+    for (const [resourceId, resource] of resources) {
+      if (isContentAddressedResourceId(resourceId)) this.entries.set(resourceId, resource)
+    }
   }
 }
 
