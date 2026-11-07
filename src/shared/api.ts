@@ -191,8 +191,9 @@ export interface OpenAnimatorApi {
   writeExportFile(path: string, bytes: Uint8Array): Promise<ExportWriteResult>
   /** Opens a staged export write: chunks go to `<path>.tmp` until commit. */
   openExportStream(path: string): Promise<ExportStreamOpenResult>
-  /** Appends one chunk to a staged export write. */
-  writeExportStream(token: string, chunk: Uint8Array): Promise<ExportWriteResult>
+  /** Appends one chunk to a staged export write (or writes it at `position`,
+   * used by formats that emit chunks out of order). */
+  writeExportStream(token: string, chunk: Uint8Array, position?: number): Promise<ExportWriteResult>
   /** Commits (atomic rename) or aborts (delete the temp) a staged write. */
   finishExportStream(token: string, commit: boolean): Promise<ExportWriteResult>
   /** Reads the persistent global color palette. */

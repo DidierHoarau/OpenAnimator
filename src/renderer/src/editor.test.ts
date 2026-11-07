@@ -11,6 +11,8 @@ import type { Asset, AudioLayer, DrawingLayer, GroupNode, ImageNode, ObjectLayer
 
 import { Editor } from './editor'
 import type { EditorDeps } from './editor'
+import { NOOP_AUDIO } from './audio'
+import type { AudioPlaybackBridge } from './audio'
 
 function rect(id: string): PrimitiveNode {
   return {
@@ -1177,5 +1179,67 @@ describe('Editor — camera and audio mutations', () => {
     expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 6, 12])
     editor.redo()
     expect(editor.cameraLayer?.keyframes.map((keyframe) => keyframe.frame)).toEqual([0, 7, 13])
+  })
+})
+
+describe('Editor — interaction signal and document switch', () => {
+  it('notifies onInteractionEnd only when the outermost interaction closes', () => {
+    const editor = new Editor(createDocument('test', 960, 540, 24))
+    const endings: number[] = []
+    editor.onInteractionEnd(() => endings.push(1))
+
+    expect(editor.inInteraction).toBe(false)
+    editor.beginInteraction('Outer')
+    expect(editor.inInteraction).toBe(true)
+    editor.beginInteraction('Inner')
+    editor.endInteraction()
+    expect(editor.inInteraction).toBe(true)
+    expect(endings).toEqual([])
+
+    editor.endInteraction()
+    expect(editor.inInteraction).toBe(false)
+    expect(endings).toEqual([1])
+
+    // An unbalanced end (no open interaction) never notifies.
+    editor.endInteraction()
+    expect(endings).toEqual([1])
+  })
+
+  it('stops notifying after the listener unsubscribes', () => {
+    const editor = new Editor(createDocument('test', 960, 540, 24))
+    const endings: number[] = []
+    const unsubscribe = editor.onInteractionEnd(() => endings.push(1))
+
+    editor.beginInteraction('Drag')
+    editor.endInteraction()
+    unsubscribe()
+    editor.beginInteraction('Drag again')
+    editor.endInteraction()
+
+    expect(endings).toEqual([1])
+  })
+
+  it('drops decoded audio when a new document is installed', () => {
+    const clearDecoded = vi.fn()
+    const audio: AudioPlaybackBridge = { ...NOOP_AUDIO, clearDecoded }
+    const editor = new Editor(createDocument('test', 960, 540, 24), { audio })
+
+    editor.setDocument(createDocument('other', 320, 180, 12))
+
+    expect(clearDecoded).toHaveBeenCalledTimes(1)
+  })
+
+  it('resets an open interaction when the document is replaced', () => {
+    const editor = new Editor(createDocument('test', 960, 540, 24))
+    const endings: number[] = []
+    editor.onInteractionEnd(() => endings.push(1))
+    editor.beginInteraction('Drag')
+
+    editor.setDocument(createDocument('other', 320, 180, 12))
+
+    expect(editor.inInteraction).toBe(false)
+    editor.endInteraction()
+    // The abandoned interaction is not reported as a completed one.
+    expect(endings).toEqual([])
   })
 })

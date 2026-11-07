@@ -601,3 +601,14 @@ describe('animated-SVG golden file', () => {
     expect(svg).toBe(readFileSync(GOLDEN_PATH, 'utf8'))
   })
 })
+
+describe('exportAnimatedSvg — hostile background', () => {
+  it('escapes the backdrop so it cannot break out of the fill attribute', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    document.background = '#10151b"/><script>alert(1)</script><rect fill="#000'
+    const { svg } = await exportAnimatedSvg(document, { ...RANGE, toFrame: 0 }, deps())
+    expect(svg).not.toContain('<script>')
+    expect(svg).not.toContain('"/><script')
+    expect(svg).toContain('fill="#10151b&quot;/&gt;&lt;script&gt;')
+  })
+})

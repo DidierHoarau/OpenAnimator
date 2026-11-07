@@ -390,4 +390,43 @@ describe('AudioSystem', () => {
     expect(system.peaks('a'.repeat(64), 4)).toBe(peaks)
     expect(system.peaks('a'.repeat(64), 8)).toHaveLength(8)
   })
+
+  it('clearDecoded stops playback and drops the decoded cache', async () => {
+    const { context, system } = createSystem()
+    const document = audioDoc()
+    system.start(document, 0, 24)
+    await flush()
+    expect(context.sources).toHaveLength(1)
+    expect(system.durationSeconds('a'.repeat(64))).toBe(2)
+
+    system.clearDecoded()
+
+    expect(context.sources[0].stoppedAt).not.toBeNull()
+    // The cache is empty again (a fresh document re-decodes on demand).
+    expect(system.durationSeconds('a'.repeat(64))).toBeNull()
+  })
+
+  it('drops a pending decode that completes after clearDecoded', async () => {
+    const context = new FakeAudioContext()
+    let resolveDecode!: (buffer: AudioBuffer) => void
+    context.decode = () =>
+      new Promise<AudioBuffer>((resolve) => {
+        resolveDecode = resolve
+      })
+    const { system } = createSystem({ context })
+    const decoded = vi.fn()
+    system.onDecoded(decoded)
+
+    // Starts the (still pending) decode: the blob read resolves first.
+    expect(system.durationSeconds('a'.repeat(64))).toBeNull()
+    await flush()
+    system.clearDecoded()
+    resolveDecode(fakeBuffer(2))
+    await flush()
+
+    expect(decoded).not.toHaveBeenCalled()
+    // The stale buffer never entered the cache: the next lookup re-decodes
+    // and still reports null until that attempt settles.
+    expect(system.durationSeconds('a'.repeat(64))).toBeNull()
+  })
 })

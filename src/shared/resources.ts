@@ -1,6 +1,14 @@
 import type { AnimatorDocument, Asset, SceneNode } from './model'
 import { isAudioLayer, isObjectLayer } from './model'
 
+/** True when `value` is a content-addressed resource id (a lowercase SHA-256
+ * hex digest). Main-process trust boundaries (containers, stores, the library
+ * directory) enforce this shape; the document model accepts arbitrary string
+ * ids so in-memory fixtures and renderer-created placeholders stay valid. */
+export function isContentAddressedResourceId(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
 /**
  * Counts how many times each resource is referenced by the document: one walk
  * over every object layer's keyframes (recursing into group children), one
@@ -67,4 +75,12 @@ export function collectResourceCounts(document: AnimatorDocument): Map<string, n
   // would drop them from saved .oanim files.
   for (const font of document.fonts) count(font.resourceId)
   return counts
+}
+
+/** Every resource id the document references. Single shared walker for the
+ * packer and the export rasterizer: it covers object-layer image nodes,
+ * group children, drawing cells, audio clips, assets (including images inside
+ * symbol content and nested symbols) and embedded fonts. */
+export function collectDocumentResourceIds(document: AnimatorDocument): Set<string> {
+  return new Set(collectResourceCounts(document).keys())
 }

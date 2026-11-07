@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createDocument, createDrawingLayer } from '@shared/document'
 import type { ExportOptions } from '@shared/exportOptions'
+import type { GroupNode, ImageNode, SceneNode } from '@shared/model'
 
 import { FrameRasterizer, createDefaultFrameRasterDeps, type FrameRasterDeps } from './frameRaster'
 
@@ -120,6 +121,84 @@ describe('FrameRasterizer', () => {
     expect(calls.svgs[0]).toContain('stroke-dasharray="4 4"')
   })
 
+  it('warms object-layer images and images embedded in nested symbols', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    const layer = document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    const image = (id: string, resourceId: string): ImageNode => ({
+      type: 'image',
+      id,
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      resourceId,
+      naturalWidth: 10,
+      naturalHeight: 10,
+      smoothing: true
+    })
+    const group = (id: string, children: SceneNode[]): GroupNode => ({
+      type: 'group',
+      id,
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1,
+      children
+    })
+    layer.keyframes[0].nodes.push(image('node-img', 'node-img'))
+    layer.keyframes[0].nodes.push({
+      type: 'symbol',
+      id: 'symbol-instance',
+      assetId: 'symbol-a',
+      center: { x: 0, y: 0 },
+      width: 10,
+      height: 10,
+      rotation: 0,
+      opacity: 1
+    })
+    document.assets = [
+      {
+        id: 'symbol-a',
+        name: 'A',
+        kind: 'symbol',
+        createdAt: 1,
+        content: group('group-a', [
+          image('a-image', 'symbol-img'),
+          // Duplicate reference: the id is warmed once (Set + data URL cache).
+          image('a-duplicate', 'node-img'),
+          {
+            type: 'symbol',
+            id: 'a-nested',
+            assetId: 'symbol-b',
+            center: { x: 0, y: 0 },
+            width: 10,
+            height: 10,
+            rotation: 0,
+            opacity: 1
+          }
+        ])
+      },
+      {
+        id: 'symbol-b',
+        name: 'B',
+        kind: 'symbol',
+        createdAt: 2,
+        content: group('group-b', [image('b-image', 'nested-img')])
+      }
+    ]
+    const { deps, calls } = fakeDeps()
+    const rasterizer = new FrameRasterizer(document, options(), deps)
+
+    await rasterizer.rasterizeToCanvas(0)
+    expect(calls.dataUrlRequests).toEqual(['node-img', 'symbol-img', 'nested-img'])
+
+    await rasterizer.rasterizeToCanvas(1)
+    expect(calls.dataUrlRequests).toEqual(['node-img', 'symbol-img', 'nested-img'])
+  })
+
   it('embeds subsets as @font-face rules and resolves the synthetic family', async () => {
     const document = createDocument('demo', 320, 180, 12)
     document.fonts = [
@@ -209,6 +288,29 @@ describe('FrameRasterizer', () => {
     )
     expect(calls.svgs[0]).toContain('font-family="oa-embed-400-ab12cd34i, Lato,')
     expect(calls.svgs[0]).toContain('style="font-style: italic"')
+  })
+
+  it('cannot break out of the quoted @font-face family with a hostile id', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    document.fonts = [
+      {
+        id: "x';}body{background:red}.a'",
+        family: 'Lato',
+        weight: 400,
+        resourceId: 'font-res',
+        glyphs: ['A'],
+        license: 'OFL-1.1'
+      }
+    ]
+    const { deps, calls } = fakeDeps()
+    const rasterizer = new FrameRasterizer(document, options(), deps)
+
+    await rasterizer.rasterizeToCanvas(0)
+
+    const style = calls.svgs[0].split('<style>')[1]!.split('</style>')[0]
+    // The quote is escaped, so the trailing `;}` stays inside the string.
+    expect(style).toContain("font-family:'x\\27 ;}body{background:red}.a\\27 '")
+    expect(style).not.toContain("font-family:'x';}")
   })
 
   it('revokes the SVG object URL even when the image fails to load', async () => {

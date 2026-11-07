@@ -1,6 +1,7 @@
 import { deflateSync, strFromU8, strToU8, unzipSync, zipSync } from 'fflate'
+import type { UnzipFileInfo } from 'fflate'
 
-import { collectResourceCounts } from '../shared/resources'
+import { collectResourceCounts, isContentAddressedResourceId } from '../shared/resources'
 import { MigrationError, migrateDocument } from '../shared/migrate'
 import type { AnimatorDocument } from '../shared/model'
 
@@ -17,14 +18,34 @@ const ZIP_MAGIC = [0x50, 0x4b, 0x03, 0x04]
 const RESOURCE_PREFIX = 'resources/'
 const DOCUMENT_ENTRY = 'document.json'
 
+/** Decompressed-byte and entry budgets of a parsed container. A crafted
+ * archive can declare huge sizes or thousands of entries in its central
+ * directory; rejecting them before inflating keeps a `.oanim` open from
+ * exhausting main-process memory. A legitimate project never gets close. */
+export const MAX_UNCOMPRESSED_TOTAL_BYTES = 1024 * 1024 * 1024
+export const MAX_UNCOMPRESSED_ENTRY_BYTES = 256 * 1024 * 1024
+export const MAX_CONTAINER_ENTRIES = 4096
+export const MAX_COMPRESSION_RATIO = 1000
+export const MAX_ENTRY_NAME_LENGTH = 512
+
+const RESOURCE_EXT_PATTERN = /^[a-z0-9]{1,16}$/
+
+/** Sanitized, bounded resource file extension. */
+export function sanitizedExtension(ext: string): string {
+  const sanitized = ext.replace(/[^a-z0-9]/gi, '').toLowerCase()
+  return RESOURCE_EXT_PATTERN.test(sanitized) ? sanitized : 'bin'
+}
+
 /** True when the bytes start with the ZIP local-file magic `PK\x03\x04`. */
 export function isZipContainer(bytes: Uint8Array): boolean {
   return bytes.length >= 4 && ZIP_MAGIC.every((byte, index) => bytes[index] === byte)
 }
 
 function resourceEntryName(resourceId: string, resource: ProjectResource): string {
-  const ext = resource.ext.replace(/[^a-z0-9]/gi, '').toLowerCase() || 'bin'
-  return `${RESOURCE_PREFIX}${resourceId}.${ext}`
+  if (!isContentAddressedResourceId(resourceId)) {
+    throw new Error(`Invalid resource id: ${JSON.stringify(resourceId)}`)
+  }
+  return `${RESOURCE_PREFIX}${resourceId}.${sanitizedExtension(resource.ext)}`
 }
 
 /** ZIP timestamp option for `packProject`: pinning `mtime` makes the output
@@ -63,7 +84,22 @@ function parseResourceName(entryName: string): { id: string; ext: string } | nul
   const base = entryName.slice(RESOURCE_PREFIX.length)
   const dot = base.lastIndexOf('.')
   if (dot <= 0) return null
-  return { id: base.slice(0, dot), ext: base.slice(dot + 1).toLowerCase() }
+  const id = base.slice(0, dot)
+  const ext = base.slice(dot + 1)
+  if (!isContentAddressedResourceId(id) || !RESOURCE_EXT_PATTERN.test(ext)) return null
+  return { id, ext }
+}
+
+/** Rejects an entry name that could escape the archive root (defense in
+ * depth: strict resource names already exclude them). */
+function isSafeEntryName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name.length <= MAX_ENTRY_NAME_LENGTH &&
+    !name.includes('\\') &&
+    !name.startsWith('/') &&
+    !name.split('/').some((part) => part === '..')
+  )
 }
 
 /**
@@ -79,10 +115,66 @@ export function parseProject(bytes: Uint8Array): {
   resources: ProjectResourceMap
 } {
   let entries: Record<string, Uint8Array>
+  // The central directory is inspected before any entry is inflated: entry
+  // count, name length, declared sizes and compression ratio are bounded so a
+  // crafted archive cannot make the main process allocate unbounded memory.
+  let rejected = false
+  let entryCount = 0
+  let declaredTotal = 0
+  const seenNames = new Set<string>()
+  const filter = (info: UnzipFileInfo): boolean => {
+    if (rejected) return false
+    entryCount += 1
+    if (
+      entryCount > MAX_CONTAINER_ENTRIES ||
+      !isSafeEntryName(info.name) ||
+      seenNames.has(info.name)
+    ) {
+      rejected = true
+      return false
+    }
+    seenNames.add(info.name)
+    if (info.name !== DOCUMENT_ENTRY && parseResourceName(info.name) === null) {
+      rejected = true
+      return false
+    }
+    if (info.compression !== 0 && info.compression !== 8) {
+      rejected = true
+      return false
+    }
+    if (info.originalSize > MAX_UNCOMPRESSED_ENTRY_BYTES) {
+      rejected = true
+      return false
+    }
+    declaredTotal += info.originalSize
+    if (declaredTotal > MAX_UNCOMPRESSED_TOTAL_BYTES) {
+      rejected = true
+      return false
+    }
+    if (
+      info.compression === 8 &&
+      info.size > 0 &&
+      info.originalSize / info.size > MAX_COMPRESSION_RATIO
+    ) {
+      rejected = true
+      return false
+    }
+    return true
+  }
   try {
-    entries = unzipSync(bytes)
+    entries = unzipSync(bytes, { filter })
   } catch {
     throw new MigrationError('The project file is not a valid OpenAnimator archive.')
+  }
+  if (rejected) {
+    throw new MigrationError('The project archive is too large or malformed.')
+  }
+  let extractedTotal = 0
+  for (const entryBytes of Object.values(entries)) {
+    extractedTotal += entryBytes.length
+    if (extractedTotal > MAX_UNCOMPRESSED_TOTAL_BYTES) {
+      throw new MigrationError('The project archive is too large or malformed.')
+    }
   }
   const documentBytes = entries[DOCUMENT_ENTRY]
   if (!documentBytes) {
@@ -99,7 +191,11 @@ export function parseProject(bytes: Uint8Array): {
   for (const [entryName, entryBytes] of Object.entries(entries)) {
     if (entryName === DOCUMENT_ENTRY) continue
     const parsed = parseResourceName(entryName)
-    if (parsed) resources.set(parsed.id, { bytes: entryBytes, ext: parsed.ext })
+    if (!parsed) continue
+    if (resources.has(parsed.id)) {
+      throw new MigrationError(`The project archive holds duplicate resource entry ${parsed.id}.`)
+    }
+    resources.set(parsed.id, { bytes: entryBytes, ext: parsed.ext })
   }
   return { document, resources }
 }

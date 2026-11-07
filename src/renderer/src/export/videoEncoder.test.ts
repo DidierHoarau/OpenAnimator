@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ExportOptions } from '@shared/exportOptions'
 
-import { CanceledError, canEncodeVideo, encodeVideo } from './videoEncoder'
+import { CanceledError, canEncodeVideo, encodeVideo, encodeVideoToStream } from './videoEncoder'
 
 interface FakeCanvasSource {
   canvas: unknown
@@ -22,7 +22,7 @@ interface FakeAudioSource {
 
 interface FakeOutput {
   format: unknown
-  target: { buffer: ArrayBuffer | null }
+  target: { buffer: ArrayBuffer | null } | FakeStreamTarget
   videoTracks: Array<{ source: FakeCanvasSource; options: unknown }>
   audioTracks: FakeAudioSource[]
   started: boolean
@@ -33,6 +33,11 @@ interface FakeOutput {
   start(): Promise<void>
   finalize(): Promise<void>
   cancel(): Promise<void>
+}
+
+interface FakeStreamTarget {
+  stream: WritableStream<unknown>
+  options: unknown
 }
 
 /**
@@ -53,6 +58,13 @@ const mediabunny = vi.hoisted(() => {
 
   class BufferTarget {
     buffer: ArrayBuffer | null = null
+  }
+
+  class StreamTarget implements FakeStreamTarget {
+    constructor(
+      public stream: WritableStream<unknown>,
+      public options: unknown
+    ) {}
   }
 
   class CanvasSource implements FakeCanvasSource {
@@ -85,8 +97,8 @@ const mediabunny = vi.hoisted(() => {
     finalized = false
     canceled = false
     format: unknown
-    target: BufferTarget
-    constructor(init: { format: unknown; target: BufferTarget }) {
+    target: BufferTarget | StreamTarget
+    constructor(init: { format: unknown; target: BufferTarget | StreamTarget }) {
       this.format = init.format
       this.target = init.target
       state.outputs.push(this)
@@ -102,6 +114,14 @@ const mediabunny = vi.hoisted(() => {
     }
     async finalize(): Promise<void> {
       this.finalized = true
+      if (this.target instanceof StreamTarget) {
+        // Emit out of order on purpose: positional writes must reassemble.
+        const writer = this.target.stream.getWriter()
+        await writer.write({ type: 'write', data: new Uint8Array([3, 4]), position: 2 })
+        await writer.write({ type: 'write', data: new Uint8Array([1, 2]), position: 0 })
+        writer.releaseLock()
+        return
+      }
       this.target.buffer = new Uint8Array([1, 2, 3, 4]).buffer
     }
     async cancel(): Promise<void> {
@@ -115,6 +135,7 @@ const mediabunny = vi.hoisted(() => {
   return {
     state,
     BufferTarget,
+    StreamTarget,
     CanvasSource,
     AudioBufferSource,
     Output,
@@ -177,18 +198,22 @@ describe('video encoder environment', () => {
   })
 })
 
+function resetMediabunny(videoCodecs: Array<string | null> = ['vp9']): void {
+  mediabunny.state.videoCodecs = [...videoCodecs]
+  mediabunny.state.audioCodecs = ['opus']
+  mediabunny.state.outputs.length = 0
+  mediabunny.state.videoCodecQueries.length = 0
+  mediabunny.state.audioCodecQueries.length = 0
+  mediabunny.state.alphaProbes.length = 0
+  mediabunny.state.alphaProbeResults.length = 0
+  mediabunny.getFirstEncodableVideoCodec.mockClear()
+  mediabunny.getFirstEncodableAudioCodec.mockClear()
+  mediabunny.canEncodeVideo.mockClear()
+}
+
 describe('encodeVideo', () => {
   beforeEach(() => {
-    mediabunny.state.videoCodecs = ['vp9']
-    mediabunny.state.audioCodecs = ['opus']
-    mediabunny.state.outputs.length = 0
-    mediabunny.state.videoCodecQueries.length = 0
-    mediabunny.state.audioCodecQueries.length = 0
-    mediabunny.state.alphaProbes.length = 0
-    mediabunny.state.alphaProbeResults.length = 0
-    mediabunny.getFirstEncodableVideoCodec.mockClear()
-    mediabunny.getFirstEncodableAudioCodec.mockClear()
-    mediabunny.canEncodeVideo.mockClear()
+    resetMediabunny()
   })
 
   it('adds the audio mix as a track and draws every frame of the range', async () => {
@@ -345,6 +370,119 @@ describe('encodeVideo', () => {
       throw failure
     })
     await expect(encodeVideo(options(), SIZE, drawFrame, { canceled: false })).rejects.toBe(failure)
+    expect(mediabunny.state.outputs.at(-1)!.canceled).toBe(true)
+  })
+})
+
+describe('encodeVideoToStream', () => {
+  beforeEach(() => {
+    resetMediabunny()
+  })
+
+  interface Write {
+    data: number[]
+    position: number | undefined
+  }
+
+  function collector(writes: Write[]): { write(chunk: Uint8Array, position?: number): Promise<void> } {
+    return {
+      async write(chunk, position) {
+        writes.push({ data: [...chunk], position })
+      }
+    }
+  }
+
+  it('streams the container chunks with their byte positions', async () => {
+    const writes: Write[] = []
+    const result = await encodeVideoToStream(
+      options(),
+      SIZE,
+      vi.fn(),
+      { canceled: false },
+      null,
+      collector(writes)
+    )
+
+    expect(result).toEqual({ audioIncluded: false, alphaIncluded: true })
+    // The fake emitter writes out of order; the offsets tell the sink where
+    // each chunk belongs.
+    expect(writes.map((write) => write.position)).toEqual([2, 0])
+
+    const output = mediabunny.state.outputs.at(-1)!
+    expect(output.target).toBeInstanceOf(mediabunny.StreamTarget)
+    expect((output.target as { options: unknown }).options).toEqual({ chunked: true })
+  })
+
+  it('reassembles into exactly the same bytes as the in-memory encode', async () => {
+    const writes: Write[] = []
+    await encodeVideoToStream(options(), SIZE, vi.fn(), { canceled: false }, null, collector(writes))
+    const assembled = new Uint8Array(4)
+    for (const write of writes) assembled.set(write.data, write.position)
+
+    // The first encode consumed the queued codec; requeue for the second.
+    mediabunny.state.videoCodecs = ['vp9']
+    const buffered = await encodeVideo(options(), SIZE, vi.fn(), { canceled: false })
+    expect([...assembled]).toEqual([...buffered.bytes])
+  })
+
+  it('encodes the audio mix as a track and draws every frame', async () => {
+    const drawFrame = vi.fn()
+    const buffer = mix()
+    const result = await encodeVideoToStream(
+      options(),
+      SIZE,
+      drawFrame,
+      { canceled: false },
+      { buffer },
+      collector([])
+    )
+
+    expect(result.audioIncluded).toBe(true)
+    const output = mediabunny.state.outputs.at(-1)!
+    expect(output.finalized).toBe(true)
+    expect(output.videoTracks[0].source.added).toHaveLength(3)
+    expect(output.audioTracks[0].buffers).toEqual([buffer])
+    expect(output.audioTracks[0].closed).toBe(true)
+    expect(drawFrame.mock.calls.map((call) => call[1])).toEqual([0, 1, 2])
+  })
+
+  it('reports dropped alpha the same way as the in-memory encode', async () => {
+    const result = await encodeVideoToStream(
+      options({ transparent: true }),
+      SIZE,
+      vi.fn(),
+      { canceled: false },
+      null,
+      collector([])
+    )
+
+    expect(result.alphaIncluded).toBe(false)
+    expect(mediabunny.state.outputs.at(-1)!.videoTracks[0].source.options).toEqual({
+      codec: 'vp9',
+      quality: 'high'
+    })
+  })
+
+  it('cancels the output between frames and rethrows', async () => {
+    const signal = { canceled: false }
+    const drawFrame = vi.fn(() => {
+      signal.canceled = true
+    })
+    await expect(
+      encodeVideoToStream(options(), SIZE, drawFrame, signal, null, collector([]))
+    ).rejects.toBeInstanceOf(CanceledError)
+    const output = mediabunny.state.outputs.at(-1)!
+    expect(output.canceled).toBe(true)
+    expect(output.finalized).toBe(false)
+  })
+
+  it('cancels the output when the sink rejects a chunk', async () => {
+    const failure = new Error('disk full')
+    await expect(
+      encodeVideoToStream(options(), SIZE, vi.fn(), { canceled: false }, null, {
+        write: () => Promise.reject(failure)
+      })
+    ).rejects.toBe(failure)
     expect(mediabunny.state.outputs.at(-1)!.canceled).toBe(true)
   })
 })

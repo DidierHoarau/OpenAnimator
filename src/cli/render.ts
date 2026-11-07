@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -14,8 +14,9 @@ import { documentToSvgString } from '../shared/exportSvg'
 import { exportFrameCount, exportPixelSize, videoCrfFor } from '../shared/exportOptions'
 import type { ExportFormat, ExportOptions } from '../shared/exportOptions'
 import { embeddedFamilyResolverFor } from '../shared/fontPolicy'
-import { encodeGif, gifDelayMs } from '../shared/gifEncode'
+import { createIncrementalGifEncoder, encodeGif, gifDelayMs } from '../shared/gifEncode'
 import { packPngSequence } from '../shared/pngSequence'
+import { StreamingZip } from '../shared/streamingZip'
 import { buildLottieAnimation, packDotLottie, serializeLottie } from '../shared/lottieExport'
 import type { LottieAudioResource } from '../shared/lottieExport'
 import { exportAnimatedSvg } from '../shared/exportSvgAnimation'
@@ -122,8 +123,10 @@ export async function withEmbeddedFontFiles<T>(
   const dir = await mkdtemp(join(tmpdir(), 'openanimator-fonts-'))
   try {
     const fontFiles: string[] = []
-    for (const font of subsets) {
-      const path = join(dir, `${font.id}.ttf`)
+    // The document's font id is attacker-controlled: never use it as a path
+    // component. Names are generated; resvg only needs the face's bytes.
+    for (const [index, font] of subsets.entries()) {
+      const path = join(dir, `font-${index}.ttf`)
       await writeFile(path, resources.get(font.resourceId)!.bytes)
       fontFiles.push(path)
     }
@@ -222,7 +225,9 @@ export async function renderDocument(
  * spritesheet output packs the rendered frames into one atlas zip; video
  * formats go through ffmpeg (absent on PATH produces a pointed error). Audio
  * layers of `document` are mixed into video outputs from `resources`; the
- * PNG/GIF and vector formats stay silent. */
+ * PNG/GIF and vector formats stay silent. Raster formats are encoded one
+ * frame at a time; `collectFrames` (default true) also returns them in
+ * `frames`, which the CLI disables to keep long renders flat in memory. */
 export async function renderToFile(
   document: AnimatorDocument,
   options: ExportOptions,
@@ -230,7 +235,8 @@ export async function renderToFile(
   outPath: string,
   fontFiles: readonly string[] = [],
   onProgress?: (done: number, total: number) => void,
-  resources: ProjectResourceMap = new Map()
+  resources: ProjectResourceMap = new Map(),
+  collectFrames = true
 ): Promise<RenderOutcome> {
   if (
     options.format === 'lottie' ||
@@ -239,15 +245,141 @@ export async function renderToFile(
   ) {
     return renderVectorToFile(document, options, resolveResource, outPath, resources)
   }
-  const outcome = await renderDocument(document, options, resolveResource, fontFiles, onProgress)
-  if (options.format === 'webm' || options.format === 'mp4') {
-    await encodeVideoWithFfmpeg(outcome.frames, options, outPath, document, resources)
+  const retained: RenderedFrame[] = []
+  const rendered = renderFrameRange(document, options, resolveResource, fontFiles, onProgress)
+  const frames: AsyncIterable<RenderedFrame> = collectFrames
+    ? (async function* () {
+        for await (const frame of rendered) {
+          retained.push(frame)
+          yield frame
+        }
+      })()
+    : rendered
+  let bytes: Uint8Array | undefined
+  if (options.format === 'png-sequence') {
+    await writePngSequence(frames, outPath)
+  } else if (options.format === 'gif') {
+    bytes = await writeGif(frames, options, outPath)
   } else if (options.format === 'spritesheet') {
-    await writeSpritesheet(outcome.frames, options, outPath)
-  } else if (outcome.bytes) {
-    await writeFile(outPath, outcome.bytes)
+    await writeSpritesheet(frames, document, options, outPath)
+  } else {
+    await encodeVideoWithFfmpeg(frames, options, outPath, document, resources)
   }
-  return outcome
+  return { frames: retained, bytes }
+}
+
+/** Streams every frame of the export range, reporting progress as it goes. */
+async function* renderFrameRange(
+  document: AnimatorDocument,
+  options: ExportOptions,
+  resolveResource: ResourceResolver,
+  fontFiles: readonly string[],
+  onProgress?: (done: number, total: number) => void
+): AsyncGenerator<RenderedFrame> {
+  const total = exportFrameCount(options)
+  let done = 0
+  for (let frame = options.fromFrame; frame <= options.toFrame; frame += 1) {
+    done += 1
+    yield renderFrame(document, frame, options, resolveResource, fontFiles)
+    onProgress?.(done, total)
+  }
+}
+
+/** Writes the PNG sequence ZIP incrementally: each frame is deflated into the
+ * archive and flushed to `<out>.tmp` before the next frame renders. */
+async function writePngSequence(
+  frames: AsyncIterable<RenderedFrame>,
+  outPath: string
+): Promise<void> {
+  const tempPath = `${outPath}.tmp`
+  const handle = await open(tempPath, 'w')
+  try {
+    const zip = new StreamingZip(async (chunk) => {
+      let offset = 0
+      while (offset < chunk.byteLength) {
+        const { bytesWritten } = await handle.write(chunk, offset, chunk.byteLength - offset)
+        if (bytesWritten <= 0) throw new Error('PNG sequence write made no progress')
+        offset += bytesWritten
+      }
+    })
+    let index = 0
+    for await (const frame of frames) {
+      zip.addFile(`frame_${String(index).padStart(4, '0')}.png`, frame.png)
+      index += 1
+    }
+    await zip.end()
+    await handle.close()
+    await rename(tempPath, outPath)
+  } catch (error) {
+    await handle.close().catch(() => undefined)
+    await unlink(tempPath).catch(() => undefined)
+    throw error
+  }
+}
+
+/** Feeds frames to the incremental GIF encoder and writes the finished bytes
+ * atomically. The final GIF still materializes inside gifenc. */
+async function writeGif(
+  frames: AsyncIterable<RenderedFrame>,
+  options: ExportOptions,
+  outPath: string
+): Promise<Uint8Array> {
+  const delayMs = gifDelayMs(options)
+  const encoder = createIncrementalGifEncoder({
+    palette: options.gifPalette,
+    dither: options.gifDither,
+    loop: options.gifLoop
+  })
+  for await (const frame of frames) {
+    encoder.addFrame({
+      data: frame.rgba,
+      width: frame.width,
+      height: frame.height,
+      delayMs
+    })
+  }
+  const bytes = encoder.finish()
+  await writeFileAtomic(outPath, bytes)
+  return bytes
+}
+
+/** Blits each frame into the preallocated atlas as it renders. */
+async function writeSpritesheet(
+  frames: AsyncIterable<RenderedFrame>,
+  document: AnimatorDocument,
+  options: ExportOptions,
+  outPath: string
+): Promise<void> {
+  const total = exportFrameCount(options)
+  // The raster size is fixed by the document and options; every frame matches.
+  const { width: frameWidth, height: frameHeight } = exportPixelSize(document, options)
+  const grid = computeSpritesheetGrid(total, frameWidth, frameHeight)
+  const atlas = new Uint8Array(grid.width * grid.height * 4)
+  let index = 0
+  for await (const frame of frames) {
+    blitFrameIntoAtlas(
+      atlas,
+      grid.width,
+      frame,
+      (index % grid.columns) * frameWidth,
+      Math.floor(index / grid.columns) * frameHeight
+    )
+    index += 1
+  }
+  if (index === 0) throw new Error('A spritesheet needs at least one frame')
+  const png = new PNG({ width: grid.width, height: grid.height })
+  png.data = Buffer.from(atlas)
+  const metadata = buildSpritesheetMetadata({
+    frameCount: index,
+    frameWidth,
+    frameHeight,
+    grid,
+    fps: options.fps,
+    fromFrame: options.fromFrame,
+    toFrame: options.toFrame,
+    version: APP_VERSION
+  })
+  await writeFile(outPath, packSpritesheet(new Uint8Array(PNG.sync.write(png)), metadata))
 }
 
 /** Builds one of the vector formats and writes it — no rasterization. */
@@ -301,40 +433,17 @@ async function renderVectorToFile(
   return { frames: [], bytes, diagnostics: built.diagnostics }
 }
 
-/** Packs the rendered frames into a near-square atlas (shared grid math +
- * row-wise blitting) and writes the PNG + JSON zip. */
-async function writeSpritesheet(
-  frames: readonly RenderedFrame[],
-  options: ExportOptions,
-  outPath: string
-): Promise<void> {
-  if (frames.length === 0) throw new Error('A spritesheet needs at least one frame')
-  const frameWidth = frames[0].width
-  const frameHeight = frames[0].height
-  const grid = computeSpritesheetGrid(frames.length, frameWidth, frameHeight)
-  const atlas = new Uint8Array(grid.width * grid.height * 4)
-  frames.forEach((frame, index) => {
-    blitFrameIntoAtlas(
-      atlas,
-      grid.width,
-      frame,
-      (index % grid.columns) * frameWidth,
-      Math.floor(index / grid.columns) * frameHeight
-    )
-  })
-  const png = new PNG({ width: grid.width, height: grid.height })
-  png.data = Buffer.from(atlas)
-  const metadata = buildSpritesheetMetadata({
-    frameCount: frames.length,
-    frameWidth,
-    frameHeight,
-    grid,
-    fps: options.fps,
-    fromFrame: options.fromFrame,
-    toFrame: options.toFrame,
-    version: APP_VERSION
-  })
-  await writeFile(outPath, packSpritesheet(new Uint8Array(PNG.sync.write(png)), metadata))
+/** Writes via a sibling temp file and renames it, so a failed write never
+ * leaves a truncated output behind. */
+async function writeFileAtomic(path: string, bytes: Uint8Array): Promise<void> {
+  const temp = `${path}.tmp`
+  try {
+    await writeFile(temp, bytes)
+    await rename(temp, path)
+  } catch (error) {
+    await unlink(temp).catch(() => undefined)
+    throw error
+  }
 }
 
 const BUNDLED_FONT_TTF: Record<400 | 700, string> = {
@@ -496,20 +605,22 @@ function audioFileExt(ext: string): string {
 }
 
 async function encodeVideoWithFfmpeg(
-  frames: RenderedFrame[],
+  frames: AsyncIterable<RenderedFrame>,
   options: ExportOptions,
   outPath: string,
   document: AnimatorDocument,
   resources: ProjectResourceMap
 ): Promise<void> {
-  if (frames.length === 0) throw new Error('Video export needs at least one frame')
   const dir = await mkdtemp(join(tmpdir(), 'openanimator-render-'))
   try {
-    await Promise.all(
-      frames.map((frame, index) =>
-        writeFile(join(dir, `frame_${String(index).padStart(4, '0')}.png`), frame.png)
-      )
-    )
+    // One frame in memory at a time, written sequentially so a long render
+    // never holds the whole PNG sequence (or thousands of write promises).
+    let index = 0
+    for await (const frame of frames) {
+      await writeFile(join(dir, `frame_${String(index).padStart(4, '0')}.png`), frame.png)
+      index += 1
+    }
+    if (index === 0) throw new Error('Video export needs at least one frame')
     // Clips whose resource is missing from the container are skipped.
     const plan: AudioMixEntry[] = []
     const audioFiles: string[] = []

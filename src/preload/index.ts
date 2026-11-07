@@ -69,8 +69,8 @@ const api: OpenAnimatorApi = {
   pickExportPath: (request) => ipcRenderer.invoke(EXPORT_PICK_PATH_CHANNEL, request),
   writeExportFile: (path, bytes) => ipcRenderer.invoke(EXPORT_WRITE_CHANNEL, path, bytes),
   openExportStream: (path) => ipcRenderer.invoke(EXPORT_STREAM_OPEN_CHANNEL, path),
-  writeExportStream: (token, chunk) =>
-    ipcRenderer.invoke(EXPORT_STREAM_WRITE_CHANNEL, token, chunk),
+  writeExportStream: (token, chunk, position) =>
+    ipcRenderer.invoke(EXPORT_STREAM_WRITE_CHANNEL, token, chunk, position),
   finishExportStream: (token, commit) =>
     ipcRenderer.invoke(EXPORT_STREAM_COMMIT_CHANNEL, token, commit),
   loadGlobalPalette: () => ipcRenderer.invoke(PALETTE_GET_CHANNEL),

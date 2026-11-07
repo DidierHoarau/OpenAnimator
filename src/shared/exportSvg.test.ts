@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import { createCameraLayer, createDocument, createDrawingLayer, insertCameraKeyframe } from './document'
 import { cameraTransform, documentToSvgString } from './exportSvg'
+import type { TextNode } from './model'
+import { tweenNode } from './tween'
 
 describe('documentToSvgString', () => {
   it('builds a standalone SVG of the evaluated frame with the background', () => {
@@ -79,6 +81,76 @@ describe('documentToSvgString', () => {
       ['Lato', 400, true],
       ['Lato', 400, false]
     ])
+  })
+
+  it('renders tweened text like an equivalent static interpolated node', () => {
+    const tweened = createDocument('demo', 320, 180, 12)
+    const layer = tweened.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected object layer')
+    const from: TextNode = {
+      id: 'txt',
+      type: 'text',
+      center: { x: 100, y: 80 },
+      width: 120,
+      height: 40,
+      rotation: 0,
+      opacity: 1,
+      text: 'Tween',
+      fontFamily: 'Lato',
+      fontStyle: 'italic',
+      fontSize: 20,
+      fontWeight: 400,
+      fill: '#ffffff',
+      align: 'left',
+      letterSpacing: 2,
+      lineHeight: 24,
+      verticalAlign: 'top',
+      stroke: '#000000',
+      strokeWidth: 1
+    }
+    const to: TextNode = {
+      ...from,
+      center: { x: 200, y: 80 },
+      width: 180,
+      height: 80,
+      text: 'Target',
+      fontFamily: 'Noto Sans',
+      fontStyle: 'normal',
+      fontSize: 32,
+      fontWeight: 700,
+      fill: '#ff0000',
+      align: 'right',
+      letterSpacing: 6,
+      lineHeight: 40,
+      verticalAlign: 'bottom',
+      stroke: '#0000ff',
+      strokeWidth: 5
+    }
+    layer.keyframes[0].nodes.push(from)
+    layer.keyframes[0].tween = { easing: 'linear' }
+    layer.keyframes.push({ frame: 10, nodes: [to] })
+
+    // The same interpolated node rendered statically must match byte for
+    // byte: it covers font-style, spacing, baselines, stroke and fill.
+    const staticDocument = createDocument('demo', 320, 180, 12)
+    const staticLayer = staticDocument.layers[0]
+    if (staticLayer.kind !== 'object') throw new Error('expected object layer')
+    staticLayer.keyframes[0].nodes.push(tweenNode(from, to, 0.5) as TextNode)
+    expect(documentToSvgString(tweened, 5)).toBe(documentToSvgString(staticDocument, 0))
+
+    // The span ends keep the authored source and target typography.
+    const first = documentToSvgString(tweened, 0)
+    expect(first).toContain('font-family="Lato"')
+    expect(first).toContain('font-size="20"')
+    expect(first).toContain('font-style: italic')
+    expect(first).toContain('letter-spacing="2"')
+    expect(first).toContain('Tween')
+    const last = documentToSvgString(tweened, 10)
+    expect(last).toContain('font-family="Noto Sans"')
+    expect(last).toContain('font-size="32"')
+    expect(last).not.toContain('font-style')
+    expect(last).toContain('letter-spacing="6"')
+    expect(last).toContain('Target')
   })
 
   it('resolves drawing cells through the injected resource resolver', () => {
@@ -193,5 +265,16 @@ describe('documentToSvgString — camera', () => {
     insertCameraKeyframe(document, 0, { center: { x: 10, y: 10 }, zoom: 2, rotation: 45 })
     emptyCamera.visible = false
     expect(documentToSvgString(document, 0)).toBe(baseline)
+  })
+})
+
+describe('documentToSvgString — hostile background', () => {
+  it('escapes the backdrop so it cannot break out of the fill attribute', () => {
+    const document = createDocument('demo', 320, 180, 12)
+    document.background = '#10151b"/><script>alert(1)</script><rect fill="#000'
+    const svg = documentToSvgString(document, 0)
+    expect(svg).not.toContain('<script>')
+    expect(svg).not.toContain('"/><script')
+    expect(svg).toContain('fill="#10151b&quot;/&gt;&lt;script&gt;')
   })
 })

@@ -93,6 +93,51 @@ describe('staged export writes', () => {
     expect(existsSync(`${dest}.tmp`)).toBe(false)
   })
 
+  it('writes chunks at explicit positions, in any order', async () => {
+    const opened = await openExportStream(dest)
+    if (!opened.ok) throw new Error(opened.error)
+
+    // Video containers emit chunks out of order: the tail lands first.
+    await expect(writeExportStream(opened.token, new Uint8Array([5, 6]), 4)).resolves.toEqual({
+      ok: true
+    })
+    await expect(writeExportStream(opened.token, new Uint8Array([1, 2, 3, 4]), 0)).resolves.toEqual({
+      ok: true
+    })
+    await expect(commitExportStream(opened.token, true)).resolves.toEqual({ ok: true })
+
+    expect([...new Uint8Array(await readFile(dest))]).toEqual([1, 2, 3, 4, 5, 6])
+  })
+
+  it('keeps append behavior when no position is given', async () => {
+    const opened = await openExportStream(dest)
+    if (!opened.ok) throw new Error(opened.error)
+
+    await writeExportStream(opened.token, new Uint8Array([1, 2]))
+    await writeExportStream(opened.token, new Uint8Array([3, 4]))
+    await commitExportStream(opened.token, true)
+
+    expect([...new Uint8Array(await readFile(dest))]).toEqual([1, 2, 3, 4])
+  })
+
+  it('rejects malformed positions without corrupting the staged temp', async () => {
+    const opened = await openExportStream(dest)
+    if (!opened.ok) throw new Error(opened.error)
+
+    for (const position of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const rejected = await writeExportStream(opened.token, new Uint8Array([9]), position)
+      expect(rejected).toEqual({
+        ok: false,
+        error: 'Export stream position must be a non-negative integer'
+      })
+    }
+    // The session is still usable and the temp was never touched.
+    expect((await stat(`${dest}.tmp`)).size).toBe(0)
+    await writeExportStream(opened.token, new Uint8Array([1, 2]))
+    await commitExportStream(opened.token, true)
+    expect([...new Uint8Array(await readFile(dest))]).toEqual([1, 2])
+  })
+
   it('abortStagedExports cleans up leftover sessions', async () => {
     const first = await openExportStream(dest)
     const secondDest = join(root, 'other.zip')

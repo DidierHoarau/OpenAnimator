@@ -32,7 +32,7 @@ import { createResourceBytesResolver } from './resourceBytes'
 import { createResourceDataUrlResolver } from './resourceDataUrl'
 import { textNodeOutline } from '../textOutlines'
 import type { TextOutlineProvider } from '@shared/textOutline'
-import { CanceledError, canEncodeVideo, encodeVideo } from './videoEncoder'
+import { CanceledError, canEncodeVideo, encodeVideoToStream } from './videoEncoder'
 
 export interface ExportProgress {
   done: number
@@ -42,10 +42,12 @@ export interface ExportProgress {
 export interface ExportRunnerDeps extends FrameRasterDeps {
   pickExportPath(request: ExportPathRequest): Promise<PickPathResult>
   writeExportFile(path: string, bytes: Uint8Array): Promise<ExportWriteResult>
-  /** Staged write used by the archive formats: bytes stream into `<dest>.tmp`
-   * and are renamed onto the destination only when the export completes. */
+  /** Staged write used by the archive and video formats: bytes stream into
+   * `<dest>.tmp` and are renamed onto the destination only when the export
+   * completes. `position` writes at a byte offset (containers may emit out of
+   * order); without it the chunk is appended. */
   openExportStream(path: string): Promise<ExportStreamOpenResult>
-  writeExportStream(token: string, chunk: Uint8Array): Promise<ExportWriteResult>
+  writeExportStream(token: string, chunk: Uint8Array, position?: number): Promise<ExportWriteResult>
   finishExportStream(token: string, commit: boolean): Promise<ExportWriteResult>
   /** Status-bar feedback (progress milestones, results, errors). */
   showMessage(message: string): void
@@ -80,7 +82,8 @@ export function createDefaultExportRunnerDeps(editor: Editor): ExportRunnerDeps 
     pickExportPath: (request) => window.api.pickExportPath(request),
     writeExportFile: (path, bytes) => window.api.writeExportFile(path, bytes),
     openExportStream: (path) => window.api.openExportStream(path),
-    writeExportStream: (token, chunk) => window.api.writeExportStream(token, chunk),
+    writeExportStream: (token, chunk, position) =>
+      window.api.writeExportStream(token, chunk, position),
     finishExportStream: (token, commit) => window.api.finishExportStream(token, commit),
     createGifEncodeClient,
     showMessage: (message) => editor.showMessage(message),
@@ -259,21 +262,39 @@ export async function runExport(
             return null
           })
         : null
-      const encoded = await encodeVideo(
-        options,
-        { width, height },
-        async (canvas, frame) => {
-          const rasterized = await rasterizer.rasterizeToCanvas(frame)
-          const context = canvas.getContext('2d')
-          context?.drawImage(rasterized, 0, 0)
-          reportProgress(deps, frame - options.fromFrame + 1, total)
-        },
-        signal,
-        audioBuffer ? { buffer: audioBuffer } : null
-      )
-      bytes = encoded.bytes
-      audioDropped = audioBuffer !== null && !encoded.audioIncluded
-      alphaDropped = !encoded.alphaIncluded
+      // The container streams straight into the staged temp file: only one
+      // encoded chunk is in flight instead of the whole video in memory.
+      const opened = await deps.openExportStream(pick.path)
+      if (!opened.ok) throw new Error(opened.error)
+      try {
+        const encoded = await encodeVideoToStream(
+          options,
+          { width, height },
+          async (canvas, frame) => {
+            const rasterized = await rasterizer.rasterizeToCanvas(frame)
+            const context = canvas.getContext('2d')
+            context?.drawImage(rasterized, 0, 0)
+            reportProgress(deps, frame - options.fromFrame + 1, total)
+          },
+          signal,
+          audioBuffer ? { buffer: audioBuffer } : null,
+          {
+            async write(chunk, position) {
+              const result = await deps.writeExportStream(opened.token, chunk, position)
+              if (!result.ok) throw new Error(result.error)
+            }
+          }
+        )
+        // A cancel that landed during the final flush must not commit.
+        throwIfCanceled(signal)
+        audioDropped = audioBuffer !== null && !encoded.audioIncluded
+        alphaDropped = !encoded.alphaIncluded
+        const finished = await deps.finishExportStream(opened.token, true)
+        if (!finished.ok) throw new Error(finished.error)
+      } catch (error) {
+        await deps.finishExportStream(opened.token, false).catch(() => undefined)
+        throw error
+      }
     }
 
     // A cancel that landed while the vector/video formats were built must not

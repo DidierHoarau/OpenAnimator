@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { createDocument, createLayer } from './document'
 import type { AnimatorDocument, ImageNode, Layer, PrimitiveNode, SceneNode } from './model'
-import { collectResourceCounts } from './resources'
+import { collectDocumentResourceIds, collectResourceCounts } from './resources'
 
 function rect(id: string, x = 0): PrimitiveNode {
   return {
@@ -245,5 +245,92 @@ describe('collectResourceCounts', () => {
       keyframes: []
     })
     expect(collectResourceCounts(document)).toEqual(new Map())
+  })
+})
+
+describe('collectDocumentResourceIds', () => {
+  it('mirrors the count walk across layers, assets (nested symbols, cycles) and fonts', () => {
+    const layer = createLayer('A')
+    layer.keyframes.push({ frame: 0, nodes: [image('img-1', 'hash-layer'), rect('r-1')] })
+    const document = documentWithLayers([layer])
+    document.fonts = [
+      {
+        id: 'oa-embed-400-ab12cd34',
+        family: 'Lato',
+        weight: 400,
+        resourceId: 'hash-font',
+        glyphs: ['A'],
+        license: 'OFL-1.1'
+      }
+    ]
+    document.assets = [
+      {
+        id: 'outer',
+        name: 'outer',
+        kind: 'symbol',
+        content: {
+          type: 'group',
+          id: 'g-outer',
+          center: { x: 0, y: 0 },
+          width: 10,
+          height: 10,
+          rotation: 0,
+          opacity: 1,
+          children: [
+            image('a-img', 'hash-symbol'),
+            {
+              id: 's-inner',
+              type: 'symbol',
+              assetId: 'inner',
+              center: { x: 0, y: 0 },
+              width: 10,
+              height: 10,
+              rotation: 0,
+              opacity: 1
+            }
+          ]
+        },
+        createdAt: 1
+      },
+      {
+        id: 'inner',
+        name: 'inner',
+        kind: 'symbol',
+        content: {
+          type: 'group',
+          id: 'g-inner',
+          center: { x: 0, y: 0 },
+          width: 10,
+          height: 10,
+          rotation: 0,
+          opacity: 1,
+          children: [image('b-img', 'hash-nested')]
+        },
+        createdAt: 2
+      },
+      {
+        id: 'cyclic',
+        name: 'cyclic',
+        kind: 'symbol',
+        content: {
+          type: 'group',
+          id: 'g-cyclic',
+          center: { x: 0, y: 0 },
+          width: 10,
+          height: 10,
+          rotation: 0,
+          opacity: 1,
+          children: [
+            { id: 's-cyclic', type: 'symbol', assetId: 'cyclic', center: { x: 0, y: 0 }, width: 10, height: 10, rotation: 0, opacity: 1 }
+          ]
+        },
+        createdAt: 3
+      }
+    ]
+
+    const counts = collectResourceCounts(document)
+    const ids = collectDocumentResourceIds(document)
+    expect(ids).toEqual(new Set(counts.keys()))
+    expect(ids).toEqual(new Set(['hash-layer', 'hash-font', 'hash-symbol', 'hash-nested']))
   })
 })

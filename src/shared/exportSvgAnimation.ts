@@ -820,7 +820,7 @@ export async function exportAnimatedSvg(
   const defsBlock = state.defs.size > 0 ? `<defs>${[...state.defs.values()].join('')}</defs>` : ''
   const backdrop = options.transparent
     ? ''
-    : `<rect x="0" y="0" width="${document.width}" height="${document.height}" fill="${document.background}"/>`
+    : `<rect x="0" y="0" width="${document.width}" height="${document.height}" fill="${escapeXmlAttribute(document.background)}"/>`
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${fmt(document.width * scale)}" height="${fmt(document.height * scale)}"` +
     ` viewBox="0 0 ${document.width} ${document.height}">` +

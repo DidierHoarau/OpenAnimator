@@ -174,18 +174,40 @@ export function tweenNode(
     }
   }
   if (from.type === 'text') {
-    // Text content and font identity snap from `from`; the font size (and
-    // with it the laid-out box) interpolates.
+    // Every TextNode field is carried: identity fields (content, family,
+    // weight, alignment, style, ligatures, vertical alignment, fallback
+    // list) snap from `from`; the numerics interpolate when both ends define
+    // them (a one-ended value wins as-is); fill and stroke lerp like the
+    // primitive/path branches. The evaluator calls this at the source
+    // keyframe too, so t=0 must reproduce the authored node exactly.
+    const target = to.type === 'text' ? to : undefined
+    const lerpOptional = (a: number | undefined, b: number | undefined): number | undefined =>
+      a !== undefined && b !== undefined ? lerp(a, b, t) : (a ?? b)
+    const stroke =
+      from.stroke !== undefined && target?.stroke !== undefined
+        ? lerpPaint(from.stroke, target.stroke, t)
+        : (from.stroke ?? target?.stroke)
+    const strokeWidth = lerpOptional(from.strokeWidth, target?.strokeWidth)
+    const letterSpacing = lerpOptional(from.letterSpacing, target?.letterSpacing)
+    const lineHeight = lerpOptional(from.lineHeight, target?.lineHeight)
     return {
       ...base,
-      ...strokeStyleTween(from, to.type === 'text' ? to : {}, t),
+      ...strokeStyleTween(from, target ?? {}, t),
       type: 'text',
       text: from.text,
       fontFamily: from.fontFamily,
-      fontSize: to.type === 'text' ? lerp(from.fontSize, to.fontSize, t) : from.fontSize,
       fontWeight: from.fontWeight,
-      fill: from.fill,
-      align: from.align
+      align: from.align,
+      ...(from.fontStyle !== undefined ? { fontStyle: from.fontStyle } : {}),
+      ...(from.ligatures !== undefined ? { ligatures: from.ligatures } : {}),
+      ...(from.verticalAlign !== undefined ? { verticalAlign: from.verticalAlign } : {}),
+      ...(from.fontFallback !== undefined ? { fontFallback: from.fontFallback } : {}),
+      fontSize: target ? lerp(from.fontSize, target.fontSize, t) : from.fontSize,
+      fill: target !== undefined ? lerpPaint(from.fill, target.fill, fillT) : from.fill,
+      ...(stroke !== undefined ? { stroke } : {}),
+      ...(strokeWidth !== undefined ? { strokeWidth } : {}),
+      ...(letterSpacing !== undefined ? { letterSpacing } : {}),
+      ...(lineHeight !== undefined ? { lineHeight } : {})
     }
   }
   if (to.type !== 'primitive' || from.primitive !== to.primitive) {

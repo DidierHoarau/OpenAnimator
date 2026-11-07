@@ -289,6 +289,7 @@ export class Editor {
     (message: string, options: ResolvedMessageOptions) => void
   >()
   private readonly historyCommitListeners = new Set<(commit: HistoryCommit) => void>()
+  private readonly interactionEndListeners = new Set<() => void>()
   private rafId: number | null = null
   private lastTick: number | null = null
   private accumulator = 0
@@ -325,6 +326,12 @@ export class Editor {
     return this.redoStack.length > 0
   }
 
+  /** True while a coalesced interaction (e.g. a pointer drag) is open. Views
+   * can defer their expensive rebuilds until `onInteractionEnd`. */
+  get inInteraction(): boolean {
+    return this.interactionDepth > 0
+  }
+
   onDocChange(listener: () => void): void {
     this.docListeners.add(listener)
   }
@@ -351,6 +358,13 @@ export class Editor {
   onHistoryCommit(listener: (commit: HistoryCommit) => void): () => void {
     this.historyCommitListeners.add(listener)
     return () => this.historyCommitListeners.delete(listener)
+  }
+
+  /** Notified when the outermost coalesced interaction closes. Returns the
+   * unsubscribe function. */
+  onInteractionEnd(listener: () => void): () => void {
+    this.interactionEndListeners.add(listener)
+    return () => this.interactionEndListeners.delete(listener)
   }
 
   private docChanged(): void {
@@ -436,7 +450,9 @@ export class Editor {
   }
 
   endInteraction(): void {
-    this.interactionDepth = Math.max(0, this.interactionDepth - 1)
+    if (this.interactionDepth === 0) return
+    this.interactionDepth -= 1
+    if (this.interactionDepth === 0) this.notifyListeners(this.interactionEndListeners)
   }
 
   undo(): void {
@@ -495,6 +511,7 @@ export class Editor {
     this.undoStack.length = 0
     this.redoStack.length = 0
     this.interactionDepth = 0
+    this.audio.clearDecoded?.()
     this.transparentCellIds.clear()
     this.autoSwitchTool()
     this.docChanged()

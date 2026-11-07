@@ -2,6 +2,7 @@ import { documentToSvgString } from '@shared/exportSvg'
 import { embeddedFamilyResolverFor } from '@shared/fontPolicy'
 import type { AnimatorDocument } from '@shared/model'
 import type { ExportOptions } from '@shared/exportOptions'
+import { collectDocumentResourceIds } from '@shared/resources'
 
 /**
  * Browser rasterization of document frames: the shared SVG source is loaded
@@ -64,6 +65,13 @@ export function createDefaultFrameRasterDeps(): FrameRasterDeps {
   }
 }
 
+/** Escapes a value interpolated inside a single-quoted CSS string. The
+ * model already restricts font ids to the generated shape; this keeps a
+ * hand-built document from breaking out of the `@font-face` rule. */
+function escapeCssSingleQuoted(value: string): string {
+  return value.replace(/[\\'\n\r\f]/g, (char) => `\\${char.charCodeAt(0).toString(16)} `)
+}
+
 export class FrameRasterizer {
   private readonly dataUrls = new Map<string, string | null>()
   private embeddedFontCache: string | undefined
@@ -80,7 +88,7 @@ export class FrameRasterizer {
    * `add()` time, PNG/GIF read the pixels immediately after.
    */
   async rasterizeToCanvas(frame: number): Promise<HTMLCanvasElement> {
-    const ids = this.collectResourceIds()
+    const ids = collectDocumentResourceIds(this.document)
     for (const id of ids) {
       if (!this.dataUrls.has(id)) this.dataUrls.set(id, await this.deps.resolveResourceDataUrl(id))
     }
@@ -131,28 +139,11 @@ export class FrameRasterizer {
       .map((font) => {
         const url = this.dataUrls.get(font.resourceId)
         return url
-          ? `@font-face{font-family:'${font.id}';font-weight:${font.weight};` +
+          ? `@font-face{font-family:'${escapeCssSingleQuoted(font.id)}';font-weight:${font.weight};` +
               `${font.italic ? 'font-style:italic;' : ''}src:url(${url}) format('truetype');}`
           : ''
       })
       .join('')
     return this.embeddedFontCache || undefined
-  }
-
-  /** Every resource id the document references, warmed once per export. */
-  private collectResourceIds(): Set<string> {
-    const ids = new Set<string>()
-    for (const layer of this.document.layers) {
-      if (layer.kind === 'drawing') {
-        for (const cell of layer.cells) if (cell.resourceId) ids.add(cell.resourceId)
-      } else if (layer.kind === 'audio') {
-        ids.add(layer.resourceId)
-      }
-    }
-    for (const asset of this.document.assets) {
-      if (asset.resourceId) ids.add(asset.resourceId)
-    }
-    for (const font of this.document.fonts) ids.add(font.resourceId)
-    return ids
   }
 }
