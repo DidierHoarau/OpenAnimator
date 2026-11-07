@@ -19,6 +19,8 @@ import {
   renderToFile,
   withEmbeddedFontFiles
 } from './render'
+import { booleanFlag, numberFlag, parseArgs, stringFlag, stringFlags } from './args'
+import type { CliArgs } from './args'
 import { renderSchemaJson, schemaFileName } from './schema'
 import type { SchemaKind } from './schema'
 
@@ -72,61 +74,6 @@ Commands:
 Lottie, dotLottie and animated-SVG exports are built natively (no ffmpeg);
 video and audio mixdown need ffmpeg on PATH.
 `
-
-type FlagValue = string | boolean | string[]
-
-interface CliArgs {
-  positional: string[]
-  flags: Map<string, FlagValue>
-}
-
-function parseArgs(argv: string[]): CliArgs {
-  const positional: string[] = []
-  const flags = new Map<string, FlagValue>()
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index]
-    if (arg.startsWith('--')) {
-      const key = arg.slice(2)
-      const next = argv[index + 1]
-      if (next !== undefined && !next.startsWith('--')) {
-        // Repeated value flags accumulate (e.g. --format gif --format lottie).
-        const existing = flags.get(key)
-        if (typeof existing === 'string') flags.set(key, [existing, next])
-        else if (Array.isArray(existing)) existing.push(next)
-        else flags.set(key, next)
-        index += 1
-      } else {
-        flags.set(key, true)
-      }
-    } else {
-      positional.push(arg)
-    }
-  }
-  return { positional, flags }
-}
-
-function stringFlag(flags: CliArgs['flags'], key: string): string | undefined {
-  const value = flags.get(key)
-  return typeof value === 'string' ? value : undefined
-}
-
-/** Every occurrence of a value flag, in command-line order. */
-function stringFlags(flags: CliArgs['flags'], key: string): string[] {
-  const value = flags.get(key)
-  if (value === undefined || typeof value === 'boolean') return []
-  return Array.isArray(value) ? value : [value]
-}
-
-function booleanFlag(flags: CliArgs['flags'], key: string): boolean {
-  return flags.has(key)
-}
-
-function numberFlag(flags: CliArgs['flags'], key: string): number | undefined {
-  const value = stringFlag(flags, key)
-  if (value === undefined) return undefined
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : undefined
-}
 
 async function runRender(args: CliArgs): Promise<string> {
   const input = args.positional[0]
@@ -185,7 +132,10 @@ async function runRender(args: CliArgs): Promise<string> {
         target,
         fontFiles,
         undefined,
-        resources
+        resources,
+        // The CLI writes each frame as it renders instead of retaining the
+        // whole range in memory.
+        false
       )
       const size = exportPixelSize(document, options)
       let summary = `Wrote ${target} — ${exportFrameCount(options)} frame(s) ${size.width}x${size.height} at ${options.fps} fps`

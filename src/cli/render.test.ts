@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -103,14 +103,15 @@ describe('loadDocumentAndResources', () => {
     const path = join(dir, 'project.oanim')
     const bytes = new Uint8Array([1, 2, 3, 4, 5])
     // packProject stores only referenced resources, so the fixture must
-    // point at res-1 from somewhere.
+    // point at the (content-addressed) resource from somewhere.
+    const resourceId = 'a'.repeat(64)
     const referencing = structuredClone(DOCUMENT)
     const layer = referencing.layers[0]
     if (layer.kind !== 'object') throw new Error('expected an object layer')
     layer.keyframes[0].nodes.push({
       type: 'image',
       id: 'img1',
-      resourceId: 'res-1',
+      resourceId,
       naturalWidth: 4,
       naturalHeight: 4,
       smoothing: true,
@@ -120,12 +121,12 @@ describe('loadDocumentAndResources', () => {
       rotation: 0,
       opacity: 1
     })
-    const packed = packProject(referencing, new Map([['res-1', { bytes, ext: 'png' }]]))
+    const packed = packProject(referencing, new Map([[resourceId, { bytes, ext: 'png' }]]))
     await writeFile(path, packed)
     const { document, resources } = await loadDocumentAndResources(path)
     expect(document.name).toBe('CLI test')
-    expect(resources.get('res-1')?.bytes).toEqual(bytes)
-    expect(resources.get('res-1')?.ext).toBe('png')
+    expect(resources.get(resourceId)?.bytes).toEqual(bytes)
+    expect(resources.get(resourceId)?.ext).toBe('png')
   })
 })
 
@@ -220,6 +221,120 @@ describe('renderToFile', () => {
     const written = await readFile(outPath)
     expect(written.byteLength).toBe(outcome.bytes!.byteLength)
     expect(Buffer.from(written.slice(0, 6)).toString('latin1')).toBe('GIF89a')
+  })
+})
+
+describe('renderToFile — streamed raster formats', () => {
+  /** renderToFile call with frames not retained (the CLI's mode). */
+  async function renderStreamed(
+    options: ReturnType<typeof sanitizeExportOptions>,
+    outPath: string
+  ): Promise<Awaited<ReturnType<typeof renderToFile>>> {
+    return renderToFile(DOCUMENT, options, () => null, outPath, [], undefined, new Map(), false)
+  }
+
+  it('writes the same PNG sequence entries without retaining frames', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+    const buffered = join(dir, 'buffered.zip')
+    const streamed = join(dir, 'streamed.zip')
+    const options = sanitizeExportOptions(
+      { format: 'png-sequence', fromFrame: 0, toFrame: 3 },
+      DOCUMENT
+    )
+
+    await renderToFile(DOCUMENT, options, () => null, buffered)
+    const outcome = await renderStreamed(options, streamed)
+
+    expect(outcome.frames).toHaveLength(0)
+    expect(outcome.bytes).toBeUndefined()
+    const expected = unzipSync(new Uint8Array(await readFile(buffered)))
+    const actual = unzipSync(new Uint8Array(await readFile(streamed)))
+    expect(Object.keys(actual)).toEqual(Object.keys(expected))
+    for (const name of Object.keys(expected)) expect(actual[name]).toEqual(expected[name])
+    // Only the two outputs remain: the `.tmp` staging file was renamed.
+    expect((await readdir(dir)).sort()).toEqual(['buffered.zip', 'streamed.zip'])
+  })
+
+  it('writes the same GIF bytes without retaining frames', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+    const buffered = join(dir, 'buffered.gif')
+    const streamed = join(dir, 'streamed.gif')
+    const options = sanitizeExportOptions({ format: 'gif', fromFrame: 0, toFrame: 3 }, DOCUMENT)
+
+    await renderToFile(DOCUMENT, options, () => null, buffered)
+    const outcome = await renderStreamed(options, streamed)
+
+    expect(outcome.frames).toHaveLength(0)
+    const actual = new Uint8Array(await readFile(streamed))
+    expect(actual).toEqual(new Uint8Array(await readFile(buffered)))
+    expect(outcome.bytes).toEqual(actual)
+    expect((await readdir(dir)).sort()).toEqual(['buffered.gif', 'streamed.gif'])
+  })
+
+  it('writes the same spritesheet atlas without retaining frames', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+    const buffered = join(dir, 'buffered.zip')
+    const streamed = join(dir, 'streamed.zip')
+    const options = sanitizeExportOptions(
+      { format: 'spritesheet', fromFrame: 0, toFrame: 3 },
+      DOCUMENT
+    )
+
+    await renderToFile(DOCUMENT, options, () => null, buffered)
+    const outcome = await renderStreamed(options, streamed)
+
+    expect(outcome.frames).toHaveLength(0)
+    const expected = unzipSync(new Uint8Array(await readFile(buffered)))
+    const actual = unzipSync(new Uint8Array(await readFile(streamed)))
+    expect(actual['atlas.png']).toEqual(expected['atlas.png'])
+    expect(strFromU8(actual['atlas.json'])).toBe(strFromU8(expected['atlas.json']))
+  })
+
+  it('writes every video frame before encoding and removes the temp directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'openanimator-cli-'))
+    const bin = join(dir, 'bin')
+    await mkdir(bin)
+    const marker = join(dir, 'marker.txt')
+    const script = join(bin, 'ffmpeg')
+    // Stand-in for ffmpeg: records how many frames it was handed and where,
+    // then writes the output. The render must have produced all of them
+    // before the process starts, one write at a time.
+    await writeFile(
+      script,
+      [
+        '#!/bin/sh',
+        'out=""',
+        'frames=""',
+        'for arg in "$@"; do',
+        '  out="$arg"',
+        '  case "$arg" in',
+        '    */frame_%04d.png) frames=$(dirname "$arg");;',
+        '  esac',
+        'done',
+        'count=$(ls "$frames"/frame_*.png | wc -l)',
+        'printf "%s\\n%s\\n" "$count" "$frames" > "$OPENANIMATOR_TEST_MARKER"',
+        'printf "video" > "$out"'
+      ].join('\n')
+    )
+    await chmod(script, 0o755)
+    const previousPath = process.env.PATH
+    process.env.PATH = `${bin}:${previousPath ?? ''}`
+    process.env.OPENANIMATOR_TEST_MARKER = marker
+    try {
+      const outPath = join(dir, 'out.webm')
+      const options = sanitizeExportOptions({ format: 'webm', fromFrame: 0, toFrame: 3 }, DOCUMENT)
+      const outcome = await renderStreamed(options, outPath)
+
+      expect(outcome.frames).toHaveLength(0)
+      const [count, framesDir] = (await readFile(marker, 'utf8')).trim().split('\n')
+      expect(count).toBe('4')
+      expect(await readFile(outPath, 'utf8')).toBe('video')
+      // The per-render temp directory was removed after ffmpeg finished.
+      await expect(access(framesDir)).rejects.toThrow()
+    } finally {
+      process.env.PATH = previousPath
+      delete process.env.OPENANIMATOR_TEST_MARKER
+    }
   })
 })
 
@@ -541,7 +656,7 @@ describe('withEmbeddedFontFiles', () => {
     let seenBytes: Uint8Array | null = null
     const result = await withEmbeddedFontFiles(document, resources, async (fontFiles) => {
       expect(fontFiles).toHaveLength(1)
-      expect(fontFiles[0].endsWith(`${document.fonts[0].id}.ttf`)).toBe(true)
+      expect(fontFiles[0].endsWith('font-0.ttf')).toBe(true)
       seenDir = dirname(fontFiles[0])
       seenBytes = new Uint8Array(await readFile(fontFiles[0]))
       return 'done'
@@ -550,6 +665,21 @@ describe('withEmbeddedFontFiles', () => {
     expect(result).toBe('done')
     expect(seenBytes).toEqual(bytes)
     await expect(access(seenDir)).rejects.toThrow()
+  })
+
+  it('never uses a hostile font id as a path component', async () => {
+    const document = embeddedDocument()
+    document.fonts[0].id = '../../escape'
+    const bytes = loadSubsetBytes(document.fonts[0].glyphs)
+    const resources = new Map([[document.fonts[0].resourceId, { bytes, ext: 'ttf' }]])
+    const seen = await withEmbeddedFontFiles(document, resources, async (fontFiles) => {
+      expect(fontFiles).toHaveLength(1)
+      const dir = dirname(fontFiles[0])
+      expect(fontFiles[0]).toBe(join(dir, 'font-0.ttf'))
+      return fontFiles
+    })
+    expect(seen).toHaveLength(1)
+    await expect(access(seen[0])).rejects.toThrow()
   })
 
   it('runs with an empty list without touching the file system when no subset is present', async () => {

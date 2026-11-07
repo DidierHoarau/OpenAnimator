@@ -6,7 +6,7 @@ import { createAudioLayer, createDocument, createDrawingLayer } from '@shared/do
 import type { ExportOptions } from '@shared/exportOptions'
 import { createIncrementalGifEncoder } from '@shared/gifEncode'
 import type { GifEncodeOptions } from '@shared/gifEncode'
-import type { TextNode } from '@shared/model'
+import type { GroupNode, ImageNode, SceneNode, TextNode } from '@shared/model'
 import { Editor } from '../editor'
 
 import type { GifEncodeClient } from './gifEncodeClient'
@@ -16,7 +16,7 @@ import { createDefaultExportRunnerDeps, runExport, type ExportRunnerDeps } from 
 // through controllable stubs; everything else stays the actual module.
 const videoEncoder = vi.hoisted(() => ({
   canEncodeVideo: vi.fn(() => false),
-  encodeVideo: vi.fn()
+  encodeVideoToStream: vi.fn()
 }))
 
 vi.mock('./videoEncoder', async (importOriginal) => {
@@ -24,7 +24,7 @@ vi.mock('./videoEncoder', async (importOriginal) => {
   return {
     ...actual,
     canEncodeVideo: videoEncoder.canEncodeVideo,
-    encodeVideo: videoEncoder.encodeVideo
+    encodeVideoToStream: videoEncoder.encodeVideoToStream
   }
 })
 
@@ -33,6 +33,7 @@ const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47])
 interface FakeStream {
   path: string
   chunks: Uint8Array[]
+  positions: Array<number | undefined>
   committed: boolean | null
 }
 
@@ -83,11 +84,12 @@ function fakeDeps(overrides: Partial<ExportRunnerDeps> = {}): ExportRunnerDeps &
       return Promise.resolve({ ok: true })
     },
     openExportStream: (path: string) => {
-      deps.streams.push({ path, chunks: [], committed: null })
+      deps.streams.push({ path, chunks: [], positions: [], committed: null })
       return Promise.resolve({ ok: true, token: String(deps.streams.length - 1) })
     },
-    writeExportStream: (token: string, chunk: Uint8Array) => {
+    writeExportStream: (token: string, chunk: Uint8Array, position?: number) => {
       deps.streams[Number(token)].chunks.push(chunk)
+      deps.streams[Number(token)].positions.push(position)
       return Promise.resolve({ ok: true })
     },
     finishExportStream: (token: string, commit: boolean) => {
@@ -183,6 +185,54 @@ describe('runExport', () => {
       { done: 1, total: 2 },
       { done: 2, total: 2 }
     ])
+  })
+
+  it('resolves resources referenced by image nodes and symbol content', async () => {
+    const document = createDocument('demo', 320, 180, 12)
+    document.frames = 1
+    const layer = document.layers[0]
+    if (layer.kind !== 'object') throw new Error('expected an object layer')
+    const image = (id: string, resourceId: string): ImageNode => ({
+      type: 'image',
+      id,
+      center: { x: 40, y: 40 },
+      width: 20,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      resourceId,
+      naturalWidth: 20,
+      naturalHeight: 20,
+      smoothing: true
+    })
+    const content: GroupNode = {
+      type: 'group',
+      id: 'symbol-content',
+      center: { x: 0, y: 0 },
+      width: 20,
+      height: 20,
+      rotation: 0,
+      opacity: 1,
+      children: [image('symbol-image', 'res-symbol')] as SceneNode[]
+    }
+    layer.keyframes[0].nodes.push(image('orphan-image', 'res-node') as SceneNode)
+    document.assets = [
+      { id: 'symbol', name: 'Symbol', kind: 'symbol', content, createdAt: 1 }
+    ]
+    const requests: string[] = []
+    const deps = fakeDeps({
+      resolveResourceDataUrl: (resourceId: string) => {
+        requests.push(resourceId)
+        return Promise.resolve('data:image/png;base64,AAA')
+      }
+    })
+
+    const result = await runExport(new Editor(document), options({ fromFrame: 0, toFrame: 0 }), deps, {
+      canceled: false
+    })
+
+    expect(result).toBe(true)
+    expect(requests).toEqual(['res-node', 'res-symbol'])
   })
 
   it('exports an animated GIF from the rasterized frames', async () => {
@@ -303,18 +353,36 @@ describe('runExport — audio in video exports', () => {
   beforeEach(() => {
     videoEncoder.canEncodeVideo.mockReset()
     videoEncoder.canEncodeVideo.mockReturnValue(false)
-    videoEncoder.encodeVideo.mockReset()
+    videoEncoder.encodeVideoToStream.mockReset()
   })
 
   const mixBuffer = (): AudioBuffer => ({ duration: 0.5 }) as unknown as AudioBuffer
 
-  it('mixes the audible audio into webm exports and hands it to the encoder', async () => {
+  interface StreamSink {
+    write(chunk: Uint8Array, position?: number): Promise<void>
+  }
+
+  /** Encoder stub emitting two chunks out of order through the sink. */
+  function streamedEncoder(result: { audioIncluded: boolean; alphaIncluded: boolean }) {
+    return async (
+      _options: unknown,
+      _size: unknown,
+      _drawFrame: unknown,
+      _signal: unknown,
+      _audio: unknown,
+      sink: StreamSink
+    ): Promise<{ audioIncluded: boolean; alphaIncluded: boolean }> => {
+      await sink.write(new Uint8Array([8]), 1)
+      await sink.write(new Uint8Array([7]), 0)
+      return result
+    }
+  }
+
+  it('streams the encoded container into a staged file and commits it', async () => {
     videoEncoder.canEncodeVideo.mockReturnValue(true)
-    videoEncoder.encodeVideo.mockResolvedValue({
-      bytes: new Uint8Array([7, 7]),
-      audioIncluded: true,
-      alphaIncluded: true
-    })
+    videoEncoder.encodeVideoToStream.mockImplementation(
+      streamedEncoder({ audioIncluded: true, alphaIncluded: true })
+    )
     const mix = mixBuffer()
     const renderAudioMix = vi.fn(() => Promise.resolve(mix))
     const deps = fakeDeps({ renderAudioMix })
@@ -324,22 +392,31 @@ describe('runExport — audio in video exports', () => {
 
     expect(result).toBe(true)
     expect(renderAudioMix).toHaveBeenCalledWith(opts)
-    expect(videoEncoder.encodeVideo).toHaveBeenCalledTimes(1)
-    const call = videoEncoder.encodeVideo.mock.calls[0]
+    expect(videoEncoder.encodeVideoToStream).toHaveBeenCalledTimes(1)
+    const call = videoEncoder.encodeVideoToStream.mock.calls[0]
     expect(call[0]).toBe(opts)
     expect(call[1]).toEqual({ width: 320, height: 180 })
     expect(call[4]).toEqual({ buffer: mix })
-    expect(deps.written[0].bytes).toEqual(new Uint8Array([7, 7]))
+    // The container never goes through the one-shot write: it streams into
+    // the staged temp with the offsets mediabunny emitted, then commits.
+    expect(deps.written).toHaveLength(0)
+    expect(deps.streams).toHaveLength(1)
+    expect(deps.streams[0].path).toBe('/tmp/out')
+    expect(deps.streams[0].positions).toEqual([1, 0])
+    const assembled = new Uint8Array(2)
+    deps.streams[0].chunks.forEach((chunk, index) => {
+      assembled.set(chunk, deps.streams[0].positions[index])
+    })
+    expect([...assembled]).toEqual([7, 8])
+    expect(deps.streams[0].committed).toBe(true)
     expect(deps.messages).toEqual(['Exported to /tmp/out'])
   })
 
   it('reports the dropped track when the encoder cannot include the mix', async () => {
     videoEncoder.canEncodeVideo.mockReturnValue(true)
-    videoEncoder.encodeVideo.mockResolvedValue({
-      bytes: new Uint8Array([7]),
-      audioIncluded: false,
-      alphaIncluded: true
-    })
+    videoEncoder.encodeVideoToStream.mockImplementation(
+      streamedEncoder({ audioIncluded: false, alphaIncluded: true })
+    )
     const deps = fakeDeps({ renderAudioMix: () => Promise.resolve(mixBuffer()) })
 
     const result = await runExport(drawingEditor(), options({ format: 'webm' }), deps, {
@@ -348,6 +425,7 @@ describe('runExport — audio in video exports', () => {
 
     expect(result).toBe(true)
     expect(deps.messages).toEqual(['Exported to /tmp/out without audio (no encoder available)'])
+    expect(deps.streams[0].committed).toBe(true)
   })
 
   it('never mixes audio for the silent formats', async () => {
@@ -365,11 +443,9 @@ describe('runExport — audio in video exports', () => {
 
   it('exports the video silently when the mixdown itself fails', async () => {
     videoEncoder.canEncodeVideo.mockReturnValue(true)
-    videoEncoder.encodeVideo.mockResolvedValue({
-      bytes: new Uint8Array([7]),
-      audioIncluded: false,
-      alphaIncluded: true
-    })
+    videoEncoder.encodeVideoToStream.mockImplementation(
+      streamedEncoder({ audioIncluded: false, alphaIncluded: true })
+    )
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const deps = fakeDeps({
       renderAudioMix: () => Promise.reject(new Error('no decodable audio'))
@@ -381,18 +457,16 @@ describe('runExport — audio in video exports', () => {
 
     expect(result).toBe(true)
     expect(warn).toHaveBeenCalled()
-    expect(videoEncoder.encodeVideo.mock.calls[0][4]).toBeNull()
+    expect(videoEncoder.encodeVideoToStream.mock.calls[0][4]).toBeNull()
     expect(deps.messages).toEqual(['Exported to /tmp/out'])
     warn.mockRestore()
   })
 
   it('reports dropped transparency when the VP9 alpha encoder is unavailable', async () => {
     videoEncoder.canEncodeVideo.mockReturnValue(true)
-    videoEncoder.encodeVideo.mockResolvedValue({
-      bytes: new Uint8Array([7]),
-      audioIncluded: true,
-      alphaIncluded: false
-    })
+    videoEncoder.encodeVideoToStream.mockImplementation(
+      streamedEncoder({ audioIncluded: true, alphaIncluded: false })
+    )
     const deps = fakeDeps()
 
     const result = await runExport(drawingEditor(), options({ format: 'webm', transparent: true }), deps, {
@@ -403,6 +477,53 @@ describe('runExport — audio in video exports', () => {
     expect(deps.messages).toEqual([
       'Exported to /tmp/out without transparency (no VP9 alpha encoder in this environment)'
     ])
+  })
+
+  it('aborts the staged video stream when the encoder is canceled', async () => {
+    videoEncoder.canEncodeVideo.mockReturnValue(true)
+    videoEncoder.encodeVideoToStream.mockImplementation(
+      async (
+        _options: unknown,
+        _size: unknown,
+        _drawFrame: unknown,
+        signal: { canceled: boolean },
+        _audio: unknown,
+        sink: StreamSink
+      ) => {
+        await sink.write(new Uint8Array([1]), 0)
+        signal.canceled = true
+        throw new Error('stop')
+      }
+    )
+    const deps = fakeDeps()
+
+    const result = await runExport(drawingEditor(), options({ format: 'webm' }), deps, {
+      canceled: false
+    })
+
+    expect(result).toBe(false)
+    expect(deps.written).toHaveLength(0)
+    expect(deps.streams[0].committed).toBe(false)
+    expect(deps.messages).toContain('Export canceled')
+  })
+
+  it('aborts the staged video stream when a chunk write fails', async () => {
+    videoEncoder.canEncodeVideo.mockReturnValue(true)
+    videoEncoder.encodeVideoToStream.mockImplementation(
+      streamedEncoder({ audioIncluded: false, alphaIncluded: true })
+    )
+    const deps = fakeDeps({
+      writeExportStream: () => Promise.resolve({ ok: false, error: 'disk full' })
+    })
+
+    const result = await runExport(drawingEditor(), options({ format: 'webm' }), deps, {
+      canceled: false
+    })
+
+    expect(result).toBe(false)
+    expect(deps.written).toHaveLength(0)
+    expect(deps.streams[0].committed).toBe(false)
+    expect(deps.messages).toEqual(['Export failed: disk full'])
   })
 })
 
@@ -610,9 +731,9 @@ describe('createDefaultExportRunnerDeps', () => {
       const opened = await deps.openExportStream('/tmp/x')
       expect(opened).toEqual({ ok: true, token: 't1' })
       if (!opened.ok) throw new Error('stream did not open')
-      await deps.writeExportStream(opened.token, new Uint8Array([2]))
+      await deps.writeExportStream(opened.token, new Uint8Array([2]), 4)
       await deps.finishExportStream(opened.token, true)
-      expect(api.writeExportStream).toHaveBeenCalledWith('t1', new Uint8Array([2]))
+      expect(api.writeExportStream).toHaveBeenCalledWith('t1', new Uint8Array([2]), 4)
       expect(api.finishExportStream).toHaveBeenCalledWith('t1', true)
 
       deps.showMessage('hello')

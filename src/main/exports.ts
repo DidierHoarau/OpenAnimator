@@ -65,8 +65,8 @@ export function registerExportHandlers(): void {
   )
   ipcMain.handle(
     EXPORT_STREAM_WRITE_CHANNEL,
-    (_event, token: string, chunk: Uint8Array): Promise<ExportWriteResult> =>
-      writeExportStream(token, chunk)
+    (_event, token: string, chunk: Uint8Array, position?: number): Promise<ExportWriteResult> =>
+      writeExportStream(token, chunk, position)
   )
   ipcMain.handle(
     EXPORT_STREAM_COMMIT_CHANNEL,
@@ -88,21 +88,25 @@ export async function openExportStream(path: string): Promise<ExportStreamOpenRe
   }
 }
 
-/** Appends one chunk to a staged write. */
+/** Appends one chunk to a staged write, or writes it at `position` (positional
+ * writes let a container be emitted out of order). */
 export async function writeExportStream(
   token: string,
-  chunk: Uint8Array
+  chunk: Uint8Array,
+  position?: number
 ): Promise<ExportWriteResult> {
   const session = streamSessions.get(token)
   if (!session) return { ok: false, error: 'Export stream is no longer open' }
+  if (position !== undefined && (!Number.isInteger(position) || position < 0)) {
+    return { ok: false, error: 'Export stream position must be a non-negative integer' }
+  }
   try {
     let offset = 0
     while (offset < chunk.byteLength) {
-      const { bytesWritten } = await session.handle.write(
-        chunk,
-        offset,
-        chunk.byteLength - offset
-      )
+      const { bytesWritten } =
+        position === undefined
+          ? await session.handle.write(chunk, offset, chunk.byteLength - offset)
+          : await session.handle.write(chunk, offset, chunk.byteLength - offset, position + offset)
       if (bytesWritten <= 0) throw new Error('Export stream write made no progress')
       offset += bytesWritten
     }
